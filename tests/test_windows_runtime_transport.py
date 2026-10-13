@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -61,6 +62,27 @@ class ProxyContractTests(unittest.TestCase):
         self.assertIn("explicit worker proxy", str(caught.exception))
         self.assertNotIn("secret-proxy", str(caught.exception))
 
+    def test_owned_client_uses_selected_distribution_without_default(self):
+        self.assertEqual(proxy.owned_wsl_command("selected 日本語"),
+            ["wsl.exe", "--distribution", "selected 日本語", "--exec", sys.executable])
+        for distro in (None, "", " ", "bad\x00name"):
+            with self.assertRaises(RuntimeError): proxy.owned_wsl_command(distro)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux pidfd ownership")
+    def test_owned_cleanup_does_not_signal_reused_pid(self):
+        # The pinned process handle eliminates the check-to-kill reuse race.
+        with patch.object(proxy.os, "pidfd_open", return_value=99) as opened, \
+             patch.object(proxy.os, "close") as closed, \
+             patch.object(proxy.signal, "pidfd_send_signal") as send:
+            with patch.object(proxy, "owner_token", return_value="new-start"):
+                proxy.stop_owned(1234, "old-start", 15)
+                send.assert_not_called()
+            with patch.object(proxy, "owner_token", return_value="old-start"):
+                proxy.stop_owned(1234, "old-start", 15)
+                send.assert_called_once_with(99,15)
+            self.assertEqual(opened.call_args_list, [((1234,),), ((1234,),)])
+            self.assertEqual(closed.call_count,2)
+
 
 # Echo implementation of the multiplexed protocol, including receiver credits.
 FAKE_RELAY = r"""
@@ -85,19 +107,26 @@ send(1,0)
 try:
  while True:
   k,i,n=H.unpack(exact(9)); b=exact(n)
-  if k==2: states[i]={'credit':65536,'queue':bytearray(),'fin':False}
-  elif k==5: states.pop(i,None)
+  if i==0 or n>32768: raise ValueError('Invalid frame header.')
+  if k==2:
+   if n or len(states)>=32 or i in states: raise ValueError('Invalid open.')
+   states[i]={'credit':65536,'queue':bytearray(),'fin':False,'fin_sent':False}
+  elif k==5 and n==0: states.pop(i,None)
   elif i in states:
    c=states[i]
-   if k==3:c['queue'].extend(b)
-   elif k==6:c['credit']+=struct.unpack('<I',b)[0]
-   elif k==4:c['fin']=True
+   if k==3 and not c['fin'] and n and len(c['queue'])+n<=65536:c['queue'].extend(b)
+   elif k==6 and n==4:
+    count=struct.unpack('<I',b)[0]
+    if count==0 or count>65536 or c['credit']+count>65536: raise ValueError('Invalid credit.')
+    c['credit']+=count
+   elif k==4 and n==0 and not c['fin']:c['fin']=True
+   else:raise ValueError('Invalid connection frame.')
   for i,c in list(states.items()):
    while c['queue'] and c['credit']:
     n=min(32768,c['credit'],len(c['queue']))
     b=bytes(c['queue'][:n]);del c['queue'][:n];c['credit']-=n
     send(3,i,b);send(6,i,struct.pack('<I',n))
-   if c['fin'] and not c['queue']:send(4,i);c['fin']=False
+   if c['fin'] and not c['queue'] and not c['fin_sent']:send(4,i);c['fin_sent']=True
 except (EOFError,BrokenPipeError):pass
 """
 
@@ -109,6 +138,11 @@ class LinuxRelayTests(unittest.TestCase):
         self.addCleanup(self.scratch.cleanup)
         self.helper = Path(self.scratch.name) / "fake helper.py"
         self.helper.write_text(FAKE_RELAY, encoding="utf-8")
+        # Exercise the full private FD handoff on Linux. Native controls use
+        # the real dedicated wsl.exe client instead of this process stand-in.
+        owned = patch.object(proxy, "owned_wsl_command", return_value=[sys.executable])
+        owned.start()
+        self.addCleanup(owned.stop)
 
     def start(self, env=None):
         env = {} if env is None else env
@@ -130,11 +164,14 @@ class LinuxRelayTests(unittest.TestCase):
         log = directory / "preparation.jsonl"
         tools = directory / "tools"
         tools.mkdir()
-        for name in ("wslpath", "powershell.exe"):
+        for name in ("wslpath", "powershell.exe", "wsl.exe"):
             helper = tools / name
             helper.write_text('''#!/usr/bin/env python3
 import json,os,sys
 from pathlib import Path
+if Path(sys.argv[0]).name == "wsl.exe":
+    assert sys.argv[1:4] == ["--distribution", "fixture", "--exec"]
+    os.execv(sys.argv[4],sys.argv[4:])
 if Path(sys.argv[0]).name == "wslpath" or "-Discover" in sys.argv:
     incoming = sys.stdin.buffer.read()
     with open(os.environ["FIXTURE_PREPARATION_LOG"], "a") as log:
@@ -164,7 +201,7 @@ if address:
 print(json.dumps({"pid":os.getpid(),"argv":sys.argv[1:],"prompt":prompt,"proxy":address}))
 ''', encoding="utf-8")
         worker.chmod(0o755)
-        (package / "desktop-config.json").write_text(json.dumps({"LinuxCodex":str(worker), "LinuxHome":str(directory / "home")}), encoding="utf-8")
+        (package / "desktop-config.json").write_text(json.dumps({"LinuxCodex":str(worker), "LinuxHome":str(directory / "home"), "Distro":"fixture"}), encoding="utf-8")
         env = {k:v for k,v in os.environ.items() if k not in proxy.PROXY_KEYS and k != proxy.OWNER_KEY}
         env.update(PATH=str(tools)+os.pathsep+env["PATH"], FIXTURE_PREPARATION_LOG=str(log), FIXTURE_PROXY_ENABLED="1")
         prompt = "Сохрани весь prompt 日本語 😀\nsecond line\n".encode()
@@ -416,7 +453,7 @@ except (EOFError,BrokenPipeError):pass
         wrapper = Path(self.scratch.name) / "wrapper.py"
         worker = Path(self.scratch.name) / "worker.py"
         worker.write_text("import json,os,sys,time\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),'proxy':os.environ['HTTP_PROXY']}))\ntime.sleep(60)\n")
-        wrapper.write_text("import sys\nsys.path.insert(0,sys.argv[1])\nimport worker_proxy as p\np.powershell_command=lambda:[sys.executable,sys.argv[2]]\np.discover_proxy=lambda c:('127.0.0.1',1234)\np.exec_worker(sys.executable,[sys.argv[3],sys.argv[4]],{})\n")
+        wrapper.write_text("import sys\nsys.path.insert(0,sys.argv[1])\nimport worker_proxy as p\np.owned_wsl_command=lambda d:[sys.executable]\np.powershell_command=lambda:[sys.executable,sys.argv[2]]\np.discover_proxy=lambda c:('127.0.0.1',1234)\np.exec_worker(sys.executable,[sys.argv[3],sys.argv[4]],{})\n")
         owner = subprocess.Popen([sys.executable, str(wrapper), str(ROOT / "windows"), str(self.helper), str(worker), str(record)])
         try:
             deadline = time.monotonic() + 5
@@ -473,6 +510,95 @@ except (EOFError,BrokenPipeError):pass
         port = int(env["HTTP_PROXY"].rsplit(":", 1)[1])
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1)
+
+    def test_owned_client_failed_launch_closes_readiness_and_private_handoff(self):
+        before = set(Path("/tmp").glob("delamain-relay-*"))
+        with patch.object(proxy, "owned_wsl_command", return_value=["/no/such/owned-wsl-client"]), \
+             patch.object(proxy, "powershell_command", return_value=[sys.executable, str(self.helper)]), \
+             patch.object(proxy, "discover_proxy", return_value=("127.0.0.1",1234)):
+            with self.assertRaises(RuntimeError): proxy.prepare_proxy({})
+        self.assertEqual(set(Path("/tmp").glob("delamain-relay-*")), before)
+        self.assertFalse(self.helper.with_suffix('.pids').exists())
+
+    def test_slow_owned_client_without_handoff_is_reaped_before_startup_failure_returns(self):
+        # The child never connects, so no peer identity or EOF cleanup channel
+        # exists. Cover cooperative TERM and a child requiring exact-Popen KILL.
+        slow = Path(self.scratch.name) / "slow owned client.py"
+        record = Path(self.scratch.name) / "slow-client.json"
+        slow.write_text('''import json,os,signal,sys,time
+from pathlib import Path
+if sys.argv[2] == "ignore": signal.signal(signal.SIGTERM,signal.SIG_IGN)
+fields=Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")",1)[1].split()
+Path(sys.argv[1]).write_text(json.dumps({"pid":os.getpid(),"token":fields[19],
+    "socket":sys.argv[sys.argv.index("--owned-relay")+1]}))
+while True: time.sleep(60)
+''',encoding="utf-8")
+        for mode in ("normal", "ignore"):
+            with self.subTest(termination=mode):
+                record.unlink(missing_ok=True)
+                started = time.monotonic()
+                try:
+                    with patch.object(proxy, "CONNECT_TIMEOUT", .5), \
+                         patch.object(proxy, "owned_wsl_command", return_value=[sys.executable,str(slow),str(record),mode]), \
+                         patch.object(proxy, "powershell_command", return_value=[sys.executable,str(self.helper)]), \
+                         patch.object(proxy, "discover_proxy", return_value=("127.0.0.1",1234)):
+                        with self.assertRaises(RuntimeError): proxy.prepare_proxy({})
+                    data = json.loads(record.read_text())
+                    path = Path(data["socket"])
+                    remaining = (proxy.owner_token(data["pid"]),path.parent.exists())
+                    print(f"startup returned: {mode}, exact client {data['pid']}, alive={remaining[0] is not None}, private_dir={remaining[1]}")
+                    self.assertEqual(remaining,(None,False), "startup failure left its owned client or private handoff")
+                    self.assertFalse(self.helper.with_suffix('.pids').exists(), "unconnected client started a helper")
+                    self.assertLess(time.monotonic()-started,5.5,"unconnected client cancellation exceeded its bounded budget")
+                    print(f"startup cancellation: {mode}, exact client {data['pid']}; reaped, private directory removed")
+                finally:
+                    # Negative before-control also cleans only the recorded,
+                    # start-token-verified fixture child and exact private path.
+                    if record.exists():
+                        data = json.loads(record.read_text())
+                        proxy.stop_owned(data["pid"],data["token"],signal.SIGKILL)
+                        deadline = time.monotonic()+3
+                        while proxy.owner_token(data["pid"]) == data["token"] and time.monotonic()<deadline:
+                            time.sleep(.02)
+                        self.assertNotEqual(proxy.owner_token(data["pid"]),data["token"],"fixture cleanup left exact client alive")
+                        path = Path(data["socket"])
+                        path.unlink(missing_ok=True)
+                        try: path.parent.rmdir()
+                        except FileNotFoundError: pass
+
+    def test_owned_handoff_rejects_symlink_directory_before_connect(self):
+        directory = Path(self.scratch.name) / "private"
+        directory.mkdir(mode=0o700)
+        link = Path(self.scratch.name) / "redirect"
+        link.symlink_to(directory, target_is_directory=True)
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(directory / "control"))
+            (directory / "control").chmod(0o600)
+            with self.assertRaises(RuntimeError):
+                proxy.owned_relay_main([str(link / "control"), str(os.getpid()), proxy.owner_token(os.getpid())])
+
+    def test_supervisor_sigkill_closes_owned_client_helper_and_private_paths(self):
+        relay, port = self.start()
+        child = int(Path(f"/proc/{relay.pid}/task/{relay.pid}/children").read_text().strip())
+        command = Path(f"/proc/{child}/cmdline").read_bytes().split(b"\0")
+        path = Path(os.fsdecode(command[command.index(b"--owned-relay") + 1]))
+        helper = int(self.helper.with_suffix('.pids').read_text().strip())
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        with socket.create_connection(("127.0.0.1", port),timeout=3) as client:
+            client.sendall(b"owned-before-kill")
+            self.assertEqual(client.recv(17), b"owned-before-kill")
+            relay.kill()
+            relay.wait(timeout=5)
+            self.assertEqual(client.recv(1), b"")
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline and (proxy.owner_token(child) or proxy.owner_token(helper) or path.parent.exists()):
+            time.sleep(.05)
+        self.assertIsNone(proxy.owner_token(child), "owned client survived supervisor SIGKILL")
+        self.assertIsNone(proxy.owner_token(helper), "helper survived supervisor SIGKILL")
+        self.assertFalse(path.parent.exists(), "private handoff survived supervisor SIGKILL")
+        with self.assertRaises(OSError): socket.create_connection(("127.0.0.1",port),timeout=1)
+        print(f"supervisor SIGKILL: relay {relay.pid}, owned client {child}, helper {helper}; all gone, private paths removed")
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX exec/PID launcher fixture; native payload is checked through WSL")

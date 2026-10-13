@@ -8,6 +8,7 @@ so normal exit, SIGKILL and PID reuse all remove owned helpers and the listener.
 from __future__ import annotations
 
 import json
+import array
 import os
 from pathlib import Path
 import selectors
@@ -16,6 +17,8 @@ import socket
 import subprocess
 import sys
 import struct
+import stat
+import tempfile
 from collections import deque
 import time
 from urllib.parse import urlsplit
@@ -24,6 +27,10 @@ PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_pro
 OWNER_KEY = "DELAMAIN_OWNED_PROXY"
 MAX_CONNECTIONS = 32
 CONNECT_TIMEOUT = 15
+CLIENT_EXIT_TIMEOUT = 5
+CLIENT_SIGNAL_TIMEOUT = 2
+# Outlast every bounded supervisor escalation plus scheduling/FD cleanup.
+RELAY_CLEANUP_TIMEOUT = CLIENT_EXIT_TIMEOUT + 3 * CLIENT_SIGNAL_TIMEOUT + 2
 WINDOW = 65536
 CHUNK = 32768
 IDLE_TIMEOUT = 300
@@ -100,7 +107,13 @@ def clean_inherited_proxy(env: dict[str, str]) -> None:
                 del env[key]
 
 
-def prepare_proxy(env: dict[str, str]) -> subprocess.Popen | None:
+def owned_wsl_command(distro: str | None) -> list[str]:
+    if not distro or not distro.strip() or "\x00" in distro:
+        raise RuntimeError("Cannot identify the worker WSL distribution for its owned proxy relay.")
+    return ["wsl.exe", "--distribution", distro, "--exec", sys.executable]
+
+
+def prepare_proxy(env: dict[str, str], distro: str | None = None) -> subprocess.Popen | None:
     clean_inherited_proxy(env)
     # Presence, even an empty value, is an explicit caller choice. NO_PROXY is
     # preserved verbatim and remains the HTTP client's bypass authority.
@@ -110,6 +123,9 @@ def prepare_proxy(env: dict[str, str]) -> subprocess.Popen | None:
     endpoint = discover_proxy(command)
     if endpoint is None:
         return None
+    # A detached Linux descendant still shares the initiating Windows client's
+    # interop stdio lifetime. Keep a separate WSL client alive for this relay.
+    client_command = owned_wsl_command(distro or os.environ.get("WSL_DISTRO_NAME"))
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(MAX_CONNECTIONS)
@@ -120,9 +136,10 @@ def prepare_proxy(env: dict[str, str]) -> subprocess.Popen | None:
     read_fd, write_fd = os.pipe()
     relay = None
     try:
-        relay = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--relay",
+        relay = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--supervise",
                                   str(listener.fileno()), str(write_fd), str(pid), token,
-                                  endpoint[0], str(endpoint[1]), *command],
+                                  endpoint[0], str(endpoint[1]), str(len(client_command)),
+                                  *client_command, *command],
                                  pass_fds=(listener.fileno(), write_fd), stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, start_new_session=True)
         os.close(write_fd)
@@ -140,7 +157,7 @@ def prepare_proxy(env: dict[str, str]) -> subprocess.Popen | None:
         if relay:
             relay.terminate()
             try:
-                relay.wait(timeout=3)
+                relay.wait(timeout=RELAY_CLEANUP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 relay.kill()
                 relay.wait()
@@ -152,7 +169,167 @@ def prepare_proxy(env: dict[str, str]) -> subprocess.Popen | None:
             os.close(write_fd)
 
 
-def relay_main(args: list[str]) -> None:
+def peer_identity(peer: socket.socket) -> tuple[int, str]:
+    pid, uid, _gid = struct.unpack("3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    token = owner_token(pid)
+    if uid != os.getuid() or not token:
+        raise RuntimeError("Invalid owned relay peer.")
+    return pid, token
+
+
+def stop_owned(pid: int, token: str, signum: int) -> None:
+    # Bind the identity before checking its start token. A numeric kill after
+    # checking /proc could target a different actor if the PID was then reused.
+    try:
+        descriptor = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        if owner_token(pid) == token:
+            try:
+                signal.pidfd_send_signal(descriptor, signum)
+            except ProcessLookupError:
+                pass
+    finally:
+        os.close(descriptor)
+
+
+def supervise_main(args: list[str]) -> None:
+    fd, ready_fd, owner = map(int, args[:3])
+    owner_start, host, port = args[3:6]
+    count = int(args[6])
+    client_command, helper_command = args[7:7 + count], args[7 + count:]
+    stopped = False
+
+    def terminate(_signum, _frame):
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    client = peer = None
+    child = None
+    listener = socket.socket(fileno=fd)
+    # Linux-private paths only: no prompt, environment or authentication data.
+    with tempfile.TemporaryDirectory(prefix="delamain-relay-", dir="/tmp") as directory:
+        os.chmod(directory, 0o700)
+        server = socket.socket(socket.AF_UNIX)
+        path = str(Path(directory) / "control")
+        try:
+            server.bind(path)
+            os.chmod(path, 0o600)
+            server.listen(1)
+            server.settimeout(0.25)
+            pid, token = os.getpid(), owner_token(os.getpid())
+            if owner_token(owner) != owner_start:
+                raise RuntimeError("Worker ownership ended before relay handoff.")
+            client = subprocess.Popen([*client_command, str(Path(__file__).resolve()),
+                "--owned-relay", path, str(pid), token, str(owner), owner_start, host, port,
+                *helper_command], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + CONNECT_TIMEOUT
+            while not stopped and owner_token(owner) == owner_start and time.monotonic() < deadline:
+                if client.poll() is not None:
+                    raise RuntimeError("Owned WSL relay client exited before handoff.")
+                try:
+                    peer, _ = server.accept()
+                    break
+                except socket.timeout:
+                    pass
+            if peer is None:
+                raise RuntimeError("Owned WSL relay handoff timed out.")
+            child = peer_identity(peer)
+            descriptors = array.array("i", [listener.fileno(), ready_fd, sys.stderr.fileno()])
+            peer.sendmsg([b"1"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, descriptors)])
+            listener.close()
+            os.close(ready_fd)
+            ready_fd = -1
+            peer.setblocking(False)
+            while not stopped and owner_token(owner) == owner_start and owner_token(child[0]) == child[1]:
+                with selectors.DefaultSelector() as poll:
+                    poll.register(peer, selectors.EVENT_READ)
+                    if poll.select(0.25) and not peer.recv(1):
+                        break
+                if client.poll() is not None:
+                    break
+        finally:
+            listener.close()
+            if ready_fd >= 0:
+                os.close(ready_fd)
+            if peer:
+                # Private Linux EOF, independent of the originating WSL stdio.
+                peer.close()
+            server.close()
+            if client:
+                if child is None:
+                    # No handoff means no EOF peer or validated child PID.
+                    # Cancel the exact unreaped Popen client immediately.
+                    client.terminate()
+                try:
+                    client.wait(timeout=CLIENT_EXIT_TIMEOUT if child else CLIENT_SIGNAL_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    if child:
+                        stop_owned(*child, signal.SIGTERM)
+                    else:
+                        client.kill()
+                    try:
+                        client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
+                    except subprocess.TimeoutExpired:
+                        if child:
+                            stop_owned(*child, signal.SIGKILL)
+                        client.terminate()
+                        try:
+                            client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
+                        except subprocess.TimeoutExpired:
+                            client.kill()
+                            client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
+            if client and client.returncode and not stopped and owner_token(owner) == owner_start:
+                raise RuntimeError("Owned WSL relay client failed.")
+
+
+def owned_relay_main(args: list[str]) -> None:
+    path, supervisor, supervisor_start = args[:3]
+    location = Path(path)
+    directory = location.parent.lstat()
+    entry = location.lstat()
+    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+            or stat.S_IMODE(directory.st_mode) != 0o700 or not stat.S_ISSOCK(entry.st_mode)
+            or entry.st_uid != os.getuid() or stat.S_IMODE(entry.st_mode) != 0o600):
+        raise RuntimeError("Invalid owned relay handoff path.")
+    with socket.socket(socket.AF_UNIX) as control:
+        control.settimeout(CONNECT_TIMEOUT)
+        control.connect(path)
+        if peer_identity(control) != (int(supervisor), supervisor_start):
+            raise RuntimeError("Invalid owned relay supervisor.")
+        descriptors = array.array("i")
+        message, ancillary, flags, _ = control.recvmsg(1, socket.CMSG_SPACE(3 * descriptors.itemsize),
+                                                      socket.MSG_CMSG_CLOEXEC)
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                descriptors.frombytes(data)
+        try:
+            if message != b"1" or flags & socket.MSG_CTRUNC or len(descriptors) != 3:
+                raise RuntimeError("Invalid owned relay descriptor handoff.")
+            fd, ready_fd, error_fd = descriptors
+            os.dup2(error_fd, 2)
+            os.close(error_fd)
+            descriptors = array.array("i")
+            control.setblocking(False)
+            relay_main([str(fd), str(ready_fd), *args[3:]], control)
+        finally:
+            for fd in descriptors:
+                os.close(fd)
+            # Also clean the private handoff if the supervisor was SIGKILLed.
+            # Never remove a replaced socket or a nonempty private directory.
+            try:
+                if location.lstat().st_ino == entry.st_ino:
+                    location.unlink()
+                    location.parent.rmdir()
+            except FileNotFoundError:
+                pass
+
+
+def relay_main(args: list[str], control: socket.socket | None = None) -> None:
     fd, ready_fd, pid = map(int, args[:3])
     token, host, port = args[3:6]
     command = [*args[6:], "-Multiplex", "-ProxyHost", host, "-ProxyPort", port]
@@ -196,6 +373,12 @@ def relay_main(args: list[str]) -> None:
             os.set_blocking(pipe.fileno(), False)
         with selectors.DefaultSelector() as poll:
             while not stopped and owner_token(pid) == token:
+                if control:
+                    try:
+                        if not control.recv(1, socket.MSG_PEEK):
+                            break
+                    except BlockingIOError:
+                        pass
                 now = time.monotonic()
                 if not ready and now - started > CONNECT_TIMEOUT:
                     raise RuntimeError("Windows relay startup timed out.")
@@ -370,8 +553,8 @@ def relay_main(args: list[str]) -> None:
                     helper.wait()
 
 
-def exec_worker(executable: str, args: list[str], env: dict[str, str]) -> None:
-    relay = prepare_proxy(env)
+def exec_worker(executable: str, args: list[str], env: dict[str, str], distro: str | None = None) -> None:
+    relay = prepare_proxy(env, distro)
     try:
         os.execvpe(executable, [executable, *args], env)
     finally:
@@ -379,7 +562,7 @@ def exec_worker(executable: str, args: list[str], env: dict[str, str]) -> None:
         if relay:
             relay.terminate()
             try:
-                relay.wait(timeout=5)
+                relay.wait(timeout=RELAY_CLEANUP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 relay.kill()
                 relay.wait()
@@ -389,6 +572,10 @@ if __name__ == "__main__":
     try:
         if sys.argv[1:2] == ["--relay"]:
             relay_main(sys.argv[2:])
+        elif sys.argv[1:2] == ["--supervise"]:
+            supervise_main(sys.argv[2:])
+        elif sys.argv[1:2] == ["--owned-relay"]:
+            owned_relay_main(sys.argv[2:])
         else:
             exec_worker(os.environ["DELAMAIN_LINUX_CODEX"], sys.argv[1:], dict(os.environ))
     except (OSError, ValueError, KeyError, RuntimeError) as error:

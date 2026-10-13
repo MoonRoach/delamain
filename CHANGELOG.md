@@ -11,6 +11,8 @@
   bounds connections and flow control, and preserves worker PID/stdin and exact-owned cleanup.
   The legacy raw helper interface remains compatible with existing workers. No global daemon,
   Windows listener or network configuration change is introduced.
+  An owned WSL client now keeps the relay's interop stdio alive after the initiating Desktop
+  bridge returns; a private Linux descriptor handoff preserves worker stdin/PID and cleanup.
 - **Native Windows hook compatibility.** Recognized literal bridge calls retain independent cwd and
   native Windows role-profile paths. Variable/dynamic paths and other unsupported PowerShell forms
   remain outside exact-source coverage; the hooks are advisory rather than a general security boundary.

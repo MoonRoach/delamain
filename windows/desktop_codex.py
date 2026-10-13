@@ -34,7 +34,7 @@ def main() -> None:
     if args[:2] == ["app-server", "proxy"]:
         os.execvpe(executable, [executable, *args], env)
     else:
-        exec_worker(executable, args, env)
+        exec_worker(executable, args, env, config.get("Distro"))
 
 
 if __name__ == "__main__":

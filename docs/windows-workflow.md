@@ -80,6 +80,13 @@ Linux workers may use the existing authorized Windows proxy via the
 [worker service route](windows-desktop.md#linux-worker-service-route), without changing
 machine network policy or requesting a new daemon.
 
+Each automatically prepared proxy relay keeps its own WSL client invocation alive in the
+selected `Distro`. A private Linux Unix socket transfers the existing loopback listener,
+readiness pipe and error descriptor; it contains no prompt or authentication data. This
+prevents the initiating Desktop bridge's return from closing the Windows helper's stdin.
+The worker still execs at its original PID. Worker exit, failed exec and ownership-token
+changes close the owned relay, helper and private handoff; no shared WSL instance is stopped.
+
 Use configured locks for shared resources and the question register for owner decisions;
 existing applicable authority remains effective. Wait only for a concrete resource, data or
 owner dependency, and continue independent authorized ready work. Each actor owns its

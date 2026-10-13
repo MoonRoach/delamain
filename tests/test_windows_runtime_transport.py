@@ -567,15 +567,18 @@ while True: time.sleep(60)
                         except FileNotFoundError: pass
 
     def test_owned_handoff_rejects_symlink_directory_before_connect(self):
-        directory = Path(self.scratch.name) / "private"
-        directory.mkdir(mode=0o700)
-        link = Path(self.scratch.name) / "redirect"
-        link.symlink_to(directory, target_is_directory=True)
-        with socket.socket(socket.AF_UNIX) as server:
-            server.bind(str(directory / "control"))
-            (directory / "control").chmod(0o600)
-            with self.assertRaises(RuntimeError):
-                proxy.owned_relay_main([str(link / "control"), str(os.getpid()), proxy.owner_token(os.getpid())])
+        # A Unix socket's address is bounded even when the caller's TMPDIR is
+        # valid but long. Keep the real positive fixture within that OS bound.
+        with tempfile.TemporaryDirectory(prefix="relay-symlink-", dir="/tmp") as scratch:
+            directory = Path(scratch) / "private"
+            directory.mkdir(mode=0o700)
+            link = Path(self.scratch.name) / "redirect"
+            link.symlink_to(directory, target_is_directory=True)
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(directory / "control"))
+                (directory / "control").chmod(0o600)
+                with self.assertRaises(RuntimeError):
+                    proxy.owned_relay_main([str(link / "control"), str(os.getpid()), proxy.owner_token(os.getpid())])
 
     def test_supervisor_sigkill_closes_owned_client_helper_and_private_paths(self):
         relay, port = self.start()

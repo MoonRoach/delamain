@@ -42,6 +42,10 @@ It runs locally for **one person on one machine**.
 
    **Codex** (Python 3.11+): [clone, install and trust hooks →](docs/codex.md#install-in-codex).
 
+   **Native Windows Codex with WSL2:** [follow the task from setup to the user result →](docs/windows-workflow.md).
+   The original core runs in Linux through the [Desktop transport](docs/windows-desktop.md).
+   A [WSL terminal coordinator](docs/windows-wsl.md) is a separate explicit mode.
+
    Detached workers default to broad permissions. Review the linked permission settings before launching them.
 
 2. **Set up your project.** Open your repository in the chosen host and ask:

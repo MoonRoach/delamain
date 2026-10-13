@@ -15,6 +15,10 @@ The coordinator and its workers can use different engines. The shared journal, i
 register, lock board and handoff files remain the protocol. Select an executor with `agent spawn --engine claude`
 or `--engine codex`; sending, status and stopping use the engine recorded at spawn.
 
+For a native Windows Codex coordinator, follow the [Windows workflow](windows-workflow.md).
+Its conditional transport runs the original core and detached workers in WSL2; the generic installation below
+is for the selected runtime host. Native Windows Claude integration is not established.
+
 ## Install in Codex
 
 Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and

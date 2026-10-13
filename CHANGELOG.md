@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Windows transport through WSL2.** Native Windows Codex uses a conditional plugin envelope;
+  a terminal launcher remains a separate Linux coordinator mode. Argument/environment payloads
+  travel in per-call files rather than the Windows command line, preserving large prompts,
+  Unicode, stdin, streaming output and child exit status. Payloads may contain sensitive inputs;
+  normal completion removes them, while forced termination can bypass cleanup.
+- **One Windows proxy helper per Linux worker.** An explicit multiplex mode compiles the helper once,
+  bounds connections and flow control, and preserves worker PID/stdin and exact-owned cleanup.
+  The legacy raw helper interface remains compatible with existing workers. No global daemon,
+  Windows listener or network configuration change is introduced.
+- **Native Windows hook compatibility.** Recognized literal bridge calls retain independent cwd and
+  native Windows role-profile paths. Variable/dynamic paths and other unsupported PowerShell forms
+  remain outside exact-source coverage; the hooks are advisory rather than a general security boundary.
+  Linux/macOS role-path defaults and shared skill/template/context policies remain unchanged.
+
+
 - **Haiku takes an effort like every other model.** Claude Haiku 5.5 has an effort setting (`low` to `max`), and
   Claude Code 2.1.296 resolves the alias `haiku` to it (2.1.287 to 2.1.295 still give Haiku 4.5; the minimum supported
   version is unchanged). `agent spawn` no longer drops the effort of a haiku model: `--effort`, else the

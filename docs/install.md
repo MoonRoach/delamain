@@ -1,8 +1,10 @@
 # Installation and setup
 
 **Platform.** macOS and Linux; Python and the selected CLI on `PATH` (standard library only).
-Windows is unsupported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself runs natively on
-Windows ([setup](https://code.claude.com/docs/en/setup)); the limit is Delamain's. WSL is untested.
+The tools need `fcntl`, `setsid`, `ps` and `curses`, so the core does not run natively on Windows.
+The [Windows transport](windows-workflow.md) runs that core in WSL2 for a native Windows Codex coordinator;
+the [terminal launcher](windows-wsl.md) is a separate Linux coordinator mode. Native Windows Claude
+integration is not established.
 
 Follow the [README's three-step recipe](../README.md#start): install, set up the project, then give the hub a job.
 If you start the hub first, it offers `delamain:setup` when the repository has no `.agent-hub/`.
@@ -92,4 +94,3 @@ answer, stopping once the business result is clear. Delamain does not bundle it;
 ```
 
 Without it the `hub` skill grills by hand in the same format; the answers go to the question register either way.
-

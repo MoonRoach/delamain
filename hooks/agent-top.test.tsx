@@ -7,8 +7,12 @@ type On = Parameters<TestBody>[1]
 
 import {
   barCells,
+  badgeOf,
   capToasts,
+  colorOf,
+  countsOf,
   ctxPercent,
+  glyphOf,
   isOwnCommand,
   journalColor,
   levelColor,
@@ -66,6 +70,51 @@ const PANE = {
 } as const
 
 const DONE = { subtype: 'success', is_error: false, text: 'all green' }
+
+test('unknown and interrupted native actors keep their identity, labels and counts without death toasts', async () => {
+  const before = parseSnapshot(snapshot([agent()]), 0)
+  const unknown = parseSnapshot(snapshot([agent({ state: 'unknown', alive: false, action: null })]), 0)
+  const a = unknown.agents[0]
+  expect(a.state).toBe('unknown')
+  expect(glyphOf(a)).toBe('?')
+  expect(colorOf(a)).toBe('yellow')
+  expect(badgeOf(a).label).toBe('UNKNOWN')
+  expect(notices(remember(before), unknown)).toEqual([])
+  const stopped = parseSnapshot(snapshot([agent({ state: 'stopped', alive: false, action: null,
+    result: { subtype: 'stopped', is_error: false, text: 'user interrupted' } })]), 0)
+  const s = stopped.agents[0]
+  expect(s.state).toBe('stopped')
+  expect(glyphOf(s)).toBe('■')
+  expect(badgeOf(s).label).toBe('STOPPED')
+  expect(notices(remember(before), stopped)).toEqual(['■ worker · stage-a stopped'])
+  expect(countsOf([a, s])).toEqual({ live: 0, done: 0, error: 0, dead: 0, unknown: 1, stopped: 1 })
+  expect(statusText(unknown)).toContain('? 1')
+  expect(statusText(stopped)).toContain('■ 1')
+  const expired = parseSnapshot(snapshot([agent({ state: 'unknown', expired: true, alive: false, result: null })]), 0)
+  expect(expired.agents[0].state).toBe('unknown')
+  expect(expired.agents[0].expired).toBe(true)
+  expect(expired.agents[0].result).toBeNull()
+  expect(notices(remember(unknown), expired)).toEqual([])
+  const future = parseSnapshot(snapshot([agent({ state: 'future-native-state', alive: false })]), 0)
+  expect(future.agents[0].state).toBe('unknown')
+})
+
+test('native actors first seen unknown toast each terminal outcome once without needing a run count', async () => {
+  const native = {
+    kind: 'native', role: 'native-child', dir_name: 'native-child', runs: 0, alive: false, action: null, age_s: null,
+  }
+  const before = parseSnapshot(snapshot([agent({ ...native, state: 'unknown' })]), 0)
+  expect(notices(remember(before), before)).toEqual([])
+  for (const [state, result, notice] of [
+    ['done', DONE, '✓ native-child · stage-a finished'],
+    ['error', { subtype: 'error', is_error: true, text: 'test failed' }, '✗ native-child · stage-a failed: test failed'],
+    ['stopped', { subtype: 'stopped', is_error: false, text: 'user interrupted' }, '■ native-child · stage-a stopped'],
+  ] as const) {
+    const after = parseSnapshot(snapshot([agent({ ...native, state, result })]), 0)
+    expect(notices(remember(before), after)).toEqual([notice])
+    expect(notices(remember(after), after)).toEqual([])
+  }
+})
 
 test('status line has the counts where a phone looks on too; the first snapshot never toasts, a transition toasts once', async ($, on) => {
   const clock = mock.clock(on)

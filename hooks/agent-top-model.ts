@@ -1,7 +1,7 @@
 // Pure helpers of the agent-top mod (hooks/agent-top.tsx): parse the `agent-top --json` snapshot, decide what to poll
 // and when, find the events worth a toast, and format the text the pane draws. No `$`, no I/O: unit-testable on its own.
 
-export type AgentState = 'live' | 'done' | 'error' | 'dead'
+export type AgentState = 'live' | 'done' | 'error' | 'dead' | 'unknown' | 'stopped'
 
 export type Agent = {
   stage: string
@@ -11,6 +11,7 @@ export type Agent = {
   tag: string
   state: AgentState
   quiet: boolean
+  expired: boolean
   alive: boolean
   kind: string
   parent: string | null
@@ -37,7 +38,7 @@ export type Agent = {
   result: { subtype: string; is_error: boolean; text: string } | null
 }
 
-export type Counts = { live: number; done: number; error: number; dead: number }
+export type Counts = { live: number; done: number; error: number; dead: number; unknown?: number; stopped?: number }
 
 export type Lock = { kind: string; repo: string; owner_name: string; until: string; active: boolean; why: string }
 
@@ -95,7 +96,7 @@ const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Numbe
 
 export function toAgent(raw: unknown): Agent | null {
   if (!isObject(raw) || typeof raw.role !== 'string' || typeof raw.stage !== 'string') return null
-  const state = raw.state === 'live' || raw.state === 'done' || raw.state === 'error' || raw.state === 'dead' ? raw.state : 'dead'
+  const state = raw.state === 'live' || raw.state === 'done' || raw.state === 'error' || raw.state === 'dead' || raw.state === 'unknown' || raw.state === 'stopped' ? raw.state : 'unknown'
   const action = isObject(raw.action) ? { tool: str(raw.action.tool), text: str(raw.action.text), elapsed_s: numOr(raw.action.elapsed_s, 0) } : null
   const result = isObject(raw.result)
     ? { subtype: str(raw.result.subtype), is_error: raw.result.is_error === true, text: str(raw.result.text) }
@@ -108,6 +109,7 @@ export function toAgent(raw: unknown): Agent | null {
     tag: str(raw.tag),
     state,
     quiet: raw.quiet === true,
+    expired: raw.expired === true,
     alive: raw.alive === true,
     kind: str(raw.kind, 'headless'),
     parent: typeof raw.parent === 'string' ? raw.parent : null,
@@ -183,7 +185,8 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
   return {
     generated_at: str(data.generated_at),
     stages: Array.isArray(data.stages) ? data.stages.filter((s): s is string => typeof s === 'string') : [],
-    counts: { live: numOr(c.live, 0), done: numOr(c.done, 0), error: numOr(c.error, 0), dead: numOr(c.dead, 0) },
+    counts: { live: numOr(c.live, 0), done: numOr(c.done, 0), error: numOr(c.error, 0), dead: numOr(c.dead, 0),
+      unknown: numOr(c.unknown, 0), stopped: numOr(c.stopped, 0) },
     agents,
     locks,
     questions,
@@ -289,7 +292,8 @@ export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; 
 
 export function statusText(s: Snapshot | null): string | undefined {
   if (!s || s.agents.length === 0) return undefined
-  return `agents ● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}`
+  return `agents ● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}` +
+    (s.counts.unknown ? ` ? ${s.counts.unknown}` : '') + (s.counts.stopped ? ` ■ ${s.counts.stopped}` : '')
 }
 
 /** The surfaces that draw the prompt footer (`SessionMode`), where the counts are a Button and not the status line. */
@@ -333,6 +337,7 @@ export function endNotice(a: Agent): string {
   const who = `${a.role} · ${a.stage}`
   if (a.state === 'done') return `✓ ${who} finished`
   if (a.state === 'error') return `✗ ${who} failed` + (a.result?.text ? `: ${clip(oneLine(a.result.text), 60)}` : '')
+  if (a.state === 'stopped') return `■ ${who} stopped`
   return `✗ ${who} died`
 }
 
@@ -343,10 +348,11 @@ export function endNotice(a: Agent): string {
 export function notices(prev: Memory, s: Snapshot): string[] {
   const out: string[] = []
   for (const a of s.agents) {
-    if (a.state === 'live') continue
+    if (a.state === 'live' || a.state === 'unknown') continue
     const was = prev.states[agentKey(a)]
     const isJustEnded =
-      was === undefined ? a.age_s !== null && a.age_s <= FRESH_S && !a.archived : was.state === 'live' || a.runs > was.runs
+      was === undefined ? a.age_s !== null && a.age_s <= FRESH_S && !a.archived :
+        was.state === 'live' || was.state === 'unknown' || a.runs > was.runs
     if (isJustEnded) out.push(endNotice(a))
   }
   if (prev.questions === null || !s.questionsOk) return out
@@ -376,8 +382,8 @@ export function inStages<T extends { stage: string }>(rows: readonly T[], stages
 }
 
 export function countsOf(agents: readonly Agent[]): Counts {
-  const c: Counts = { live: 0, done: 0, error: 0, dead: 0 }
-  for (const a of agents) c[a.state] += 1
+  const c: Counts = { live: 0, done: 0, error: 0, dead: 0, unknown: 0, stopped: 0 }
+  for (const a of agents) c[a.state] = (c[a.state] ?? 0) + 1
   return c
 }
 
@@ -458,12 +464,13 @@ export function taskText(a: Agent): string {
 
 export const stateWord = (a: Agent): string => (a.quiet && a.state === 'live' ? 'quiet' : a.state === 'dead' ? 'died' : a.state)
 
-export const glyphOf = (a: Agent): string => (a.state === 'live' ? '●' : a.state === 'done' ? '✓' : '✗')
+export const glyphOf = (a: Agent): string => (a.state === 'live' ? '●' : a.state === 'done' ? '✓' : a.state === 'unknown' ? '?' : a.state === 'stopped' ? '■' : '✗')
 
 /** The colour the console uses: live green, error/died red, quiet yellow, done dim (undefined = dim, no colour). */
 export function colorOf(a: Agent): string | undefined {
   if (a.state === 'live') return a.quiet ? 'yellow' : 'green'
-  return a.state === 'done' ? undefined : 'red'
+  if (a.state === 'unknown') return 'yellow'
+  return a.state === 'done' || a.state === 'stopped' ? undefined : 'red'
 }
 
 export function actionText(a: Agent): string {
@@ -567,6 +574,8 @@ export function badgeOf(a: Agent): Badge {
     return a.quiet ? { label: 'QUIET', glyph: '◐', bg: 'yellow', fg: 'black', isDim: false } : { label: 'LIVE', glyph: '●', bg: 'green', fg: 'black', isDim: false }
   }
   if (a.state === 'done') return { label: 'DONE', glyph: '✓', bg: 'gray', fg: 'black', isDim: false }
+  if (a.state === 'unknown') return { label: 'UNKNOWN', glyph: '?', bg: 'yellow', fg: 'black', isDim: false }
+  if (a.state === 'stopped') return { label: 'STOPPED', glyph: '■', bg: 'gray', fg: 'black', isDim: false }
   return a.state === 'error'
     ? { label: 'FAIL', glyph: '✗', bg: 'red', fg: 'white', isDim: false }
     : { label: 'DIED', glyph: '✗', bg: 'red', fg: 'white', isDim: false }

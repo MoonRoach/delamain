@@ -1,7 +1,7 @@
 """Autopilot: the hub hands its shift to a successor session by itself (`hub succeed`, hooks/context_budget.py).
 
 At the context budget's warn threshold the hook tells a stage hub to hand over at its next quiet point: `hub handoff`,
-fill the TODOs, `hub succeed`. Codex console successors are detached `agent spawn --engine codex` sessions;
+fill the TODOs, `hub succeed`. Do not compact to extend the shift. Codex console successors are detached `agent spawn --engine codex` sessions;
 actual app hubs prepare a native desktop request that the current app agent executes.
 Claude starts the successor as a background Remote Control session
 (`claude --bg --remote-control`), reachable from the phone or claude.ai and from a terminal (`claude attach <id>`);
@@ -322,17 +322,9 @@ def codex_context() -> dict:
     hit = codex_rollouts.INDEX.session(hc.session_id())
     if hit:
         try:
-            with hit[0].open("rb") as f:
-                f.seek(0, os.SEEK_END)
-                f.seek(max(0, f.tell() - (4 << 20)))
-                lines = f.read().splitlines()
-            for line in reversed(lines):
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(ev, dict) and ev.get("type") == "turn_context" and isinstance(ev.get("payload"), dict):
-                    return dict(ev["payload"], _rollout_found=True)
+            context = codex_rollouts.latest_turn_context(hit[0])
+            if context is not None:
+                return dict(context, _rollout_found=True)
         except OSError:
             pass
     # A detached coordinator knows its launch policy even before a rollout is discoverable.
@@ -343,7 +335,7 @@ def codex_context() -> dict:
             meta = json.loads((hc.root() / hc.check_stage(stage) / "agents" / role / "meta.json").read_text())
             if meta.get("engine") == "codex" and meta.get("session_id") == hc.session_id():
                 return {"model": meta.get("model"), "effort": meta.get("effort"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
-                        "approval_policy": meta.get("approval_policy", "never")}
+                        "approval_policy": meta.get("approval_policy")}
         except (OSError, ValueError, hc.Failure):
             pass
     return {}
@@ -351,7 +343,7 @@ def codex_context() -> dict:
 
 def codex_model(given: Optional[str], context: dict, cwd: Path) -> Optional[str]:
     return (given or configured_model() or context.get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL")
-            or hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd) or None)
+            or None)
 
 
 def codex_policy(given: Optional[str], context: dict, cwd: Path) -> tuple:
@@ -364,7 +356,7 @@ def codex_policy(given: Optional[str], context: dict, cwd: Path) -> tuple:
         raise hc.UsageError(f"unsupported or missing inherited Codex sandbox {sandbox!r}; "
                             "choose an explicit supported --permission-mode")
     if not sandbox:
-        sandbox = engines.permission_policy(cwd=cwd)
+        raise hc.UsageError("current Codex sandbox is unknown; choose an explicit supported --permission-mode")
     # Detached successors cannot surface approvals. Keep the sandbox and fail denied tools without a prompt.
     return sandbox, "never"
 
@@ -440,20 +432,23 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
         effort = context.get("effort") or os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
         command = succeed_command(stage, model, configured_mode(), cwd, "codex",
                                   effort if effort in engines.CODEX_EFFORTS else None)
+        recovery = (" If settings cannot be observed, save/fill the required handoff and run succeed once. "
+                    "On its settings refusal, journal the blocker and handoff path, then end this shift; "
+                    "resume only with actual session settings or owner recovery. Do not compact or guess settings.")
         if engines.codex_desktop():
             return (f"Autopilot is on. {when}: write/fill `{tool('hub')} handoff --stage {stage}`, then "
                     f"run `{command} --surface desktop`. Execute its native list_projects/create_thread procedure "
                     "yourself, using desktop-request/bind/fail; clientThreadId is not threadId. Native APIs cannot "
                     "set sandbox/approval or promise Full Access. Keep this predecessor active until verified "
                     "takeover; continue the printed jwait through the shell harness. No invisible CLI fallback. "
-                    f"At {block_k} only the handoff procedure passes.")
+                    f"At {block_k} only the handoff procedure passes.{recovery}")
         return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` "
                 f"and fill its TODOs; (2) `{command}` starts a detached Codex successor and prints one `jwait`; "
                 "(3) run/continue that waiter through the Codex shell harness, with individual waits bounded. "
                 "On the successor's start line, tell the owner its name and `agent send` command, then stop: "
                 "release no locks and make no more tool calls. On ALARM, check `agent status`; retry with --again "
                 "only when the successor is dead. A chain limit stops automatic launches until the owner responds. "
-                f"At {block_k} only handoff/succeed, jlog/jwait and the HANDOFF file pass.")
+                f"At {block_k} only handoff/succeed, jlog/jwait and the HANDOFF file pass.{recovery}")
     effort = configured_effort() or effort
     unread = ("" if effort else
               " (your own effort could not be read here: `hub succeed` reads it itself and stops if it cannot — then "
@@ -498,7 +493,12 @@ def followthrough_summary() -> str:
 remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
-finish only at completed DoD, explicit owner stop or a genuine business/authority boundary. Preserve source/scope."""
+finish only at completed DoD, explicit owner stop or a genuine business/authority boundary. Preserve source/scope.
+At the context warning, prepare the required handoff and transfer at the next quiet point.
+Do not compact to extend the shift. At the hard context boundary, only the handoff procedure may continue.
+If actual Codex settings are unavailable, save/fill the handoff, journal the settings refusal and end the shift;
+resume only with observed settings or owner recovery. Respect sandbox, locks, owner authority,
+genuine data/resource/safety gates and human stop."""
 
 
 class Successor:
@@ -762,7 +762,7 @@ The owner may be away; they reach you through `ask` and `agent send hub-{self.su
    preserve its execution id and exit status. Keep individual tool waits bounded so you can read the inbox and respond.
    At a verified stopping boundary, journal the result and finish; `agent send` resumes this same Codex thread.
 3. The executor footer's "hub" means the owner here: record questions with `ask add` and journal `@owner …`.
-4. Hand over at your context budget as your predecessor did. Preserve your engine, model and permission policy.
+4. Follow the required handoff and no-compaction policy above. Preserve your engine, model and permission policy.
 
 {self.marker}
 """
@@ -1147,6 +1147,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if (surface != "desktop" or existing.get("n") != succ
                 or Path(existing["handoff"]).resolve() != handoff.resolve()):
             raise hc.Failure("retry must keep the same desktop surface and handoff")
+        existing = retry_desktop(stage, existing['request_id'], model, effort_arg, mode, cwd, dry_run)
         desktop_report(stage, existing)
         return 0
     approval, sandbox_policy, effort, effort_notes = "never", None, None, []
@@ -1156,19 +1157,32 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
                            sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
                            approval_policy=retry.get("approval_policy", "never"))
-        effort = effort_arg or context.get("effort")
-        if effort is None and retry.get("engine") != "codex":
-            effort = os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
-        if effort is not None and effort not in engines.CODEX_EFFORTS:
-            raise hc.UsageError(f"unsupported inherited Codex effort {effort!r}")
-        model = codex_model(model, context, cwd)
-        problem = engines.model_problem(model, cwd) if model else None
-        explicit_mode = mode or configured_mode()
-        mode, approval = codex_policy(mode, context, cwd)
-        sandbox_policy = (context.get("sandbox_policy") if not explicit_mode else None)
-        if not isinstance(sandbox_policy, dict):
-            sandbox_policy = {"type": mode}
-        sandbox_policy = engines.sandbox_policy(sandbox_policy)
+        try:
+            effort = effort_arg or context.get("effort")
+            if effort is None and retry.get("engine") != "codex":
+                effort = os.environ.get("AGENT_HUB_CODEX_EFFORT") or None
+            if effort is not None and effort not in engines.CODEX_EFFORTS:
+                raise hc.UsageError(f"unsupported inherited Codex effort {effort!r}")
+            model = codex_model(model, context, cwd)
+            if not model:
+                raise hc.UsageError("current Codex model is unknown; pass --model <your model>")
+            if effort is None:
+                raise hc.UsageError("current Codex effort is unknown; pass --effort <your effort>")
+            problem = engines.model_problem(model, cwd) if model else None
+            explicit_mode = mode or configured_mode()
+            mode, approval = codex_policy(mode, context, cwd)
+            sandbox_policy = (context.get("sandbox_policy") if not explicit_mode else None)
+            if not isinstance(sandbox_policy, dict):
+                sandbox_policy = {"type": mode}
+            sandbox_policy = engines.sandbox_policy(sandbox_policy)
+            if surface == "desktop" and context.get("approval_policy") not in ("never", "on-request", "on-failure", "untrusted"):
+                raise hc.UsageError("current Codex approval policy is unknown or unsupported")
+        except hc.UsageError as e:
+            raise hc.UsageError(
+                f"{e}. No successor was launched by this attempt. Required recovery: save/fill the handoff "
+                f"{handoff}; journal BLOCKED with that path and the missing/unsupported settings, then end this shift. "
+                "Resume the handoff only with actual session model, effort, sandbox and approval settings or owner "
+                "recovery. Do not compact, guess settings, widen access or report a successful transfer.") from None
     else:
         model = successor_model(model or (retry.get("model") if replace else None))
         if not model:
@@ -1343,8 +1357,50 @@ def desktop_report(stage, pend):
             "keep the predecessor active and retain the request while awaiting the owner. Never create another thread for an uncertain result.")
 
 
+def desktop_project_root(stage: str, cwd: Path) -> Path:
+    """Check the stage's recorded Git identity before reserving a native successor."""
+    metadata = hc.root() / stage / hc.STAGE_FILE
+    try:
+        record = json.loads(metadata.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        try:
+            metadata.lstat()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise hc.UsageError(f'cannot inspect the project record for stage {stage} ({metadata}); '
+                                'no desktop request prepared') from error
+        else:
+            raise hc.UsageError(f'cannot read the existing project record for stage {stage} ({metadata}); '
+                                'no desktop request prepared')
+        record = {}  # Stages predating stage.json keep their existing directory behavior.
+    except (OSError, ValueError) as error:
+        raise hc.UsageError(f'cannot read the project record for stage {stage} ({metadata}); '
+                            'no desktop request prepared') from error
+    if not isinstance(record, dict):
+        raise hc.UsageError(f'stage {stage} has an invalid project record ({metadata}); no desktop request prepared')
+    target = main_checkout(cwd)
+    if 'repo' not in record:
+        # Legacy and explicitly projectless stages retain their existing directory behavior.
+        return target or cwd.resolve()
+    raw = record['repo']
+    if not isinstance(raw, str) or not raw.strip():
+        raise hc.UsageError(f'stage {stage} has an invalid recorded repository; no desktop request prepared')
+    expected = main_checkout(Path(raw).expanduser())
+    if expected is None:
+        raise hc.UsageError(f'the repository recorded for stage {stage} ({raw}) is not available as a Git project; '
+                            'no desktop request prepared')
+    if target is None:
+        raise hc.UsageError(f'desktop --cwd {cwd} is not inside the repository recorded for stage {stage} '
+                            f'({expected}); use the registered hub\'s Git worktree; no desktop request prepared')
+    if target.resolve() != expected.resolve():
+        raise hc.UsageError(f'desktop --cwd {cwd} belongs to another repository ({target}), not the repository '
+                            f'recorded for stage {stage} ({expected}); no desktop request prepared')
+    return expected.resolve()
+
+
 def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
-    root = main_checkout(cwd) or cwd.resolve()
+    root = desktop_project_root(stage, cwd)
     predecessor_cwd = str(cwd.resolve())
     authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
     if branch:
@@ -1422,6 +1478,55 @@ Owner questions use `ask`; consult the register, not copied decisions.
     return 0
 
 
+def retry_desktop(stage, request, model, effort, mode, cwd, dry_run=False):
+    """Change settings only before a verified non-created request is dispatched.
+
+    Dispatch is immutable even if native creation was interrupted. A retry keeps
+    the same reservation and chain; explicit conflicts must never be ignored.
+    """
+    with state_lock(stage):
+        data, pend = desktop_pending(stage, request)
+        requested = dict(pend['requested'])
+        updates = {}
+        if model is not None:
+            problem = engines.model_problem(model, cwd)
+            if problem:
+                raise hc.UsageError(f"--model {model!r}: {problem}")
+            updates['model'] = model
+        if effort is not None:
+            if effort not in engines.CODEX_EFFORTS:
+                raise hc.UsageError(f"unsupported Codex effort {effort!r}")
+            updates['effort'] = effort
+        if mode is not None:
+            updates['sandbox_policy'] = {'type': engines.permission_policy(mode, cwd=cwd)}
+        changes = {key: value for key, value in updates.items() if value != requested.get(key)}
+        if not changes:
+            return pend
+        if pend.get('phase') != 'prepared' or pend.get('id') or pend.get('client_thread_id'):
+            flags = ', '.join('--' + ('permission-mode' if key == 'sandbox_policy' else key) for key in changes)
+            raise hc.Failure(f"{flags} conflicts with the already dispatched desktop request; retry without conflicting flags, "
+                             "or verify that no thread was created and record desktop-fail --no-thread-created before changing settings")
+        if hc.session_id() != pend.get('predecessor'):
+            raise hc.Failure('only the current registered predecessor can change prepared successor settings')
+        requested.update(changes)
+        args = dict(pend['create_args'])
+        old_line = 'Requested settings: ' + json.dumps(pend['requested']) + '. Native create_thread'
+        new_line = 'Requested settings: ' + json.dumps(requested) + '. Native create_thread'
+        if old_line not in args['prompt']:
+            raise hc.Failure('prepared request brief lacks its settings record; no settings changed')
+        args['prompt'] = args['prompt'].replace(old_line, new_line, 1)
+        if 'model' in changes:
+            args['model'] = engines.model_map(cwd).get(requested['model'], requested['model'])
+        if 'effort' in changes:
+            args['thinking'] = requested['effort']
+        pend = dict(pend, requested=requested, create_args=args)
+        if not dry_run:
+            hc.atomic_write(Path(pend['brief']), args['prompt'])
+            data['pending'] = pend
+            save_state(stage, data)
+    return pend
+
+
 def desktop_pending(stage, request):
     data = load_state(stage)
     pend = data.get('pending') or {}
@@ -1439,18 +1544,39 @@ def desktop_pending(stage, request):
     return data, pend
 
 
+def desktop_project_matches(project, project_main, pend):
+    """Keep the requested repo exact; a saved non-Git local workspace may contain it."""
+    root = Path(pend['project_root']).resolve()
+    if (project_main or project).resolve() == root:
+        return True
+    # Native worktree creation requires a Git saved project, never a parent folder.
+    if project_main is not None or pend.get('environment') != {'type': 'local'}:
+        return False
+    actual_main = main_checkout(root)
+    if actual_main is None or actual_main.resolve() != root or not root.is_relative_to(project):
+        return False
+    # Resolve both paths before ancestry checks: symlink escapes cannot broaden the binding.
+    cwd_value = pend.get('predecessor_cwd')
+    if not cwd_value:
+        return False
+    cwd = Path(cwd_value).resolve()
+    cwd_main = main_checkout(cwd)
+    return (cwd.is_dir() and cwd.is_relative_to(project) and cwd_main is not None
+            and cwd_main.resolve() == root)
+
+
 def desktop_request(stage, request, project_id, project_path):
     if not project_id.strip():
         raise hc.UsageError('use the actual projectId from native list_projects')
     project = Path(project_path).expanduser().resolve()
     if not project.is_dir():
         raise hc.UsageError('saved project path does not exist on this host')
-    normalized = (main_checkout(project) or project).resolve()
+    project_main = main_checkout(project)
     with state_lock(stage):
         data, pend = desktop_pending(stage, request)
         if pend.get('taken_over'):
             raise hc.Failure('desktop successor already took over; do not create another thread')
-        if str(normalized) != pend['project_root']:
+        if not desktop_project_matches(project, project_main, pend):
             raise hc.Failure('saved project main checkout differs from requested project')
         if pend.get('project_id') and pend['project_id'] != project_id:
             raise hc.Failure('projectId differs from the already selected project')
@@ -1459,6 +1585,13 @@ def desktop_request(stage, request, project_id, project_path):
         args = dict(pend['create_args'], target={'type':'project', 'projectId':project_id, 'environment':pend['environment']})
         # Refresh rule pointers from saved provenance; legacy requests explicitly require app-side verification.
         args['prompt'] = desktop_authority_sources(stage, pend) + '\n\n' + args['prompt']
+        if project_main is None and project != Path(pend['project_root']).resolve():
+            args['prompt'] = (f"The saved native project is a containing workspace `{project}`. "
+                              f"The requested Git main checkout remains `{pend['project_root']}`. "
+                              f"Before takeover, run all repository/Delamain commands from the existing "
+                              f"checkout `{pend['predecessor_cwd']}` using the shell tool's actual workdir "
+                              "(or the native bridge shell --cwd); do not run takeover from the parent workspace. "
+                              "Do not change the saved project, request root or permissions.\n\n" + args['prompt'])
         if not dispatched:
             # Reserve dispatch BEFORE the API call; interruption is uncertain, never an invitation to duplicate.
             pend['phase'] = 'dispatching'

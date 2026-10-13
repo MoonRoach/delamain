@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Worktree base metadata and diagnostics.** The recorded/ref SHA resolves in the caller checkout,
+  and unborn caller HEAD is rejected before creation with a caller-specific diagnostic. The actual
+  HEAD checkout already worked in main. Regression controls now distinguish those cases and use
+  canonical paths for macOS-style temporary-root aliases.
+- **Codex handoff settings and repository validation.** Latest complete settings survive long rollouts;
+  unknown model/effort/sandbox/native approval fail before reservation rather than falling back to
+  defaults. Refusal describes the allowed checkpoint/stop recovery without compaction or guessed
+  permissions. Contradictory request retries fail, and native preparation verifies the recorded Git
+  repository/worktree before reserving a successor. Claude and shared handoff defaults are retained.
+- **Native observation lifecycle.** Birth serialization skew, inherited history and resumed/stopped
+  turns are handled without fabricating death. Event activity uses owned native timestamps rather
+  than file mtime. Unknown observations expire after one hour and remain explicitly unknown in
+  show-all; proven live process evidence still blocks handoff. Native children use native completion
+  waits; detached workers and journal events use the canonical journal waiter.
+
+
+
 - **Haiku takes an effort like every other model.** Claude Haiku 5.5 has an effort setting (`low` to `max`), and
   Claude Code 2.1.296 resolves the alias `haiku` to it (2.1.287 to 2.1.295 still give Haiku 4.5; the minimum supported
   version is unchanged). `agent spawn` no longer drops the effort of a haiku model: `--effort`, else the

@@ -62,6 +62,75 @@ def takeover(handoff, req, ok=True, **kwargs):
         assert r.returncode==0, (r.returncode,r.stdout,r.stderr)
     return r
 
+# A containing Desktop workspace is not the recorded stage repository. Exercise the real
+# succeed seam from the valid predecessor worktree with an explicitly incorrect --cwd.
+unrelated=tmp/'other-repo'; unrelated.mkdir()
+subprocess.run(['git','-C',str(unrelated),'init','-q'],check=True,capture_output=True)
+for name, recorded, target in (
+    ('parent', str(repo), tmp),
+    ('other-repo', str(repo), unrelated),
+    ('missing-repo', str(tmp/'deleted-repo'), actual),
+    ('invalid-repo', {'path':str(repo)}, actual),
+    ('empty-repo', '', actual),
+):
+    home,stage,handoff=setup('project-root-'+name)
+    (stage/'stage.json').write_text(json.dumps({'goal':'Complete the fixture queue','repo':recorded}))
+    (stage/'roles.json').write_text(json.dumps({'roles':{'hub':{
+        'session':old,'cli_session_id':old,'tag':'hub-1','kind':'cli','cwd':str(actual)}}}))
+    before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
+    r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
+          '--cwd',target,cwd=actual,ok=False)
+    assert 'no desktop request prepared' in r.stderr, (name,r.stdout,r.stderr)
+    assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before, name
+    assert not (stage/'auto-handoff.json').exists() and not (stage/'work').exists(), name
+
+for name, content in (('malformed-json','{"repo":'), ('non-object','["not a stage record"]')):
+    home,stage,handoff=setup('project-record-'+name)
+    (stage/'stage.json').write_text(content)
+    before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
+    r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
+          '--cwd',actual,cwd=actual,ok=False)
+    assert 'no desktop request prepared' in r.stderr, (name,r.stdout,r.stderr)
+    assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before, name
+
+# An existing unreadable record must not masquerade as a legacy absent record.
+home,stage,handoff=setup('project-record-unreadable')
+(stage/'stage.json').unlink(); (stage/'stage.json').mkdir()
+before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
+r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
+      '--cwd',actual,cwd=actual,ok=False)
+assert 'no desktop request prepared' in r.stderr, (r.stdout,r.stderr)
+assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before
+
+home,stage,handoff=setup('project-record-absent')
+(stage/'stage.json').unlink()
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--cwd',tmp,cwd=tmp)
+assert state(stage)['pending']['project_root']==str(tmp.resolve()) and state(stage)['chain']==1
+
+home,stage,handoff=setup('project-record-broken-symlink')
+metadata=stage/'stage.json'; metadata.unlink(); metadata.symlink_to(stage/'missing-stage.json')
+before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
+r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
+      '--cwd',tmp,cwd=actual,ok=False)
+assert 'no desktop request prepared' in r.stderr, (r.stdout,r.stderr)
+assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before
+assert metadata.is_symlink() and os.readlink(metadata)==str(stage/'missing-stage.json')
+
+home,stage,handoff=setup('project-root-worktree')
+(stage/'stage.json').write_text(json.dumps({'goal':'Complete the fixture queue','repo':str(repo)}))
+prepare_result=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--cwd',actual,cwd=actual)
+assert state(stage)['pending']['project_root']==str(repo.resolve())
+assert state(stage)['pending']['predecessor_cwd']==str(actual.resolve())
+saved=state(stage)
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--cwd',tmp,cwd=actual)
+assert state(stage)==saved, 'replay must retain the original reservation without validating a new target'
+
+home,stage,handoff=setup('project-root-none')
+(stage/'stage.json').write_text(json.dumps({'goal':'Complete the fixture queue','no_project':True}))
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--cwd',tmp,cwd=tmp)
+assert state(stage)['pending']['project_root']==str(tmp.resolve()) and state(stage)['chain']==1
+print('PASS stage repository identity rejects invalid targets before any files change; linked worktrees, projectless stages and replay retain their contracts')
+
 # Drive the original incident argv and its default-auto alternative through hub's parser and succeed.
 # Only the final detached launcher is replaced; discovery, selection, reservation and reporting stay real.
 launcher=tmp/'surface-seam.py'
@@ -115,6 +184,91 @@ def surface_case(name, flags, *, permitted=False, native=False, owner=None, proj
     config.unlink()
     return home,stage,handoff
 
+# Retry flags change the one prepared request; dispatch locks its settings even
+# when native creation is uncertain. Only explicit no-created evidence unlocks it.
+home,stage,handoff=setup('retry-settings')
+prepare(handoff)
+initial=state(stage)['pending']; req=initial['request_id']
+prepare(handoff,'--again','--model','gpt-6-sol','--effort','medium')
+p=state(stage)['pending']
+assert p['request_id']==req and state(stage)['chain']==1
+assert p['requested']['model']=='gpt-6-sol' and p['requested']['effort']=='medium'
+assert p['create_args']['model']=='gpt-6-sol' and p['create_args']['thinking']=='medium'
+assert pathlib.Path(p['brief']).read_text()==p['create_args']['prompt']
+assert 'human authority source/reference and scope' in p['create_args']['prompt']
+assert '"model": "gpt-6-sol"' in p['create_args']['prompt']
+saved=(stage/'auto-handoff.json').read_bytes()
+prepare(handoff,'--again','--model','gpt-6.1-sol','--effort','high','--dry-run')
+assert (stage/'auto-handoff.json').read_bytes()==saved
+args=json.loads(request(req).stdout)['create_thread']
+assert args['model']=='gpt-6-sol' and args['thinking']=='medium'
+saved=(stage/'auto-handoff.json').read_bytes()
+prepare(handoff,'--again','--model','gpt-6-sol','--effort','medium')
+assert (stage/'auto-handoff.json').read_bytes()==saved
+r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',
+      '--model','gpt-6.1-sol','--effort','high',ok=False)
+assert 'already dispatched' in r.stderr and '--no-thread-created' in r.stderr
+assert (stage/'auto-handoff.json').read_bytes()==saved
+hub('desktop-fail','--stage','stage-a','--request',req,'--why','native outcome unknown')
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--effort','high',ok=False)
+hub('desktop-fail','--stage','stage-a','--request',req,'--why','verified no created thread','--no-thread-created')
+prepare(handoff,'--again','--model','gpt-6.1-sol','--effort','high')
+assert state(stage)['pending']['request_id']==req and state(stage)['chain']==1
+assert state(stage)['pending']['requested']['effort']=='high'
+request(req); bind(req,'--thread-id',real)
+saved=(stage/'auto-handoff.json').read_bytes()
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--effort','medium',ok=False)
+assert (stage/'auto-handoff.json').read_bytes()==saved
+print('PASS retry flags update prepared settings/brief/create args; dispatch/uncertain/bound settings immutable; no duplicate reservation')
+
+# A current turn context far before the last 4 MiB still supplies exact settings.
+home,stage,handoff=setup('large-parent-rollout')
+rollout(old,{'type':'workspace-write','writable_roots':[str(repo)],'network_access':False},effort='medium')
+with (rollouts/f'rollout-{old}.jsonl').open('a') as f:
+    f.write(json.dumps({'type':'response_item','payload':{'type':'function_call_output','output':'x'*(9<<20)}})+'\n')
+prepare(handoff)
+p=state(stage)['pending']
+assert p['requested']=={'model':'gpt-6.1-sol','effort':'medium','approval_policy':'never',
+    'sandbox_policy':{'type':'workspace-write','writable_roots':[str(repo)],'network_access':False}}
+# Missing and unsupported settings produce an actionable failure, not a handoff
+# loop at the hard context boundary; valid observations recover without widening.
+for name, settings, args, reason in (
+    ('missing-rollout', None, (), 'model is unknown'),
+    ('missing-model', {'effort':'high','sandbox_policy':{'type':'danger-full-access'},'approval_policy':'never'}, (), 'model is unknown'),
+    ('missing-effort', {'model':'gpt-6.1-sol','sandbox_policy':{'type':'danger-full-access'},'approval_policy':'never'}, (), 'effort is unknown'),
+    ('bad-effort', {'model':'gpt-6.1-sol','effort':'invented','sandbox_policy':{'type':'danger-full-access'},'approval_policy':'never'}, (), 'unsupported inherited Codex effort'),
+    ('missing-sandbox', {'model':'gpt-6.1-sol','effort':'high','approval_policy':'never'}, (), 'sandbox'),
+    ('missing-approval', {'model':'gpt-6.1-sol','effort':'high','sandbox_policy':{'type':'danger-full-access'}}, (), 'approval policy'),
+    ('bad-approval', {'model':'gpt-6.1-sol','effort':'high','sandbox_policy':{'type':'danger-full-access'},'approval_policy':'invented'}, (), 'approval policy'),
+    ('explicit-without-approval', None, ('--model','gpt-6.1-sol','--effort','high','--permission-mode','bypassPermissions'), 'approval policy'),
+):
+    home,stage,handoff=setup(name)
+    log = rollouts/f'rollout-{old}.jsonl'
+    if settings is None:
+        log.unlink(missing_ok=True)
+    else:
+        log.write_text(json.dumps({'type':'session_meta','payload':{'id':old}})+'\n'+
+                       json.dumps({'type':'turn_context','payload':settings})+'\n')
+    env['AGENT_HUB_CODEX_DEFAULT_MODEL']='gpt-6-sol'
+    roles_before = (stage/'roles.json').read_bytes()
+    r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',*args,ok=False)
+    assert r.returncode == 2 and reason in r.stderr, (r.returncode,r.stderr)
+    assert 'No successor was launched by this attempt' in r.stderr, r.stderr
+    assert 'Required recovery' in r.stderr and str(handoff.resolve()) in r.stderr, r.stderr
+    assert 'journal BLOCKED' in r.stderr and 'end this shift' in r.stderr and 'Do not compact' in r.stderr
+    assert not (stage/'auto-handoff.json').exists() and not (stage/'agents').exists()
+    assert (stage/'roles.json').read_bytes() == roles_before and handoff.is_file()
+    # Same predecessor, finite queue and authority; only actual observed settings change.
+    rollout(old, {'type':'workspace-write','writable_roots':[str(repo)],'network_access':False}, effort='medium')
+    prepare(handoff)
+    recovered=state(stage)['pending']['requested']
+    assert recovered['model']=='gpt-6.1-sol' and recovered['effort']=='medium'
+    assert recovered['sandbox_policy']['type']=='workspace-write' and recovered['approval_policy']=='never'
+    assert roles(stage)['session']==old and state(stage)['chain']==1
+    env.pop('AGENT_HUB_CODEX_DEFAULT_MODEL')
+rollout(old, {'type':'danger-full-access'})
+print('PASS observed >9 MiB settings, missing/unknown settings nonzero saved-handoff recovery and actual restricted-setting retry without model default/launch')
+
 surface_case('default-auto',[],native=True)
 surface_case('explicit-auto',['--surface','auto'],native=True)
 surface_case('explicit-desktop',['--surface','desktop'],native=True)
@@ -157,7 +311,7 @@ for authority_case, authority in (
     prompt=emitted['create_thread']['prompt']
     # Actual source pointers must survive both dispatch instructions and successor prompt.
     assert str(rules) in prep.stdout, 'native preparation hides the standing human authority source'
-    assert str(rules) in prompt and str(handoff) in prompt, 'takeover loses authority source pointers'
+    assert str(rules) in prompt and str(handoff.resolve()) in prompt, 'takeover loses authority source pointers'
     for text in (prep.stdout,prompt):
         assert 'standing' in text.lower() and 'scope' in text.lower() and 'revok' in text.lower(), text
     assert 'without' in prep.stdout and 'per-transfer' in prep.stdout, 'inherited grant still needs a fresh transfer approval'
@@ -176,13 +330,13 @@ worktree_rules=actual/'.agent-hub/hub-rules.md'; worktree_rules.parent.mkdir(exi
 worktree_rules.write_text('Worktree owner revokes the home grant.\n')
 (home/'hub-rules.md').write_text('Home owner grants automatic context handoff.\n')
 prep=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',cwd=actual)
-assert str(worktree_rules) in prep.stdout and str(main_rules) not in prep.stdout, 'native prep misses predecessor worktree revocation layer'
+assert str(worktree_rules.resolve()) in prep.stdout and str(main_rules.resolve()) not in prep.stdout, 'native prep misses predecessor worktree revocation layer'
 req=state(stage)['pending']['request_id']; saved=state(stage)
 replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=repo)
-assert str(worktree_rules) in replay.stdout and str(main_rules) not in replay.stdout, 'replay resolves authority from caller instead of predecessor'
+assert str(worktree_rules.resolve()) in replay.stdout and str(main_rules.resolve()) not in replay.stdout, 'replay resolves authority from caller instead of predecessor'
 assert state(stage)==saved and roles(stage)['session']==old
 payload=json.loads(request(req).stdout)
-assert str(worktree_rules) in payload['create_thread']['prompt'] and str(main_rules) not in payload['create_thread']['prompt']
+assert str(worktree_rules.resolve()) in payload['create_thread']['prompt'] and str(main_rules.resolve()) not in payload['create_thread']['prompt']
 assert json.loads(request(req).stdout)['already_dispatched'] and state(stage)['chain']==1
 # Legacy reservations lack provenance: never present main/current cwd as the predecessor's rule source.
 home,stage,handoff=setup('authority-legacy')
@@ -192,7 +346,7 @@ legacy['pending'].pop('predecessor_cwd',None)
 saved=state(stage)
 replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=actual)
 assert 'predecessor cwd' in replay.stdout and 'unknown' in replay.stdout and 'retain' in replay.stdout
-assert str(main_rules) not in replay.stdout and str(worktree_rules) not in replay.stdout
+assert str(main_rules.resolve()) not in replay.stdout and str(worktree_rules.resolve()) not in replay.stdout
 assert state(stage)==saved and roles(stage)['session']==old
 payload=json.loads(request(req).stdout)
 assert 'predecessor cwd' in payload['create_thread']['prompt'] and 'unknown' in payload['create_thread']['prompt']
@@ -212,7 +366,7 @@ assert state(stage)['chain']==1 and not (stage/'agents').exists()
 assert 'prepared' in r.stdout and 'Full Access' in r.stdout and 'list_projects' in r.stdout
 assert roles(stage)['session']==old
 # Execute the printed waiter, including its since format, against the actual journal seam.
-waiter=next(line.strip() for line in r.stdout.splitlines() if line.strip().startswith(str(root/'bin/jwait')))
+waiter=next(line.strip() for line in r.stdout.splitlines() if line.strip().startswith(shlex.quote(str(root/'bin/jwait'))))
 assert '--since '+p['at'][:16] in waiter
 subprocess.run([str(root/'bin/jlog'),'--stage','stage-a','--tag','hub-2','start: waiter-control'],env=env,check=True,capture_output=True)
 w=subprocess.run(shlex.split(waiter),env=env,cwd=repo,capture_output=True,text=True,timeout=5)
@@ -229,7 +383,8 @@ saved=state(stage)
 for extra in ([], ['--again'], ['--surface','cli']):
     hub('succeed','--stage','stage-a','--handoff',alternate,'--force',*extra,ok=False)
     assert state(stage)==saved and not (stage/'agents').exists()
-request(req,path=tmp,ok=False); assert state(stage)['pending']['phase']=='prepared'
+unrelated=tmp/'unrelated-workspace'; unrelated.mkdir()
+request(req,path=unrelated,ok=False); assert state(stage)['pending']['phase']=='prepared'
 payload=json.loads(request(req).stdout)
 args=payload['create_thread']
 assert not payload['already_dispatched']
@@ -240,7 +395,10 @@ assert '--desktop-request '+req in args['prompt'] and 'finite' in args['prompt']
 prompt = args['prompt']
 for phrase in ('Terminal follow-through', 'remaining approved Business DoD', 'resource ownership',
                'next independent authorized ready work', 'expected event',
-               "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope'):
+               "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope',
+               'prepare the required handoff', 'next quiet point',
+               'Do not compact to extend the shift', 'only the handoff procedure may continue',
+               'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):
     assert phrase in prompt, (phrase, prompt)
 assert 'When nothing remains' not in prompt
 
@@ -249,6 +407,52 @@ assert 'sandbox' not in args and 'approval' not in args
 assert json.loads(request(req).stdout)['already_dispatched']
 assert state(stage)['chain']==1
 print('PASS same normalized main project, default local surface, actual model/thinking fields and dispatch retry guard')
+
+# Preserve the already installed containing-workspace adapter without widening
+# the exact repository binding or allowing native worktrees from a parent folder.
+home,container_stage,container_handoff=setup('containing-workspace')
+hub('succeed','--stage','stage-a','--handoff',container_handoff,'--force','--cwd',actual,cwd=actual)
+container=state(container_stage)['pending']; container_req=container['request_id']
+request(container_req,path=unrelated,ok=False)
+escape=tmp/'workspace-escape'; escape.symlink_to(unrelated, target_is_directory=True)
+saved=state(container_stage)
+request(container_req,path=escape,ok=False)
+assert state(container_stage)==saved and saved['pending']['phase']=='prepared'
+payload=json.loads(request(container_req,path=tmp).stdout)
+assert not payload['already_dispatched']
+assert payload['create_thread']['target']['environment']=={'type':'local'}
+assert f'containing workspace `{tmp.resolve()}`' in payload['create_thread']['prompt']
+assert f'existing checkout `{actual.resolve()}`' in payload['create_thread']['prompt']
+assert state(container_stage)['pending']['project_root']==str(repo.resolve())
+assert state(container_stage)['pending']['predecessor_cwd']==str(actual.resolve())
+# The serialized prompt uses canonical paths for a saved workspace alias too.
+workspace_alias=tmp/'workspace-alias'; workspace_alias.symlink_to(tmp, target_is_directory=True)
+home,alias_stage,alias_handoff=setup('symlink-workspace-positive')
+hub('succeed','--stage','stage-a','--handoff',alias_handoff,'--force','--cwd',actual,cwd=actual)
+alias_req=state(alias_stage)['pending']['request_id']
+alias_prompt=json.loads(request(alias_req,path=workspace_alias).stdout)['create_thread']['prompt']
+assert f'containing workspace `{workspace_alias.resolve()}`' in alias_prompt
+assert f'containing workspace `{workspace_alias}`' not in alias_prompt
+assert f'existing checkout `{actual.resolve()}`' in alias_prompt
+# A same-shaped alias pointing outside this repository must remain a negative control.
+home,negative_stage,negative_handoff=setup('symlink-workspace-negative')
+prepare(negative_handoff); negative_req=state(negative_stage)['pending']['request_id']
+request(negative_req,path=escape,ok=False)
+assert state(negative_stage)['pending']['phase']=='prepared'
+env['AGENT_HUB_HOME']=str(container_stage.parent)
+assert json.loads(request(container_req,path=tmp).stdout)['already_dispatched']
+home,bad_stage,bad_handoff=setup('parent-worktree-refused')
+prepare(bad_handoff,'--desktop-worktree'); bad_req=state(bad_stage)['pending']['request_id']
+request(bad_req,path=tmp,ok=False)
+assert state(bad_stage)['pending']['phase']=='prepared'
+home,bad_stage,bad_handoff=setup('parent-provenance-refused')
+prepare(bad_handoff); bad=state(bad_stage); bad_req=bad['pending']['request_id']
+bad['pending'].pop('predecessor_cwd'); (bad_stage/'auto-handoff.json').write_text(json.dumps(bad))
+request(bad_req,path=tmp,ok=False)
+assert state(bad_stage)['pending']['phase']=='prepared'
+print('PASS containing local workspace adapter retains exact repo/cwd and single dispatch; unrelated/symlink-escape/worktree/unknown-provenance parents refused')
+# Restore the original desktop fixture for its subsequent bind/takeover checks.
+env['AGENT_HUB_HOME']=str(stage.parent)
 bind(req,'--client-thread-id',client,'--project-id','saved-project')
 assert state(stage)['pending']['client_thread_id']==client and not state(stage)['pending'].get('id')
 bind(req,'--thread-id',client,ok=False)

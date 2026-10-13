@@ -281,7 +281,13 @@ duplicate creation. Preparation remains pending work until verified takeover.
 
 Under matching human authority, the app agent executes the full procedure through bind, takeover and verified status:
 
-1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
+1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file> --cwd <verified hub Git worktree>`
+   from the registered hub's verified working directory. Keep its request token. For a stage with a recorded
+   repository, preparation rejects a parent directory outside Git, a different repository, or an unavailable
+   recorded repository before reserving a successor. An existing unreadable or malformed stage record also fails
+   before reservation. Linked worktrees normalize to that repository's main checkout.
+   A saved UI project may be a containing workspace; its path is separate from the requested Git root and must
+   never replace the verified Git worktree in `--cwd`. Projectless and legacy stages retain their directory behavior.
    The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
 2. Call native `list_projects`. Find the unique saved local project whose path, normalized to its Git main
    checkout (including realpath/symlinks), matches the request's `project_root`. Use the returned projectId/path;

@@ -24,6 +24,7 @@ UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 TOOL_ID_RE = re.compile(rb'"tool_use_id"\s*:\s*"([^"]+)"')
 NOTICE_RE = re.compile(rb"<task-id>([\w-]+)</task-id>.*?<status>(\w+)</status>", re.S)
 SUB_RECENT_S = 3600               # finished sub-agents older than this are hidden unless asked for
+CODEX_UNKNOWN_TTL_S = 3600        # expire unknown observation, never infer death; known-live actors do not expire
 SUB_LOST_S = 1800                 # no notice, silent this long, parent's liveness unknown: count it as died
 SUB_DIRS_TTL = 30.0               # how long a session's sub-agent folders are cached before the next glob
 SUB_STATE = {"completed": "done", "failed": "error"}   # any other notice status (killed, stopped) is "dead"
@@ -179,6 +180,8 @@ def parent_alive(rec: dict, sid: str, table, live):
     if rec.get("engine") == "codex" or codex_rollouts.INDEX.session(sid):
         # Native Codex has no Claude-style per-pid session registry. An unrelated
         # Claude registry must not turn an unknown Codex parent into a dead one.
+        if sid == os.environ.get("CODEX_THREAD_ID"):
+            return True  # the invoking native session is confirmed current, even when quiet
         if isinstance(pid, int):
             return is_alive({**rec, "session_id": sid}, table)
         return None
@@ -258,23 +261,30 @@ class Notices:
 # ---------------------------------------------------------------- the sub-agents of a session
 
 class Sub:
-    """One sub-agent as found on disk: its state and the facts that decide it. state: live / done / error / dead."""
-    __slots__ = ("aid", "log", "meta", "mtime", "status", "state", "background")
+    """One sub-agent on disk: live / done / error / dead / unknown / stopped."""
+    __slots__ = ("aid", "log", "meta", "mtime", "status", "state", "background", "last_event_ts", "expired")
 
-    def __init__(self, aid, log, meta, mtime, status, state, background):
+    def __init__(self, aid, log, meta, mtime, status, state, background, last_event_ts=None, expired=False):
         self.aid, self.log, self.meta, self.mtime = aid, log, meta, mtime
         self.status, self.state, self.background = status, state, background
+        self.last_event_ts = last_event_ts
+        self.expired = expired
 
     @property
     def alive(self) -> bool:
         return self.state == "live"
 
     @property
+    def unresolved(self) -> bool:
+        return self.state == "live" or self.state == "unknown" and not self.expired
+
+    @property
     def description(self) -> str:
         return " ".join(_CTRL_RE.sub(" ", str(self.meta.get("description") or "")).split())
 
     def age(self, now: float):
-        return None if self.mtime is None else max(0, now - self.mtime)
+        at = self.last_event_ts if self.meta.get("engine") == "codex" else self.mtime
+        return None if at is None else max(0, now - at)
 
 
 class Finder:
@@ -309,25 +319,30 @@ class Finder:
         return self._codex_sub(sid, *rec, parent_is_alive, now, show_all) if rec else None
 
     def _codex_sub(self, aid, log, meta, mtime, parent_is_alive, now, show_all):
-        # File activity is not a process identity; preserve the existing silence
-        # fallback only where the parent's process is unknown.
-        old = now - mtime > SUB_RECENT_S
-        if not show_all and old and parent_is_alive is not True:
-            return None
+        # Unknown observations have a bounded discovery/handoff lifetime. Expiry
+        # is not evidence of death: show-all retains unknown with its actual clock.
+        # Use filesystem freshness only for TTL when native event/birth time is absent.
         reader = self._reader(self.codex_states, "rollout-state", log, codex_rollouts.State,
                               {"normalizer": codex_rollouts.Normalizer})
+        old = reader.last_event_ts is None or now - reader.last_event_ts > SUB_RECENT_S
         status = reader.status
         if status is not None:
-            state = SUB_STATE.get(status, "dead")
-        elif parent_is_alive is False or now - mtime > SUB_LOST_S and parent_is_alive is not True:
+            state = "stopped" if status == "stopped" else SUB_STATE.get(status, "dead")
+        elif parent_is_alive is False:
             state = "dead"
-        else:
+        elif parent_is_alive is True:
             state = "live"
+        else:
+            state = "unknown"
+        ttl_at = reader.last_event_ts if reader.last_event_ts is not None else mtime
+        expired = state == "unknown" and ttl_at is not None and now - ttl_at > CODEX_UNKNOWN_TTL_S
+        if not show_all and (expired or old and state not in ("live", "unknown")):
+            return None
         spawn = codex_rollouts.spawn_source(meta) or {}
         info = {**meta, "engine": "codex", "model": reader.model, "effort": reader.effort,
                 "description": spawn.get("agent_path") or spawn.get("agent_nickname") or "",
                 "agentType": spawn.get("agent_role") or "codex sub-agent"}
-        return Sub(aid, log, info, mtime, status, state, True)
+        return Sub(aid, log, info, mtime, status, state, True, reader.last_event_ts, expired)
 
     def dirs(self, sid: str) -> list:
         """<claude config>/projects/*/<sid>/subagents folders of a session. One listing of every project folder

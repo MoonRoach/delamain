@@ -243,14 +243,26 @@ def make_worktree(repo: Path, role: str, branch: str | None, base: str | None = 
             print(f"note: --base {base} ignored: branch {branch} exists", file=sys.stderr)
     else:
         ref, _ = worktree_base(top, base)
-        res = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=top)
+        # Explicit refs, especially HEAD, belong to the caller's checkout.
+        # Resolve before using the common main checkout to create the worktree.
+        res = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=repo if base else top)
         if res.returncode != 0:
             if ref == "HEAD":
-                # an existing branch needs no commit on HEAD (an unborn HEAD beside commits elsewhere); a new one does
-                raise hc.Failure(f"--worktree: the repository {top} has no commits yet — make a first commit "
+                # An unborn caller HEAD can coexist with commits on other refs.
+                # Diagnose before exclude/worktree/agent files are created.
+                commits = git("rev-list", "--all", "--max-count=1", cwd=repo)
+                if commits.returncode != 0:
+                    raise hc.Failure(f"--worktree: cannot inspect commits in {repo}: "
+                                     f"{commits.stderr.strip() or commits.stdout.strip()}")
+                if commits.stdout.strip():
+                    raise hc.Failure(f"--worktree: HEAD in {repo} has no commits yet — this checkout's HEAD is "
+                                     "unborn; commits exist on other refs. Use --base <existing branch/commit> "
+                                     "or make a first commit on this branch; a worktree needs a commit to start from")
+                raise hc.Failure(f"--worktree: the repository {repo} has no commits yet — make a first commit "
                                  "(`git commit --allow-empty -m \"first commit\"`); a worktree needs a commit to start from")
-            raise hc.UsageError(f"--base {ref}: not a commit in {top}")
+            raise hc.UsageError(f"--base {ref}: not a commit in {repo if base else top}")
         start = f"created from {ref} {res.stdout.strip()[:7]}"
+        ref = res.stdout.strip()
     path = top / WORKTREES_DIR / branch
     if path.exists():
         raise hc.Failure(f"--worktree: {path} exists and is not a worktree of {branch} — remove it or pick another branch")

@@ -70,12 +70,16 @@ def event(kind, payload):
 
 def rollout(sid, end, owner=parent, inherited=False):
     source = 'cli' if sid == parent else {'subagent': {'thread_spawn': {'parent_thread_id': owner, 'agent_path': '/root/check', 'agent_nickname': 'Fixture'}}}
-    events = [event('session_meta', {'id': sid, 'source': source, 'cwd': str(root)})]
+    birth = int(now) - 5
+    header = event('session_meta', {'id': sid, 'source': source, 'cwd': str(root),
+                                  'timestamp': dt.datetime.fromtimestamp(birth + .836, dt.timezone.utc).isoformat()})
+    header['timestamp'] = dt.datetime.fromtimestamp(birth + 1.108, dt.timezone.utc).isoformat()
+    events = [header]
     if inherited:
         events += [event('session_meta', {'id': parent, 'source': 'cli'}),
                    event('event_msg', {'type': 'task_started', 'turn_id': 'parent-old', 'started_at': int(now) - 200}),
                    event('event_msg', {'type': 'task_complete', 'last_agent_message': 'INHERITED COMPLETION'})]
-    events += [event('event_msg', {'type': 'task_started', 'turn_id': 'own-' + sid, 'started_at': int(now)}),
+    events += [event('event_msg', {'type': 'task_started', 'turn_id': 'own-' + sid, 'started_at': birth}),
                event('turn_context', {'model': 'gpt-6-sol', 'effort': 'high'}),
                event('response_item', {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'Check the fixture'}]}),
                event('response_item', {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'OWN MESSAGE'}]}),
@@ -89,6 +93,7 @@ def rollout(sid, end, owner=parent, inherited=False):
         events += [event('event_msg', {'type': end, 'last_agent_message': 'NATIVE DONE', 'reason': 'interrupted'})]
     path = native / ('rollout-fixture-' + sid + '.jsonl')
     write(path, events)
+    os.utime(path, (now - 7200, now - 7200))  # native Windows creation mtime remains fixed
     return path
 
 parentlog = rollout(parent, 'task_complete')
@@ -118,9 +123,12 @@ assert agents['done']['usage_scope'] == 'session'
 assert agents['failed']['result']['text'] == 'fixture failure'
 assert agents['done']['result']['text'] == 'DONE: all checks passed'
 assert agents['hub']['kind'] == 'session' and agents['hub']['state'] == 'done'
-assert agents['hub/aaaaaaa']['state'] == 'done' and agents['hub/ccccccc']['state'] == 'error'
+assert agents['hub/aaaaaaa']['state'] == 'done' and agents['hub/ccccccc']['state'] == 'stopped'
+assert agents['hub/aaaaaaa']['age_s'] < 10, 'parsed completion time survives fixed creation mtime'
+assert agents['hub/aaaaaaa']['last_event_at'] == dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat(timespec='seconds')
+assert agents['hub/ccccccc']['result']['is_error'] is False
 child = agents['hub/bbbbbbb']
-assert child['state'] == 'live' and child['turns'] == 1, 'copied completion excluded'
+assert child['state'] == 'unknown' and child['turns'] == 1, 'copied completion excluded; activity is not process identity'
 assert child['last_text'] == 'OWN MESSAGE' and child['model_id'] == 'gpt-6-sol'
 assert child['ctx_tokens'] == 17000 and child['usage_tokens']['input_tokens'] == 310000
 assert child['ctx_source'] == 'last_input_tokens' and child['context_window'] == 200000
@@ -152,7 +160,7 @@ finder = Finder()
 assert finder.codex_session(doneid, None, now, True).state == 'done'
 with donelog.open('a') as f:
     f.write(json.dumps(event('event_msg', {'type': 'task_started', 'turn_id': 'resume', 'started_at': int(now)})) + '\n')
-assert finder.codex_session(doneid, None, now, True).state == 'live'
+assert finder.codex_session(doneid, None, now, True).state == 'unknown'
 assert finder.codex_session(doneid, False, now, True).state == 'dead'
 
 feed = top.Feed(livelog)

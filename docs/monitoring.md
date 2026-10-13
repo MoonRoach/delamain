@@ -60,6 +60,22 @@ Desktop Code tab:
   (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.
 
 
+## Native subagent status and waiting
+
+Native Codex subagents have no detached worker PID. Silence in a rollout is not proof that a child died.
+Unknown observations expire from default discovery and handoff blocking after one hour without owned
+birth/activity evidence; show-all keeps them unknown and marks them expired, without a success or death event.
+Confirmed live process evidence still blocks handoff. When native clocks are missing, file freshness supplies
+the expiry fallback only, not displayed activity; touching a file cannot renew an owned native activity clock.
+A deliberately interrupted turn is stopped, not a successful result or a runtime failure. A resumed turn
+must replace the previous turn's terminal state. Use current native host status when assessing an ambiguous
+child; model and context metadata that are unavailable remain unavailable.
+
+`jwait --hub-events` observes the stage journal, not native Codex completion notifications. Use the native
+wait/completion path for in-session children, then journal their consumed result once. Keep a journal waiter
+asynchronous when native and detached work run together. Desktop idle wake and model-assisted heartbeats
+remain separate owner opt-ins; changing the waiter does not enable either.
+
 ## Watchdog: a hub that sleeps is woken
 
 `watchdog` is a job that looks at every stage of the hub home every 5 minutes and acts when something waits and nobody

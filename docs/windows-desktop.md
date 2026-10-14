@@ -118,6 +118,8 @@ New workers select the explicit `-Multiplex` protocol; the helper retains its or
 raw stdio interface without that switch for active older workers during a package update.
 This works when that proxy listens only on Windows
 `127.0.0.1`; it adds no Windows network listener or firewall rule.
+Any local process can connect to the unauthenticated Linux loopback listener, including
+Windows processes when WSL localhost forwarding is enabled.
 
 The relay copies opaque HTTP/CONNECT bytes. Authentication and TLS remain with
 Linux Codex and the existing proxy; the helper never reads auth files or decodes

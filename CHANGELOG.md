@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Configured Windows hub-home fallback.** A fresh repository uses the hub home selected
+  during installation, preserving the shared lock board. Explicit environment, project
+  and legacy selections retain priority.
 - **Windows transport through WSL2.** Native Windows Codex uses a conditional plugin envelope;
   a terminal launcher remains a separate Linux coordinator mode. Argument/environment payloads
   travel in per-call files rather than the Windows command line, preserving large prompts,

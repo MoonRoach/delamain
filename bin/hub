@@ -651,6 +651,19 @@ def session_host(stage: str, session: str, cli: str, kind: str, engine: str) -> 
     return ""
 
 
+def pace_digest(stage: str) -> str:
+    """The limit-pace advisor line of each engine (bin/limit_pace.py), for the digest. Never fails the takeover."""
+    try:
+        import limit_pace
+        if limit_pace.mode() == "off":
+            return ""
+        paces = limit_pace.read_all()
+        return "Limit pace (before spending; full advice: agent-top --once, agent spawn --dry-run):\n" + "\n".join(
+            limit_pace.compact(e, paces, stage) for e in limit_pace.ENGINES)
+    except Exception as e:  # noqa: BLE001 — the line says it is missing and why, so a broken advisor is not silent
+        return f"Limit pace: unavailable ({type(e).__name__})"
+
+
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
            goal: str = "") -> str:
     tag = f"hub-{n}"
@@ -665,6 +678,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
         (watchdog_digest(stage), 400, "watchdog status"),
+        (pace_digest(stage), 480, "agent-top --once"),
         (f"First jwait ({wait_procedure()}; --since = handoff time):\n"
          + jwait_command(stage, tag, since), 600, ""),
         (f"§ 0 of the handoff {handoff.name if handoff else '—'}:\n" + (section(text, 0) or "(no § 0)"), 1100,

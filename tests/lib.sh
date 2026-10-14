@@ -21,6 +21,9 @@ export AGENT_HUB_NO_PROJECT=1
 # `hub start` refuses a stage name with no word about the work and wants --goal; the scripts start stages called s1, web,
 # stage-a, so they opt out the same way. t_naming.sh unsets it.
 export AGENT_HUB_NO_NAMING=1
+# The limit-pace advisor (bin/limit_pace.py) reads plan usage from $CODEX_HOME/sessions: the machine's real Codex week
+# must not decide whether a test's spawn is refused. A script that needs Codex data sets CODEX_HOME itself.
+export CODEX_HOME="$(mktemp -d)"
 # `hub start` / `hub takeover` warn when no settings file turns Claude Code's idle compaction off, which a throw-away
 # environment never does. t_cli_models.sh unsets it.
 export AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1

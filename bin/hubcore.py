@@ -43,6 +43,7 @@ MIN_CLI_VERSION = (2, 1, 287)
 # Managed settings files, which win over every other settings file (Claude Code's settings precedence): macOS, Linux.
 MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
                     Path("/etc/claude-code/managed-settings.json"))
+IDLE_CHECK_OFF_ENV = "AGENT_HUB_NO_IDLE_COMPACTION_CHECK"  # environment only, like NO_NAMING: scripted environments, tests
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -1180,7 +1181,9 @@ def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
     2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
     `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
     handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
-    to a CLI without the feature."""
+    to a CLI without the feature. $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it (scripted environments, the tests)."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
     value, where = idle_compaction_source(cwd)
     if value is False:
         return None

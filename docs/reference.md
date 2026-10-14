@@ -667,7 +667,8 @@ successor, bypass or not, also gets `"idleCompaction": false` there: Claude Code
 200K tokens left idle ~54 minutes, and a compacted hub goes on from a summary instead of handing over. For a hub you
 start yourself, put `"idleCompaction": false` into `~/.claude/settings.json`; `hub start` and `hub takeover` warn unless
 the settings file that decides it (managed, the project's `settings.local.json`, its `settings.json`, the user's) turns
-it off. Both kinds of
+it off; `AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1` skips that warning, for scripted environments and the test suite
+(environment only). Both kinds of
 successor are pinned to the old hub's home (`AGENT_HUB_HOME`, plus `--add-dir <home>` when it is not under their
 directory); the background one does not inherit `AGENT_SESSION_ID` (a headless hub's own id), which would make its
 `--session self` name the old hub.

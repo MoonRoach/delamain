@@ -266,7 +266,7 @@ loader = importlib.machinery.SourceFileLoader("hubmod", sys.argv[1] + "/hub")
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", loader)); loader.exec_module(m)
 print(m.pace_digest("stage-a"))
 PY
-check "$(cat $R/digest-broken.out)" "Limit pace: unavailable (RuntimeError)"
+check "$(cat $R/digest-broken.out)" "Limit pace: unavailable (RuntimeError)" "digest: a broken advisor says so, not an empty line"
 $B/agent-top --once --width 200 --stage stage-a > $R/top.out 2>&1; check $? 0 "agent-top --once"
 grep -q 'Limit pace' $R/top.out && grep -q 'Codex 7d 75% used .* over pace. Advice' $R/top.out; check $? 0 "agent-top --once: an advisor line per engine"
 $B/agent-top --json --stage stage-a | python3 -c "import json,sys; d=json.load(sys.stdin)['limit_pace']; assert d['codex']['level']=='exhaust' and d['claude']['level']=='ok', d"

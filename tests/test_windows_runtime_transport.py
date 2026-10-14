@@ -533,12 +533,30 @@ Path(sys.argv[1]).write_text(json.dumps({"pid":os.getpid(),"token":fields[19],
     "socket":sys.argv[sys.argv.index("--owned-relay")+1]}))
 while True: time.sleep(60)
 ''',encoding="utf-8")
+        real_popen = proxy.subprocess.Popen
+        def started_fixture(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            if "--supervise" in args[0]:
+                # Start the short cancellation deadline after the fixture has
+                # launched. Otherwise a cold Python startup can be cancelled
+                # before this test has a recorded PID to verify or clean up.
+                deadline = time.monotonic() + 3
+                while child.poll() is None and time.monotonic() < deadline:
+                    try:
+                        json.loads(record.read_text())
+                        return child
+                    except (FileNotFoundError, json.JSONDecodeError): time.sleep(.01)
+                child.terminate()
+                child.wait(timeout=3)
+                raise RuntimeError("Owned slow-client fixture did not start")
+            return child
         for mode in ("normal", "ignore"):
             with self.subTest(termination=mode):
                 record.unlink(missing_ok=True)
                 started = time.monotonic()
                 try:
-                    with patch.object(proxy, "CONNECT_TIMEOUT", .5), \
+                    with patch.object(proxy.subprocess, "Popen", side_effect=started_fixture), \
+                         patch.object(proxy, "CONNECT_TIMEOUT", .5), \
                          patch.object(proxy, "owned_wsl_command", return_value=[sys.executable,str(slow),str(record),mode]), \
                          patch.object(proxy, "powershell_command", return_value=[sys.executable,str(self.helper)]), \
                          patch.object(proxy, "discover_proxy", return_value=("127.0.0.1",1234)):
@@ -640,6 +658,16 @@ using System.Text;
 using System.Threading;
 public static class FakeWsl {
     public static int Main(string[] args) {
+        string searchMarker = Environment.GetEnvironmentVariable("FIXTURE_SEARCH_MARKER");
+        if (searchMarker != null) {
+            File.WriteAllText(searchMarker, Environment.CurrentDirectory);
+            Console.WriteLine("fake cwd WSL executed"); return 0;
+        }
+        if (args.Length == 3 && args[0] == "--owned-quiet") {
+            File.WriteAllText(args[1], System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
+            Console.WriteLine("{\"ready\":true}"); Console.Out.Flush();
+            Thread.Sleep(3000); File.WriteAllText(args[2], "survived"); return 0;
+        }
         byte[] warning = Encoding.Unicode.GetBytes("wsl: A localhost proxy configuration was detected but not mirrored into WSL. WSL in NAT mode does not support localhost proxies.\r\n");
         Stream error = Console.OpenStandardError(); error.Write(warning, 0, warning.Length); error.Flush();
         if (Array.IndexOf(args, "wslpath") >= 0) {
@@ -688,10 +716,26 @@ class WindowsTransportTests(unittest.TestCase):
         if not all(cls.shells):
             raise unittest.SkipTest("Both PowerShell 5.1 and 7 are required")
         subprocess.run([cls.shells[0], "-NoProfile", "-File", str(compile_script), str(source), str(cls.directory / "wsl.exe")], check=True, capture_output=True)
-        # Windows searches System32 before PATH for wsl.exe. Pin only this
-        # throwaway transport copy to the fake executable; production is literal.
+        # The byte/argv fixtures deliberately exercise ProcessTransport directly
+        # with an absolute owned helper. Production WSL resolution is tested below
+        # against the unmodified source, with a real cwd/PATH substitution control.
         transport = cls.package / "process_transport.ps1"
-        transport.write_text(transport.read_text().replace("'wsl.exe'", "'" + str(cls.directory / "wsl.exe").replace("'", "''") + "'"), encoding="utf-8-sig")
+        fixture = r"""
+function Invoke-DelamainWsl([string[]]$Arguments, [switch]$Capture, [switch]$RedirectInput, [AllowNull()][object]$InputText) {
+    $executable = Join-Path (Split-Path -Parent $PSScriptRoot) 'wsl.exe'
+    if ($Capture) {
+        return [Delamain.ProcessTransport]::Run($executable, $Arguments, $true,
+            $RedirectInput.IsPresent, ($null -eq $InputText), $InputText)
+    }
+    $child = [Delamain.ProcessTransport]::Start($executable, $Arguments,
+        $RedirectInput.IsPresent, ($null -eq $InputText), $InputText)
+    try {
+        while ($null -ne ($line = $child.ReadLine())) { Write-Output $line }
+        $global:LASTEXITCODE = $child.Complete()
+    } finally { $child.Dispose() }
+}
+"""
+        transport.write_text(transport.read_text() + fixture, encoding="utf-8-sig")
         cls.env = {**os.environ, "PATH": str(cls.directory) + os.pathsep + os.environ["PATH"]}
 
     @classmethod
@@ -705,6 +749,249 @@ class WindowsTransportTests(unittest.TestCase):
         invocation.write_text("param($Bridge,$ArgumentFile)\n$a=Get-Content -LiteralPath $ArgumentFile -Raw -Encoding UTF8 | ConvertFrom-Json\n& $Bridge @a\nexit $LASTEXITCODE\n")
         return subprocess.run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(invocation), str(self.package / bridge), str(argument_file)],
                               input=stdin, capture_output=True, env=self.env, timeout=20)
+
+    def native_shells(self):
+        shells = list(self.shells)
+        wow = Path(os.environ["WINDIR"]) / "SysWOW64/WindowsPowerShell/v1.0/powershell.exe"
+        if wow.exists(): shells.append(str(wow))
+        else: print("SKIP: 32-bit PowerShell is unavailable")
+        return shells
+
+    def run_transport_script(self, shell, source, *args, env=None, timeout=20, input=None):
+        script = self.directory / "real-transport.ps1"
+        script.write_text(source, encoding="utf-8-sig")
+        incoming={"stdin":subprocess.DEVNULL} if input is None else {"input":input}
+        return subprocess.run([shell, "-NoProfile", "-File", str(script),
+            str(ROOT / "windows/process_transport.ps1"), *map(str,args)],
+            capture_output=True, timeout=timeout, env=env, **incoming)
+
+    def test_owned_windows_process_cancellation_after_pipeline_abort_or_sink_failure(self):
+        fake=self.directory/"wsl.exe"
+        source=r"""
+param($Transport,$Executable,$Owner,$Marker,$Mode)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+function Emit-Owned {
+    $child=[Delamain.ProcessTransport]::Start($Executable,@('--owned-quiet',$Owner,$Marker),$false,$false,$null)
+    try {
+        while ($null -ne ($line=$child.ReadLine())) { Write-Output $line }
+        $global:LASTEXITCODE=$child.Complete()
+    } finally { $child.Dispose() }
+}
+if ($Mode -eq 'select') { Emit-Owned | Select-Object -First 1 }
+else {
+    try { Emit-Owned | ForEach-Object { throw 'fixture output sink failed' } }
+    catch { if (-not $_.Exception.Message.Contains('fixture output sink failed')) { throw } }
+}
+"""
+        for shell in self.native_shells():
+            for mode in ("select","throw"):
+                with self.subTest(shell=shell,mode=mode), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                    directory=Path(scratch)
+                    positive=subprocess.Popen([str(fake),"--owned-quiet",str(directory/"unrelated-owner"),str(directory/"unrelated-marker")],
+                        stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                    try:
+                        self.assertEqual(json.loads(positive.stdout.readline()),{"ready":True})
+                        result=self.run_transport_script(shell,source,fake,directory/"owner",directory/"marker",mode)
+                        self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                        time.sleep(3.5)
+                        self.assertEqual(positive.wait(timeout=5),0)
+                        self.assertTrue((directory/"unrelated-marker").exists(),"Cancellation killed an unrelated owned control")
+                        self.assertTrue((directory/"owner").exists(),"Aborted child never started")
+                        self.assertFalse((directory/"marker").exists(),"Quiet owned Windows process survived abnormal output disposal")
+                        print(f"Windows cancellation: {shell} {mode}, owned PID {(directory/'owner').read_text()}, unrelated PID {positive.pid} survived")
+                    finally:
+                        if positive.poll() is None: positive.kill(); positive.wait(timeout=5)
+                        positive.stdout.close(); positive.stderr.close()
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_trusted_wsl_ignores_actual_process_cwd_and_path(self):
+        # Get-Location and the actual Win32 process cwd intentionally differ.
+        # The unsafe control proves this fake is discoverable by Windows itself.
+        source = r"""
+param($Transport,$Directory,$ProviderDirectory,$Marker)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+Set-Location -LiteralPath $ProviderDirectory
+[Environment]::CurrentDirectory=$Directory
+$env:PATH=$Directory+';'+$env:PATH
+$env:FIXTURE_SEARCH_MARKER=$Marker
+$info=[Diagnostics.ProcessStartInfo]::new()
+$info.FileName='wsl.exe'; $info.UseShellExecute=$false
+$info.RedirectStandardOutput=$true; $info.CreateNoWindow=$true
+$control=[Diagnostics.Process]::Start($info)
+$null=$control.StandardOutput.ReadToEnd(); $control.WaitForExit()
+if (-not [IO.File]::Exists($Marker)) { throw 'Unsafe cwd search did not run the positive fake control' }
+[IO.File]::Delete($Marker); $control.Dispose()
+$code='import json,sys; print(json.dumps([sys.argv[1:],"trusted Linux"]))'
+$arguments=@('--distribution','Ubuntu','--exec','python3','-c',$code,'','日本語 😀','quote" and $literal')
+$captured=Invoke-DelamainWsl -Arguments $arguments -Capture
+if ($captured.ExitCode -ne 0) { throw 'Trusted WSL capture failed' }
+$streamed=@(Invoke-DelamainWsl -Arguments $arguments)
+if ($LASTEXITCODE -ne 0) { throw 'Trusted WSL streaming failed' }
+# Info also resolves the legacy literal rather than accepting the search path.
+$direct=[Delamain.ProcessTransport]::Run('wsl.exe',$arguments,$true,$false,$false,$null)
+if ($direct.ExitCode -ne 0) { throw 'Trusted Info selection failed' }
+if ([IO.File]::Exists($Marker)) { throw 'Production invoked cwd/PATH fake WSL' }
+[pscustomobject]@{ path=[Delamain.ProcessTransport]::WslExecutable(); bits=[IntPtr]::Size;
+ cwd=[Environment]::CurrentDirectory; location=(Get-Location).ProviderPath;
+ fake=[IO.File]::Exists($Marker); capture=$captured.Output; stream=$streamed; direct=$direct.Output } | ConvertTo-Json -Compress
+"""
+        for shell in self.native_shells():
+            with self.subTest(shell=shell):
+                marker=self.directory/"fake-search-marker"
+                result=self.run_transport_script(shell,source,self.directory,self.package,marker,env=self.env)
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                data=json.loads(result.stdout)
+                self.assertFalse(data["fake"],"Production invoked the cwd/PATH fake")
+                self.assertNotEqual(data["cwd"],data["location"])
+                expected=Path(os.environ["WINDIR"])/("Sysnative" if data["bits"]==4 else "System32")/"wsl.exe"
+                self.assertEqual(Path(data["path"]),expected)
+                for value in (data["capture"],data["stream"][0],data["direct"]):
+                    self.assertEqual(json.loads(value),[["","日本語 😀",'quote" and $literal'],"trusted Linux"])
+                print(f"trusted WSL: {shell}, {data['path']}; unsafe cwd fake positive, production fake negative")
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_owned_wsl_normal_unicode_input_exit_codes_and_control_file_cleanup(self):
+        source=r"""
+param($Transport)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+$text='Русский 日本語 😀'+[char]0+"`nsecond line`n"
+$code='import base64,json,sys; print(json.dumps({"argv":sys.argv[2:],"stdin":base64.b64encode(sys.stdin.buffer.read()).decode()})); sys.exit(int(sys.argv[1]))'
+$results=@()
+foreach ($status in @(0,3,4)) {
+    $arguments=@('--distribution','Ubuntu','--exec','python3','-c',$code,[string]$status,'','日本語 😀','quote" $literal')
+    $captured=Invoke-DelamainWsl -Arguments $arguments -Capture -RedirectInput -InputText $text
+    $streamed=@(Invoke-DelamainWsl -Arguments $arguments -RedirectInput -InputText $text)
+    $results+=@{ expected=$status; captureExit=$captured.ExitCode; streamExit=$LASTEXITCODE;
+        capture=$captured.Output; stream=$streamed }
+}
+ConvertTo-Json -InputObject $results -Depth 10 -Compress
+"""
+        import base64
+        for shell in self.native_shells():
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                result=self.run_transport_script(shell,source,env={**self.env,"TEMP":scratch,"TMP":scratch},timeout=45)
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                for value in json.loads(result.stdout):
+                    self.assertEqual(value['captureExit'],value['expected'])
+                    self.assertEqual(value['streamExit'],value['expected'])
+                    for output in (value['capture'],value['stream'][0]):
+                        data=json.loads(output)
+                        self.assertEqual(data['argv'],["","日本語 😀",'quote" $literal'])
+                        self.assertEqual(base64.b64decode(data['stdin']),"Русский 日本語 😀\x00\nsecond line\n".encode())
+                self.assertEqual(list(Path(scratch).iterdir()),[],"Private cancellation file survived normal completion")
+                raw_source=r"""
+param($Transport)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+$code='import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())'
+$value=Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3','-c',$code) -Capture -RedirectInput -InputText $null
+[Console]::Write($value.Output)
+exit $value.ExitCode
+"""
+                incoming=bytes(range(256))*256+"raw pipe 日本語 😀".encode()
+                raw=self.run_transport_script(shell,raw_source,input=incoming,env={**self.env,"TEMP":scratch,"TMP":scratch})
+                self.assertEqual(raw.returncode,0,raw.stderr.decode(errors="replace"))
+                self.assertEqual(base64.b64decode(raw.stdout),incoming,"Private path mapping consumed caller stdin")
+                self.assertEqual(list(Path(scratch).iterdir()),[])
+                print(f"real foreground completion: {shell}, capture/stream status 0/3/4, UTF-8 stdin with NUL, private files removed")
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_aborted_pipeline_stops_quiet_linux_foreground_and_preserves_detached(self):
+        # Test the Linux side effect after the caller has returned, not merely
+        # disappearance of the Windows client. Exact start tokens pin teardown.
+        helper=self.directory/"foreground.py"
+        helper.write_text(r"""import json,os,signal,subprocess,sys,time
+from pathlib import Path
+base=Path(sys.argv[1]); mode=sys.argv[2]
+def token(pid): return Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+if mode=='detached':
+ (base/'detached-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
+ time.sleep(3); (base/'detached-marker').write_text('survived'); time.sleep(30)
+else:
+ if mode=='ignore':
+  signal.signal(signal.SIGHUP,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN)
+ child=subprocess.Popen([sys.executable,__file__,str(base),'detached'],start_new_session=True,
+  stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ (base/'foreground-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
+ while not (base/'detached-owner').exists(): time.sleep(.01)
+ print(json.dumps({'pid':os.getpid(),'token':token(os.getpid())}),flush=True)
+ time.sleep(3); (base/'foreground-marker').write_text('survived'); time.sleep(30)
+""",encoding="utf-8")
+        trusted=str(Path(os.environ["WINDIR"])/"System32/wsl.exe")
+        def wsl(*args):
+            return subprocess.run([trusted,"--distribution","Ubuntu","--exec",*args],
+                stdin=subprocess.DEVNULL,capture_output=True,timeout=15,check=True)
+        linux_helper=wsl("wslpath","-a","-u",str(helper)).stdout.decode().strip()
+        source=r"""
+param($Transport,$Helper,$Directory,$Mode,$NativeDirectory)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3',$Helper,$Directory,$Mode) | ForEach-Object {
+    [IO.File]::WriteAllText((Join-Path $NativeDirectory 'first-ticks'),[DateTime]::UtcNow.Ticks.ToString())
+    $_
+} | Select-Object -First 1
+[IO.File]::WriteAllText((Join-Path $NativeDirectory 'return-ticks'),[DateTime]::UtcNow.Ticks.ToString())
+"""
+        cleanup=r"""import json,os,signal,sys,time
+from pathlib import Path
+base=Path(sys.argv[1])
+for name in ('foreground-owner','detached-owner'):
+ p=base/name
+ if not p.exists(): continue
+ pid,expected=json.loads(p.read_text())
+ try:
+  fd=os.pidfd_open(pid)
+ except ProcessLookupError: continue
+ try:
+  fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+  if fields[19]==expected: signal.pidfd_send_signal(fd,signal.SIGKILL)
+ except FileNotFoundError: pass
+ finally: os.close(fd)
+for name in ('foreground-owner','detached-owner'):
+ p=base/name
+ if not p.exists(): continue
+ pid,expected=json.loads(p.read_text()); deadline=time.monotonic()+3
+ while time.monotonic()<deadline:
+  try: fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+  except FileNotFoundError: break
+  if fields[19]!=expected or fields[0]=='Z': break
+  time.sleep(.02)
+ else: raise RuntimeError('Owned fixture remained alive')
+"""
+        for shell in self.native_shells():
+            for mode in ("normal","ignore"):
+                with self.subTest(shell=shell,mode=mode), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                    directory=Path(scratch)
+                    linux_directory=wsl("wslpath","-a","-u",scratch).stdout.decode().strip()
+                    controls=directory/'transport-controls'
+                    controls.mkdir()
+                    try:
+                        began=time.monotonic()
+                        result=self.run_transport_script(shell,source,linux_helper,linux_directory,mode,scratch,
+                            env={**self.env,"TEMP":str(controls),"TMP":str(controls)})
+                        elapsed=time.monotonic()-began
+                        self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                        owner=json.loads(result.stdout)
+                        self.assertEqual(owner['pid'],json.loads((directory/'foreground-owner').read_text())[0])
+                        self.assertEqual(list(controls.iterdir()),[],"Aborted caller left a private cancellation file")
+                        abort_seconds=(int((directory/'return-ticks').read_text())-int((directory/'first-ticks').read_text()))/10_000_000
+                        time.sleep(4)
+                        foreground=(directory/'foreground-marker').exists()
+                        detached=(directory/'detached-marker').exists()
+                        print(f"abort {shell} {mode}: exact Linux owner {owner}, startup+return {elapsed:.2f}s, abort {abort_seconds:.2f}s, foreground marker={foreground}, detached marker={detached}")
+                        self.assertLess(abort_seconds,3,"Pipeline abort waited for delayed foreground output")
+                        self.assertTrue(detached,"Abort killed a detached worker")
+                        self.assertFalse(foreground,"Quiet Linux foreground survived the Windows client cancellation")
+                    finally:
+                        wsl("python3","-c",cleanup,linux_directory)
 
     def test_warning_stays_stderr_real_error_unicode_stdin_and_exit_codes(self):
         import base64

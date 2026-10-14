@@ -128,6 +128,19 @@ grep -q 'older than' $P/start-new.out; check $? 1 "negative: hub start with CLI 
 # it (managed > project local > project > user) turn it off; the background successor gets it off on its command line
 # (t_autopilot.sh)
 CD=$P/claude-config; PJ=$P/proj; mkdir -p $CD $PJ/.claude
+# The machine's own managed settings win over everything a test writes: with one that sets the key, the block is skipped.
+MANAGED=$(python3 - $B <<'PY'
+import json, sys; sys.path.insert(0, sys.argv[1]); import hubcore as hc
+for f in hc.MANAGED_SETTINGS:
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if isinstance(d, dict) and "idleCompaction" in d:
+        print(f)
+PY
+)
+if [ -n "$MANAGED" ]; then echo "SKIP idle compaction: $MANAGED sets idleCompaction on this machine"; else
 idle_start(){ # idle_start NAME [ENGINE]: hub start from the project $PJ
   (cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_ENGINE=${2:-claude} AGENT_HUB_STATE_DIR=$P/st-$1 \
     $B/hub start --stage web --session $H1 --dry-run) > $P/$1.out 2>&1
@@ -153,6 +166,14 @@ hc.MANAGED_SETTINGS = (d / "m.json",)
 print(hc.idle_compaction_source(p) == (True, d / "m.json") and f"{d / 'm.json'} sets" in (hc.idle_compaction_warning(p) or ""))
 PY
 check "$(cat $P/idle-managed.out)" True "managed settings win over the project's"
+# a linked worktree reads the local settings of its main checkout
+GM=$P/gmain; git init -q $GM && git -C $GM -c user.email=t@t -c user.name=t commit -q --allow-empty -m init \
+  && git -C $GM worktree add -q $P/gwt -b wt && mkdir -p $GM/.claude && echo '{"idleCompaction": true}' > $GM/.claude/settings.local.json
+echo '{"idleCompaction": false}' > $CD/settings.json
+(cd $P/gwt && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_STATE_DIR=$P/st-idle-wt $B/hub start --stage web --session $H1 --dry-run) > $P/idle-wt.out 2>&1
+grep -q "$GM/.claude/settings.local.json sets \"idleCompaction\": true" $P/idle-wt.out; check $? 0 "from a linked worktree, the main checkout's settings.local.json is read (and wins over the user's)"
+rm $CD/settings.json
+fi
 
 # ---- fable is an alias like the others
 $B/agent spawn --role fab --cwd $W --model fable --brief $W/b.md > $P/fab.out 2>&1; check $? 0 "spawn --model fable is accepted"

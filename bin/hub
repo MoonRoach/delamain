@@ -1114,7 +1114,7 @@ def _cmd_takeover(a) -> int:
                      f"it): rebuild that state from the journal, `ask list` and `lock list` before trusting it — first "
                      f"at line {todos[0][0]}: {todos[0][1][:90]}")
     if engines.selected() != "codex":
-        idle = hc.idle_compaction_warning(hc.git_toplevel(Path.cwd()) or Path.cwd())
+        idle = hc.idle_compaction_warning(Path.cwd())
         if idle:
             warns.append(idle)
     plan = Plan(a.dry_run)

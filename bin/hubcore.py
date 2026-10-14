@@ -1153,14 +1153,17 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
             "fable) resolve to older models and the agent-top mod does not run")
 
 
-def idle_compaction_source(project: Optional[Path] = None) -> tuple:
-    """(value, file) of the settings file that decides `idleCompaction` for a session in `project`, in Claude Code's
-    precedence: managed, the project's settings.local.json, its settings.json, the user's ($CLAUDE_CONFIG_DIR, else
-    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Command-line
-    `--settings` (what `hub succeed` gives its background successors) are not visible from here."""
+def idle_compaction_source(cwd: Optional[Path] = None) -> tuple:
+    """(value, file) of the settings file that decides `idleCompaction` for a session started in `cwd`, in Claude
+    Code's precedence: managed, the local project settings (.claude/settings.local.json, which a linked worktree reads
+    from its main checkout), the shared ones (`cwd`/.claude/settings.json), the user's ($CLAUDE_CONFIG_DIR, else
+    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Not visible from here:
+    command-line `--settings` (what `hub succeed` gives its background successors) and managed settings that do not
+    come from a file (MDM, server-delivered)."""
     files = list(MANAGED_SETTINGS)
-    if project is not None:
-        files += [project / ".claude" / "settings.local.json", project / ".claude" / "settings.json"]
+    if cwd is not None:
+        local = [(main_tree(cwd) or cwd) / ".claude" / "settings.local.json", cwd / ".claude" / "settings.local.json"]
+        files += list(dict.fromkeys(local)) + [cwd / ".claude" / "settings.json"]
     files.append(Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
     for f in files:
         try:
@@ -1172,13 +1175,13 @@ def idle_compaction_source(project: Optional[Path] = None) -> tuple:
     return None, None
 
 
-def idle_compaction_warning(project: Optional[Path] = None) -> Optional[str]:
+def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
     """One line unless the settings that decide it (idle_compaction_source) turn idle compaction off. Claude Code
     2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
     `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
     handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
     to a CLI without the feature."""
-    value, where = idle_compaction_source(project)
+    value, where = idle_compaction_source(cwd)
     if value is False:
         return None
     user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"

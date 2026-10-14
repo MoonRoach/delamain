@@ -391,6 +391,7 @@ def ask_command(stage: str, p: Pace, lock: Optional[dict], q: Optional[Pace], cl
 class Advice:
     lines: list = field(default_factory=list)
     refuse: Optional[str] = None      # the refusal text, when the launch must not go ahead without --reason
+    stop: bool = False                # the hard-stop case holds (refused, or passed by --reason or the warn mode)
     pace: Optional[Pace] = None
 
 
@@ -449,6 +450,7 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
         stop = (p.confirmed and p.used >= REFUSE_FLOOR and cls != "mechanical")
         if not (locked and headroom(q)):
             adv.lines.append("4. none of this covers it: tell the owner — " + ask_command(stage, p, lock, q, cls))
+        adv.stop = stop
         if stop and not reason and mode() == "on":
             adv.refuse = (f"limit pace: {describe(p)}, and no engine with headroom takes this {cls} work. "
                           "Start it anyway with --reason \"…\" (journalled), defer it to the reset, or ask the owner "
@@ -495,6 +497,33 @@ def summary(engine: str, paces: dict, stage: Optional[str] = None) -> str:
     return text + ". Advice: " + "; ".join(acts)
 
 
+def compact(engine: str, paces: dict, stage: Optional[str] = None) -> str:
+    """The advisor line of an engine in about 200 bytes, for the hub digest (which has 3 KB for everything)."""
+    p = paces.get(engine, {}).get("7d") or Pace(engine, "7d")
+    q = paces.get(other(engine), {}).get("7d") or Pace(other(engine), "7d")
+    name = f"{ENGINE_NAME[engine]} week"
+    if not p.fresh:
+        return f"{name}: {verdict(p)}" + (f" ({_pct(p.used)} at the last sample)" if p.used is not None else "")
+    text = f"{name} {_pct(p.used)} used at {_pct(p.expected)} elapsed"
+    if p.level == "exhaust" and p.eta is not None:
+        text += f", runs out ~{_when(p.eta)}"
+    text += " — " + ("ahead (recent burn)" if p.burst else verdict(p))
+    if p.level == "ok":
+        return text
+    acts = [f"routine at {'Sol medium' if engine == 'codex' else 'Sonnet high'}"]
+    lock = stage_lock(stage)
+    if p.level == "exhaust":
+        if lock and lock["engine"] == engine:
+            acts.append(f"stage locked ({lock['decision']}): ask add, no switch")
+        elif headroom(q):
+            acts.append(f"new work to {ENGINE_NAME[q.engine]} at the same class" + ("" if q.level == "ok" else
+                                                                                   " (urgent only)"))
+        else:
+            acts.append("no headroom elsewhere: ask the owner")
+    acts.append(f"the rest after the reset {_when(p.resets_at)}")
+    return text + ": " + "; ".join(acts)
+
+
 # ---------------------------------------------------------------- crossings
 
 
@@ -502,9 +531,10 @@ def _crossings_file() -> Path:
     return hc.state_dir() / "limit-pace" / "crossings.json"
 
 
-def note_crossing(stage: str, p: Pace, write: bool = True) -> Optional[str]:
-    """When `p` is at a higher level than this stage was last told for this window instance, the `@hub LIMIT …` line
-    (written to the stage's journal unless write=False) — once per stage, engine, window instance and level."""
+def note_crossing(stage: str, p: Pace, write: bool = True, journal: bool = True) -> Optional[str]:
+    """When `p` is at a higher level than `stage` was last told for this window instance, the `@hub LIMIT …` line
+    (recorded, and written to the stage's journal when `journal`, unless write=False) — once per stage, engine, window
+    instance and level. A level that falls is not recorded: the next rise in the same window is not a new crossing."""
     if not p.fresh or p.rank == 0 or p.resets_at is None:
         return None
     path = _crossings_file()
@@ -525,5 +555,6 @@ def note_crossing(stage: str, p: Pace, write: bool = True) -> Optional[str]:
         if write:
             data[key] = {"resets_at": p.resets_at, "level": p.level, "at": time.time()}
             hc.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n")
-            hc.journal_append(stage, TAG, text)
+            if journal:
+                hc.journal_append(stage, TAG, text)
         return text

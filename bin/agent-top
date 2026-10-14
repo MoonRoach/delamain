@@ -70,6 +70,7 @@ import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import codex_limits  # noqa: E402
+import limit_pace  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
 import topcache  # noqa: E402  (the readers' offsets between runs: <state dir>/agent-top/cache.sqlite)
 from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
@@ -1665,6 +1666,26 @@ def help_rows(width: int) -> list:
     return rows
 
 
+def pace_lines(snap: dict) -> list:
+    """The limit-pace advisor line of each engine (bin/limit_pace.py); [] when AGENT_HUB_LIMIT_PACE=off."""
+    if limit_pace.mode() == "off":
+        return []
+    cache = hc.state_dir() / "agent-top" / "limit-pace.json" if os.environ.get("AGENT_TOP_CACHE", "1") != "0" else None
+    paces = limit_pace.read_all(now=snap["now"], cache=cache)
+    stage = snap["stages"][0] if len(snap["stages"]) == 1 else None
+    return [(e, paces[e].get("7d"), limit_pace.summary(e, paces, stage)) for e in limit_pace.ENGINES]
+
+
+def pace_rows(snap: dict, width: int) -> list:
+    got = pace_lines(snap)
+    if not got:
+        return []
+    rows = [R(("", "norm")), R(("Limit pace (week against its pace; advice before spending)", "bold_u"))]
+    for _, p, text in got:
+        rows += wrap_rows(text, width, "warn" if p is not None and p.level == "exhaust" else "norm", "  ", "    ")
+    return rows
+
+
 def render_once(snap: dict, coll: Collector, width: int, agent=None, lines: int = 25, tail_journal: int = 8) -> str:
     def txt(rows):
         return [r.fit(width).text().rstrip() for r in rows]
@@ -1681,6 +1702,7 @@ def render_once(snap: dict, coll: Collector, width: int, agent=None, lines: int 
         out += ["", f"feed (last {min(lines, len(fr))} lines):"] + fr[-lines:]
     else:
         out += [""] + txt(summary_rows(snap, width))
+        out += txt(pace_rows(snap, width))
         jl = coll.journal(snap["stages"], 0)
         multi = len({s for s, *_ in jl}) > 1
         jr, _ = journal_rows(jl, width, multi, "", None)
@@ -1775,6 +1797,10 @@ def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> 
            "roles": snap["roles"], "spend": snap["spend"], "locks": snap["locks"], "questions": snap["questions"],
            "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
            "codex_limits": snap.get("codex_limits", {}),
+           "limit_pace": {e: {"level": p.level if p else "unknown", "used": p.used if p else None,
+                              "expected": p.expected if p else None, "resets_at": p.resets_at if p else None,
+                              "eta": p.eta if p else None, "confirmed": bool(p and p.confirmed), "text": text}
+                          for e, p, text in pace_lines(snap)},
            "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}
     if agent:
         a = find_agent(snap, agent)

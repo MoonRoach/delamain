@@ -39,6 +39,13 @@ and meta.json (bin/spawn_policy.py). The title registered for the agent is `<rol
 without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Load hold: while `bin/watchdog` holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD, off by default), spawn warns
 or, with AGENT_HUB_SPAWN_HOLD=refuse, refuses (exit 1); --ignore-hold passes. `send` is never held (bin/spawn_hold.py).
+Limit pace: when the engine's plan week runs ahead of its pace, spawn prints the reasoning and the advice before the
+launch (lower an effort above the --task-class default, move to the other engine at an equivalent class, defer
+non-urgent work, ask the owner) and journals one `@hub LIMIT …` line per crossing. It refuses (exit 1) only when the
+week is projected to run out before its reset, at least half of it is used, the work is not mechanical, and no engine
+with fresh data and headroom can take it (or the stage is locked to this engine by AGENT_HUB_STAGE_ENGINES); --reason
+passes and is journalled. Stale or unknown data is reported, never refused on. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
+--dry-run runs every check and prints the advice, then stops before anything is started or written.
 A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
@@ -92,6 +99,7 @@ import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
+import limit_pace  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -423,6 +431,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
     if engine == "claude":
         env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
+        env.setdefault(hc.IDLE_COMPACT_ENV, hc.IDLE_COMPACT_NEVER)
     else:
         env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
                     "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})
@@ -490,6 +499,27 @@ def journal(stage: str, fallback_tag: str, text: str) -> str:
     return hc.journal_append(stage, hc.caller_tag(stage) or fallback_tag, text)
 
 
+def pace_advice(stage: str, engine: str, model_names: list, effort: str, task_class, reason: str, dry: bool) -> str:
+    """The limit-pace advice for a launch (bin/limit_pace.py), printed before anything starts; a refusal is raised.
+    Returns a note for the journal start line when the launch goes ahead over the hard-stop case, else ""."""
+    if limit_pace.mode() == "off":
+        return ""
+    adv = limit_pace.advise(engine, " ".join(model_names), effort, stage, limit_pace.read_all(), task_class, reason,
+                            limit_pace.stage_lock(stage))
+    if adv.lines:
+        print("limit pace — before this launch:\n" + "\n".join("  " + ln for ln in adv.lines))
+    if adv.pace is not None:
+        crossed = limit_pace.note_crossing(stage, adv.pace, write=not dry)
+        if crossed and dry:
+            print(f"dry run: would journal [{limit_pace.TAG}] {crossed}")
+    if adv.refuse:
+        raise hc.Failure(adv.refuse)
+    if adv.stop:
+        why = "--reason" if reason else "AGENT_HUB_LIMIT_PACE=warn"
+        return f"over the limit-pace stop ({limit_pace.short(adv.pace)}) by {why}"
+    return ""
+
+
 def cmd_spawn(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
     if (closed := hc.stage_closed(stage)) is not None:  # `hub close`: nothing watches it, nothing lists its agents
@@ -525,6 +555,7 @@ def cmd_spawn(a) -> int:
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
     if denied:
         raise hc.UsageError(denied)
+    pace_note = pace_advice(stage, engine, model_names, effort, a.task_class, reason, a.dry_run)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     sandbox = None
     policy = None
@@ -570,6 +601,10 @@ def cmd_spawn(a) -> int:
     held = spawn_hold.gate(a.ignore_hold)  # the machine-load hold (bin/watchdog); a refusal is raised here
     if held:
         hc.warn(held)
+    if a.dry_run:
+        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}; nothing "
+              "was started or written")
+        return 0
     d = agent_dir(stage, a.role)
     if (d / "meta.json").exists():
         old = load_meta(stage, a.role)
@@ -625,7 +660,8 @@ def cmd_spawn(a) -> int:
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
-                               + (f", reason: {reason}" if reason else ""))
+                               + (f", reason: {reason}" if reason else "")
+                               + (f", {pace_note}" if pace_note else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
     return 0
 
@@ -1161,7 +1197,14 @@ def main(argv: list) -> int:
     s.add_argument("--tag")
     s.add_argument("--title", help="default: <role> — <the brief's first heading> (<stage>)")
     s.add_argument("--reason", help="why the work needs an effort or a model above the default "
-                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS); journaled and kept in meta.json")
+                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS), or why it runs over the limit-pace stop; "
+                   "journaled and kept in meta.json")
+    s.add_argument("--task-class", choices=limit_pace.CLASSES,
+                   help="what the work needs: mechanical | bounded (from a finished design) | judgement; default: by "
+                        "the model. The limit-pace advice uses it (effort above the class default, the equivalent "
+                        "class on the other engine)")
+    s.add_argument("--dry-run", action="store_true",
+                   help="run every check and print the limit-pace advice, then stop: nothing is started or written")
     s.add_argument("--ignore-hold", action="store_true",
                    help="spawn although the watchdog holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD)")
     st = sub.add_parser("status", help="alive or not, model, last event age, turns")

@@ -62,6 +62,7 @@ flowchart LR
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<stage>/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
+| `await` | Run a wait command (the repo's CI wait script, a merge, a lock) detached from the caller and journal **one** line `@hub WORD LABEL — LINK (exit N, 12m, log PATH)` when it ends; nothing while it runs. Starts a supervisor in its own session and returns at once, so the hub makes it an ordinary foreground call and keeps its single `jwait`. WORD: exit 0 → `--ok` (default `DONE`, `MERGED` for a merge), 124 or the end of `--timeout` (default 2h) → `TIMEOUT`, anything else, a command that cannot start or a stopped supervisor → `FAILED`; `--on RC=WORD` maps more (`--on 3=CONFLICT`). LINK is `--link` or the last URL the command printed. Signed `<tag>-await`, which the hub's own `jwait` does not drop. [Waiting for CI](launch-modes.md#waiting-for-ci-a-merge-or-a-lock). |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. `ask inbox [--since T] [--stage S] [--json] [--if-quiet]` is the owner's digest across all stages: per stage what finished since the owner's last answer, which questions wait (overdue first), which decisions the hubs took, live and blocked agents; under 2 000 characters, read-only. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
@@ -115,7 +116,7 @@ agent-top                                     # live console; agent-top --once f
 agent send builder "after the tests pass, open the PR"
 
 # 5. wait for its status line without polling (run in the background from Claude)
-jwait --journal --tag hub-1 --tag hub --hub-events --for 55m
+jwait --journal --tag hub-1 --tag hub --hub-events --for 50m
 
 # 6. stop it
 agent stop builder
@@ -204,6 +205,64 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
   `AGENT_HUB_MODEL_MAP`.
 - **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
   agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
+
+### Limit pace
+
+Before a hub spends, Delamain compares each engine's plan week with its pace and says what to do about it
+(`bin/limit_pace.py`). Nothing is queried online; it reads what the logs already hold:
+
+- **Codex**: the `token_count` rate-limit events of the rollouts under `$CODEX_HOME/sessions` written in the last
+  12 hours (the account bucket, `limit_id` `codex`), each with its own timestamp.
+- **Claude**: the last `rate_limit_event` (`unifiedWindows.seven_day`, `five_hour`) of each headless agent's
+  `log.jsonl` in the hub home written in the last 12 hours; the event has no time, so the log's modification time is
+  the sample's. Interactive sessions do not log it: with no headless agent running, Claude's week is unknown or stale. Among samples within 10 minutes of the newest, the window instance with the latest
+  reset stands, at its highest utilisation (inside an instance it only grows, and a log's mtime is not its event's time).
+
+The model, per window: the share of the window elapsed (from `resets_at` and the window's length), the usage against
+it, the burn rate over the last 6 hours of samples of the same window (when they span at least an hour), the window's
+average rate, and when each rate runs the window out. A window is **on pace**, **ahead** (more than 10 points ahead
+of the elapsed share, or only the last hours' burn would run it out before the reset: a burst), or **over pace**
+(every known rate runs it out before the reset). A sample older than 3 hours, or a window that reset since the latest
+sample, is **stale**: reported, never judged, never refused on.
+
+The advice follows one order, and a model is never swapped silently:
+
+1. **Remove waste.** An effort above the task class's default for routine work (Sol high → medium, Sonnet xhigh →
+   high); briefs that will run past ~200k tokens of context split into stages; no parallel agents reading the same files.
+2. **Move to the engine with headroom at an equivalent class**: Opus/Fable ↔ Astra high (an executor that decides as
+   it goes: Sol high), Sonnet ↔ Sol medium, Haiku ↔ Luna. Headroom means fresh data and not over pace; an engine that
+   is itself ahead takes the urgent part only. A stage the owner locked to an engine (`AGENT_HUB_STAGE_ENGINES`) is
+   never moved: the advice is a ready `ask add` with the numbers and a default action.
+3. **Sequence by value.** Non-urgent work (the night queue, nice-to-haves) starts after the reset; the hub decides
+   what is urgent.
+4. **Say it plainly.** When the week runs out before its reset and nothing above covers it, the advice is an
+   `ask add` for the owner.
+
+The one hard stop: `agent spawn` refuses (exit 1, nothing created) when the week is over pace by every rate, at least
+half of it is used, the work is not mechanical (Haiku, Luna), and no engine with headroom can take it: the other
+engine's fresh data shows it over pace too, or the stage is locked to this one. When the other engine is unknown or
+stale, the path is unchecked, not closed: the advice and the ready `ask add` come with "headroom on X is not verified:
+run a probe or pass --reason", and nothing is refused. `--reason "…"` passes; the journal's start line then says `over the limit-pace stop (<numbers>)
+by --reason`. `AGENT_HUB_LIMIT_PACE=warn` keeps the advice and drops the refusal; `off` drops both.
+
+Where it shows:
+
+```text
+agent spawn … [--task-class mechanical|bounded|judgement] [--dry-run]
+    the reasoning and the advice before the launch; --task-class (default: by the model) sets the class the effort and
+    the equivalent are judged by; --dry-run runs every check, prints the advice and starts or writes nothing
+hub start / hub takeover     one line per engine in the digest
+agent-top --once             "Limit pace" lines per engine; --json: limit_pace {engine: level, used, expected, eta, …}
+watchdog (R6)                one `[pace] @hub LIMIT …` journal line per crossing in each stage with a hub
+```
+
+A crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; a level that falls
+and rises again within the same window is not announced twice. The record is `<state dir>/limit-pace/crossings.json`.
+`agent spawn` and the watchdog write it; the digest and `agent-top` only read.
+
+```json
+{ "AGENT_HUB_STAGE_ENGINES": { "dolya": { "engine": "codex", "decision": "Q-DL-054" } } }
+```
 
 ## Agent lifecycle
 
@@ -456,11 +515,13 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_NOTIFY_CMD` | none | Remote notification: a JSON list of strings, run without a shell, `{message}` replaced by the text (stage name, minutes, counts, event word only), e.g. `["curl","-fsS","-d","{message}","https://ntfy.sh/<topic>"]`. Empty = no remote channel. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD_LOAD` | none (off) | R5: the 1-minute load average per core above which the watchdog holds spawns (`1.5`, `0.75`); the hold ends below 80 % of it. Empty or invalid (warned) = off. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD` | `warn` | What `agent spawn` does while a load hold is on: `warn` (a warning, the spawn goes on) or `refuse` (exit 1); `--ignore-hold` passes either. Invalid (warned) = `warn`. Resumes (`agent send`) are never held. Hub-wide. |
+| `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
+| `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. The limit-pace advice never proposes moving that stage's work; it proposes an `ask add`. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
-| `AGENT_HUB_JWAIT_FOR` | `55m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `55m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `55m`). The default stays inside the one-hour prompt cache, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
+| `AGENT_HUB_JWAIT_FOR` | `50m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `50m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `50m`). The default stays inside the one-hour prompt cache and ends before the ~54 minutes after which Claude Code 2.1.299+ compacts an idle conversation, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
 | `AGENT_HUB_OWNER_DIGEST_AFTER` | `3h` | Owner's silence after which the hub opens its reply with `ask inbox`: `ask inbox --if-quiet` prints nothing while the owner's latest recorded answer (an answered question, a standing permission, an approved plan, in any stage's register) is newer than this, and the digest otherwise. A duration such as `90m` or `6h`, at most `30d`; anything else warns and falls back to `3h`. Hub-wide. |
 | `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
@@ -592,7 +653,10 @@ worker subagents.
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. Independent of the dial, its `prompt` hook helps a successor that an older hub started with the command used before the rename (`/agent-hub:hub take over stage …`): when a prompt starts with `/agent-hub:<skill>` and `<skill>` is one of this plugin's skills (read from `skills/`), it adds a note that this is the former name of `/delamain:<skill>`, to invoke that skill and take the rest of the prompt as its arguments; any other prompt gets nothing. |
 
-Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call.
+Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call. Since Claude Code 2.1.299 a plugin hook that crashes, times out or prints half a document would block the call, so every
+hook installs `hooks/failsafe.py` first: its stdout is delivered only as one complete JSON document, its exit status is
+always 0 (also after an import error), and a timer answers "no decision" 1.5 s before the `timeout` of
+`hooks/hooks.json` (`AGENT_HUB_HOOK_DEADLINE_S` overrides the deadline, environment only; the tests use it).
 
 ### Autopilot: the hub hands over by itself
 

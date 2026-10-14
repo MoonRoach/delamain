@@ -86,6 +86,10 @@ check "$(wc -l < $W/env.log)" "$N_ENV" "…and no CLI was started"
 [ ! -e $R/stage-a/agents/bgx ]; check $? 0 "…and no agent directory was created"
 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=5000 $B/agent-spawn --role bgc --cwd $W --model haiku --brief $W/b.md >/dev/null
 tail -1 $W/env.log | grep -qx 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0'; check $? 0 "the caller's own CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS alone does not leak (0 wins)"
+# 4c. idle compaction (CLI 2.1.290+): a detached worker waiting on a jwait is never compacted behind its hub's back; the caller's value wins
+tail -2 $W/env.log | head -1 | grep -qx 'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000'; check $? 0 "default: the worker's CLI gets an idle-compaction minimum above any window"
+CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=300000 $B/agent-spawn --role idc --cwd $W --model haiku --brief $W/b.md >/dev/null
+tail -2 $W/env.log | head -1 | grep -qx 'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=300000'; check $? 0 "negative: the caller's own CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS is kept"
 wait_dead bgc
 INBOX_BEFORE=$(cat $R/stage-a/agents/bgc/inbox.md); N_ENV=$(wc -l < $W/env.log)
 AGENT_HUB_BG_WAIT_CEILING_MS=x $B/agent-send bgc "resume me" > $R/o4c.out 2>&1; check $? 2 "negative: resume with a bad ceiling is a usage error"

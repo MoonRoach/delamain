@@ -11,6 +11,14 @@ as a hub agent (HUB_TAG set by `agent spawn`); a session in an unrelated project
 """
 from __future__ import annotations
 
+if __name__ == "__main__":  # fail-safe first, before anything that can fail: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 import json
 import os
 import sys

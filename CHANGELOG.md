@@ -19,6 +19,9 @@
   (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
   `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
   threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
+
+## 1.0.6 — 2026-10-14
+
 - **A stage whose hub is no longer needed can be closed.** Finished stages stayed in agent-top, the watchdog, the night
   queue and the question summaries for good (31 stages on the owner's home, most of them long done), and their hubs kept
   locks and roles. `hub close --stage S --why "…"` refuses while an agent runs or an owner question waits (`--force`

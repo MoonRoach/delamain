@@ -145,10 +145,13 @@ journals nothing while it runs and, when it ends, one line:
 
 The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `@hub` addresses the hub, and the tag
 `<tag>-await` is neither the hub's own tag nor its sub-tag `<tag>/…`, which `jwait` drops. Outcomes: exit 0 → the
-`--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group is
-stopped) → `TIMEOUT`; any other exit code, a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds
-words such as `CONFLICT` for a command that distinguishes them. An executor can use it the same way (its tag becomes
-`<its tag>-await`). `kill <supervisor pid>` stops the wait and journals `FAILED … interrupted`; a supervisor killed
+`--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group
+gets SIGTERM, then SIGKILL after 5 s, also for a grandchild that ignores SIGTERM) → `TIMEOUT`; any other exit code,
+a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words such as `CONFLICT` for a command that
+distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait` and reads
+the result from the exit word it prints; `--to <its tag>` is for an executor that wants a line for its own `jwait`,
+the default `--to hub` wakes the hub. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
+`FAILED … interrupted`; a supervisor killed
 with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails
 at once with exit 2 and no line.
 

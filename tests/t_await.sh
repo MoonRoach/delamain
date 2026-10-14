@@ -101,6 +101,52 @@ waitline 'FAILED stopme'; check $? 0 "SIGTERM on the supervisor journals FAILED"
 check "$(grep -c '' $J)" 1 "…once"; grep -q 'interrupted by signal 15' $J; check $? 0 "…saying why"
 sleep 0.5; ! kill -0 "$(cat $PIDFILE.child)" 2>/dev/null; check $? 0 "…and the command's process group is gone"
 
+# 5b. SIGINT (Ctrl-C of an attached await): the command is stopped, one FAILED line, no orphan
+: > $J; rm -f $G/* $PIDFILE*
+$B/await --wait --label ctrlc -- $O/hang.sh > /dev/null 2>&1 & pid=$!
+waitfor $PIDFILE || echo "hang never started"
+kill -INT $pid
+for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+kill -0 $pid 2>/dev/null && kill -9 $pid   # the rule under test missing: do not hang the suite
+wait $pid; rc=$?
+check "$(grep -c '@hub FAILED ctrlc .*interrupted by signal 2' $J)" 1 "SIGINT journals one FAILED line"
+check $rc 0 "…and the supervisor exits 0, not 130"
+sleep 0.5; ! kill -0 "$(cat $PIDFILE.child)" 2>/dev/null; check $? 0 "…the command's process group is gone"
+
+# 5c. a grandchild that ignores SIGTERM survives the leader's exit on SIGTERM: the group still gets SIGKILL
+cat > $O/stubborn.sh <<'SH'
+#!/bin/bash
+( trap '' TERM; exec sh -c 'echo $$ > "$PIDFILE.grand"; exec sleep 300' ) &
+echo $$ > "$PIDFILE"
+wait
+SH
+chmod +x $O/stubborn.sh
+: > $J; rm -f $PIDFILE*
+$B/await --wait --timeout 1s --label stubborn -- $O/stubborn.sh > /dev/null 2>&1
+check "$(grep -c '@hub TIMEOUT stubborn ' $J)" 1 "stubborn grandchild: one TIMEOUT line"
+[ -s $PIDFILE.grand ]; check $? 0 "positive control: the grandchild's pid was recorded (the next check is not vacuous)"
+sleep 0.5; ! kill -0 "$(cat $PIDFILE.grand)" 2>/dev/null; check $? 0 "a grandchild that ignores SIGTERM is SIGKILLed with the group"
+
+# 5d. a signal in the supervisor's start-up (while it is still importing) still ends in a FAILED line
+: > $J
+# a sitecustomize that sleeps stretches the interpreter start-up, so the kill lands inside it unless `await` waits for
+# the supervisor's "ready" before it returns the pid
+mkdir -p $O/slow; printf 'import time\ntime.sleep(1)\n' > $O/slow/sitecustomize.py
+for i in 1 2 3; do
+  out=$(PYTHONPATH=$O/slow $B/await --label early$i -- $O/hang.sh); kill "$(echo "$out" | sed -n 's/^await: started supervisor pid \([0-9]*\).*/\1/p')"
+done
+for _ in $(seq 1 150); do [ "$(grep -c 'FAILED early' $J)" = 3 ] && break; sleep 0.1; done
+check "$(grep -c 'FAILED early.*interrupted by signal 15' $J)" 3 "kill right after the start (slow interpreter start-up): all three waits journal FAILED"
+pkill -f "[$]O/hang.sh" 2>/dev/null; true
+
+# 5e. a reused --log: the link comes from this run's output, not from the older content
+: > $J; printf 'old https://old.example/1\n' > $O/reused.log
+$B/await --wait --log $O/reused.log -- true >/dev/null 2>&1
+check "$(grep -c 'old.example' $J)" 0 "reused log: the old URL is not the link"
+printf '#!/bin/bash\necho new https://new.example/2\n' > $O/newurl.sh; chmod +x $O/newurl.sh
+: > $J; $B/await --wait --log $O/reused.log -- $O/newurl.sh >/dev/null 2>&1
+check "$(grep -c 'https://new.example/2 (' $J)" 1 "reused log: the link is this run's URL"
+
 # 6. the hub's own jwait (digest filter) wakes once on the line, though the line is written under the hub's tag family
 : > $J; rm -f $G/*; export EXIT=0
 $B/jlog --tag old "old line" >/dev/null
@@ -118,6 +164,9 @@ $B/await --on 3=conflict -- true > $O/u1.out 2>&1; check $? 2 "bad --on word"
 $B/await --on x -- true > $O/u2.out 2>&1; check $? 2 "bad --on shape"
 $B/await --ok merged -- true > $O/u3.out 2>&1; check $? 2 "bad --ok word"
 $B/await --timeout soon -- true > $O/u4.out 2>&1; check $? 2 "bad --timeout"
+$B/await --tag 'x]y' -- true > $O/u7.out 2>&1; check $? 2 "a tag with brackets is refused before anything is started"
+$B/await --help | grep -q -- 'ci_wait --mr 12 --on'; check $? 1 "negative: the help example does not put --on after the -- (there it is the command's own flag)"
+$B/await --help | grep -q -- '--on 2=TIMEOUT -- python -m scripts.ci_wait'; check $? 0 "…positive control: the right example is there"
 $B/await true > $O/u5.out 2>&1; check $? 2 "no -- command"
 ( unset HUB_TAG; $B/await --wait -- true > $O/u6.out 2>&1 ); check $? 2 "no tag"
 exit $fail

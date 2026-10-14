@@ -607,7 +607,8 @@ hub:
 
 1. At the warn threshold the context-budget message becomes the procedure: at the next quiet point (no agent waiting
    for a reply, no merge or lock operation in flight) `hub handoff`, fill the TODOs, then `hub succeed` — the hook
-   writes the exact command with the hub's model, effort, permission mode and directory. The successor's effort is
+   writes the exact command with the hub's model, effort, permission mode and registered worktree (the one `hub start`/`hub takeover`
+   recorded in `roles.json`, not the directory the hub's shell has drifted to). The successor's effort is
    `--effort`, else `AGENT_HUB_SUCCESSOR_EFFORT`, else the effort the hub runs at now (`hub effort` shows it and where
    it was read). There is no default: when the hub's effort cannot be read, `hub succeed` exits 1 and starts nothing.
 2. `hub succeed` starts `claude --bg --remote-control <stage>-hub-<n+1>` with the prompt
@@ -618,13 +619,15 @@ hub:
    [where the owner finds it](#where-the-owner-finds-the-successor) below). It starts from the repository's main
    checkout, in a new worktree of its own (`--worktree <stage>-hub-<n+1>` → `<main checkout>/.claude/worktrees/<stage>-hub-<n+1>` on branch
    `worktree-<stage>-hub-<n+1>`, from `origin`'s default branch (Claude Code's `worktree.baseRef`, default `fresh`); a taken name gets `-2`, `-3`…), never in the hub's
-   own directory — that may be a Desktop session's worktree, removed when the session is archived. Outside git it
-   starts in the hub's directory. Nothing removes the worktree: `claude rm <id>` does once the session is done.
+   own directory — that may be a Desktop session's worktree, removed when the session is archived. Without `--cwd` the
+   directory is the hub's registered worktree, else the shell's. A directory outside git, or in another repository than the
+   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree: `claude rm <id>` does once the session is done.
 3. When the line arrives the old hub tells you in one line the successor's name and link and where it is: a
    background Remote Control session named `<stage>-hub-<n+1>`; in Claude Desktop it is listed under the repository's
    address group (for a repository not hosted on github.com a separate group from your folder group), on the phone in the
    Remote Control list. It then stops. It releases nothing: the successor's `hub takeover` moves the locks.
-4. Fallbacks, each journaled with its reason: bypass mode without the accepted disclaimer → `auto` (`acceptEdits` for
+4. Fallbacks, each journaled with its reason (the fall back to a headless hub is a `WARNING` line in the journal and in
+   the command's output: it says the successor is not listed in Claude Desktop and how to replace it): bypass mode without the accepted disclaimer → `auto` (`acceptEdits` for
    Haiku); the CLI not logged in, or the main checkout not trusted by it →
    a headless hub (`agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>`, in its permission mode: `bypassPermissions` unless `AGENT_HUB_PERMISSION_MODE` says
    otherwise — a `claude -p` hub has nobody to approve a prompt); no takeover by the deadline → `hub succeed --fallback` journals the session's log

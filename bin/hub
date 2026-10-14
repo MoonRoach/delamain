@@ -132,13 +132,15 @@ handoff --finish is the last step of writing one: it checks the draft (--handoff
 a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
-exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
-(`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode, an explicit
+exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd (default: the
+worktree the registered hub recorded at takeover, else here; outside git or in another project: refused, exit 2) in a new worktree
+(`--worktree <stage>-hub-<n+1>`, a free name) with the hub's model and permission mode, an explicit
 effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at now — `hub effort`; when that cannot be read,
 succeed exits 1 and starts nothing) and the prompt "/delamain:hub take over stage … [agent-hub auto-handoff k/N]" (the marker keeps the name used before the rename for
 one release), reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
-When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
+When the background session cannot start (CLI not logged in, the main checkout untrusted) it says so loudly (WARNING, in
+the output and the journal: the successor is not listed in Claude Desktop) and starts a headless hub
 with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
 becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
 tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it

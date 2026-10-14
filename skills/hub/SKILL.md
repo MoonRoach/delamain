@@ -127,7 +127,7 @@ exit 2, listing id, description and age — because they die with you and the su
 are under *Choosing how to launch work*.
 
 **Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; `<plugin-root>/docs/reference.md`, "Autopilot"): the context budget message tells you when, and gives
-the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
+the `hub succeed` command with your model, effort, mode and registered worktree filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,
 start the `jwait` it prints using the host wait procedure below. Its start line → tell the owner one line (the successor's
 name and any link returned by the launcher) and stop: no more tool calls, no lock released. ALARM → `hub succeed --stage <S> --fallback` (a

@@ -178,6 +178,21 @@ grep -q "$GM/.claude/settings.local.json sets \"idleCompaction\": true" $P/idle-
 rm $CD/settings.json
 fi
 
+# a hub in Claude Desktop: Desktop's own CLI may not read idleCompaction, which nothing here can check, so the start says the
+# handoff threshold must come first, whatever the settings files say (the skip variable and a terminal hub negative)
+export CLAUDE_SESSIONS_DIR=$P/dsess; mkdir -p $CLAUDE_SESSIONS_DIR/a/b
+DL=local_d637d7e1-4d6c-4366-b32f-bc735e7c56d6
+printf '{"sessionId":"%s","cliSessionId":"%s","title":"Hub web #1"}' $DL $H1 > $CLAUDE_SESSIONS_DIR/a/b/$DL.json
+echo '{"idleCompaction": false}' > $CD/settings.json
+desk_start(){ (cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_STATE_DIR=$P/st-$1 env "${@:3}" $B/hub start --stage web --session $2 --dry-run) > $P/$1.out 2>&1; }
+desk_start desk-on $DL; check $? 0 "desktop hub: start works"
+grep -q "^ATTENTION: this hub runs in Claude Desktop, with Desktop's own Claude Code .*not verified.*the context budget warns at 300k tokens, above the 200K.*AGENT_HUB_CONTEXT_WARN" $P/desk-on.out; check $? 0 "…warns that the handoff threshold must come first, naming the threshold and the knob, although the user's settings turn idle compaction off"
+desk_start desk-low $DL AGENT_HUB_CONTEXT_WARN=150000
+grep -q "the context budget warns at 150k tokens, below the 200K" $P/desk-low.out && ! grep -q "set AGENT_HUB_CONTEXT_WARN" $P/desk-low.out; check $? 0 "…and says the threshold is already below it when it is"
+desk_start desk-term 22222222-2222-4222-8222-222222222222; check "$?:$(grep -c 'runs in Claude Desktop' $P/desk-term.out)" 0:0 "negative: a terminal hub gets no Desktop line"
+desk_start desk-skip $DL AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1; check "$?:$(grep -c 'runs in Claude Desktop' $P/desk-skip.out)" 0:0 "negative: AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it"
+unset CLAUDE_SESSIONS_DIR; rm -f $CD/settings.json
+
 # ---- fable is an alias like the others
 $B/agent spawn --role fab --cwd $W --model fable --brief $W/b.md > $P/fab.out 2>&1; check $? 0 "spawn --model fable is accepted"
 wait_dead fab

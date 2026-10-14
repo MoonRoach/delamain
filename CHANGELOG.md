@@ -7,6 +7,31 @@
   `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's
   own `user_asked` and an accepted `proposal_id` pass, as does every non-hub session. Hubs also get one line saying the
   host's card rules are superseded.
+- **Hooks stay safe on Claude Code 2.1.299.** From 2.1.299 a plugin hook that cannot hand back its answer (it crashes,
+  runs past its `timeout`, prints half a JSON document) blocks the user's call instead of letting it through. All seven
+  hook scripts now start with `hooks/failsafe.py`: stdout is delivered only if it is one complete JSON document, the
+  exit status is always 0 (a missing or broken sibling module used to end in exit 1 for `context_budget`,
+  `handoff_size` and `delegation`), and a timer answers "no decision" 1.5 s before the configured `timeout` (all hooks now have 10 s; `board_locks` and
+  `polling_guard` had 5) and says so on stderr.
+  `tests/t_hook_failsafe.sh` feeds every hook malformed input, breaks a module on purpose, stalls stdin, and checks the
+  deadlines against `hooks.json` and `codex-hooks.json`.
+- **`jwait` waits 50 minutes by default (was 55).** Claude Code compacts a 200K+ conversation left idle about 54 minutes;
+  a 55-minute wait always ended after that point for a hub that did not set `"idleCompaction": false`. Hubs of
+  `hub start`/`takeover`/`succeed` already get the setting or the warning (1.0.5); `setup` now offers the setting too, and
+  detached `agent spawn`/`agent send` workers get `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000` unless the caller sets
+  it. `AGENT_HUB_JWAIT_FOR` still overrides the default.
+- **A hub in Claude Desktop is told the handoff threshold must come first.** Desktop runs its own bundled Claude Code
+  (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
+  `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
+  threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
+- **`await`: a hub no longer wakes for CI, merge or lock progress.** `await [--ok MERGED] [--on RC=WORD] -- <wait
+  command>` runs the wait detached from the hub's context (a supervisor in its own session, output in a log) and
+  journals exactly one line, `@hub WORD LABEL — LINK (exit N, …)`, when the command ends: `DONE`/`MERGED`, `FAILED`,
+  `TIMEOUT` or a word of the caller's choice. Nothing is written on progress. The hub keeps its single `jwait`. In the
+  token audit of 07–14.10, 202 of a week's 913 background wakes were such waits, each re-reading ~130k tokens of hub
+  context. [Waiting for CI](docs/launch-modes.md#waiting-for-ci-a-merge-or-a-lock).
+
+## 1.0.6 — 2026-10-14
 
 - **A stage whose hub is no longer needed can be closed.** Finished stages stayed in agent-top, the watchdog, the night
   queue and the question summaries for good (31 stages on the owner's home, most of them long done), and their hubs kept

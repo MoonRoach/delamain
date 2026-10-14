@@ -92,7 +92,7 @@ def environment(payload: dict, plugin: Path) -> dict[str, str]:
     if not env.get("AGENT_HUB_HOME") and config.get("HubHome") != str(Path.home() / "agent-hub"):
         sys.path.insert(0, str(plugin / "bin"))
         import hubcore
-        if hubcore.home().layer == "user":
+        if hubcore.home().layer in ("user", "default"):
             env["AGENT_HUB_HOME"] = linux_path(config["HubHome"])
     env["PATH"] = os.pathsep.join((str(plugin / "bin"), str(Path(config["LinuxCodex"]).parent),
                                   "/usr/local/bin", "/usr/bin", "/bin", env.get("PATH", "")))

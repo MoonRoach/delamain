@@ -117,6 +117,69 @@ class CodexSelectionTests(unittest.TestCase):
         self.assertNotIn("CODEX_APP_TOOLS_PIPE_PATH", env)
 
 
+@unittest.skipIf(os.name == "nt", "POSIX home resolution and lock board require WSL")
+class HubHomeFallbackTests(unittest.TestCase):
+    def test_configured_home_and_resolution_priority_in_isolated_repository(self):
+        for selection in ("default", "user", "project", "env", "legacy", "standard"):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory(prefix="desktop-home-") as directory:
+                scratch = Path(directory)
+                home, repo, package = scratch / "home", scratch / "repo", scratch / "package"
+                home.mkdir()
+                (repo / ".git").mkdir(parents=True)
+                for name in ("bin", "hooks", "windows"):
+                    shutil.copytree(ROOT / name, package / name, ignore=shutil.ignore_patterns("__pycache__"))
+                configured = scratch / "configured-hub"
+                expected = configured
+                env = {"HOME": str(home), "PATH": os.defpath, "AGENT_HUB_TZ": "UTC"}
+                layer = selection
+                if selection in ("project", "user"):
+                    (repo / ".agent-hub").mkdir()
+                    (repo / ".agent-hub/config.json").write_text(json.dumps({"AGENT_HUB_HOME": selection}))
+                    if selection == "project":
+                        expected = repo / ".agent-hub/local"
+                elif selection == "env":
+                    expected = scratch / "explicit-hub"
+                    env["AGENT_HUB_HOME"] = str(expected)
+                elif selection == "legacy":
+                    expected = home / ".claude/agent-hub"
+                    expected.mkdir(parents=True)
+                elif selection == "standard":
+                    configured = expected = home / "agent-hub"
+                    layer = "default"
+                # Read the real resolver before transport: no mocked user layer.
+                probe = subprocess.run([sys.executable, "-c",
+                    "import sys; sys.path.insert(0, sys.argv[1]); import hubcore; print(hubcore.home().layer)",
+                    str(package / "bin")], cwd=repo, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(probe.returncode, 0, probe.stderr)
+                self.assertEqual(probe.stdout.strip(), layer)
+                config = {"LinuxHome": str(scratch / "codex"), "WindowsCodexHome": str(scratch / "native"),
+                          "LinuxCodex": "/bin/true", "HubHome": str(configured)}
+                payload = {"mode": "tool", "cwd": str(repo), "pluginroot": str(package), "config": config,
+                           "env": {"CODEX_THREAD_ID": OTHER, "AGENT_SESSION_ID": OTHER}}
+                def invoke(data, as_json=True):
+                    encoded = base64.b64encode(json.dumps(data).encode()).decode()
+                    run = subprocess.run([sys.executable, str(package / "windows/desktop_runtime.py"), encoded],
+                                         cwd=repo, env=env, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertNotIn("fail-open", run.stderr)
+                    return json.loads(run.stdout) if as_json and run.stdout.strip() else {}
+                resolved = invoke({**payload, "argv": ["hub", "home", "--json"]})
+                self.assertEqual(resolved["home"], str(expected))
+                invoke({**payload, "argv": ["lock", "take", "main-merge", "--repo", "*",
+                    "--until", "2099-01-01T00:00", "--why", "isolated home fixture"]}, as_json=False)
+                self.assertTrue((expected / "board.md").is_file())
+                event = {"hook_event_name": "PreToolUse", "session_id": SID, "cwd": str(repo),
+                         "tool_name": "Bash", "tool_input": {"command": "gh pr merge 42"}}
+                hook = {**payload, "mode": "hook", "hook": "board_locks", "event": event}
+                self.assertEqual(invoke(hook)["hookSpecificOutput"]["permissionDecision"], "deny")
+                event["tool_input"]["command"] = "gh pr view 42"
+                self.assertFalse(invoke(hook))
+                if expected != configured:
+                    self.assertFalse(configured.exists())
+                if selection != "standard":
+                    self.assertFalse((home / "agent-hub").exists())
+
+
 @unittest.skipIf(os.name == "nt", "POSIX policy evaluators require WSL (fcntl lock board)")
 class PolicyBoundaryTests(unittest.TestCase):
     """Original policy evaluators with distinct, isolated native/worker homes."""

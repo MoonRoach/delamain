@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.7 — 2026-10-15
+
 - **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,
   in a session registered as a stage's `hub`, `start_session` with `initiation` `own_initiative` or `offer`,
   `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's

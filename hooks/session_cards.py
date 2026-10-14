@@ -7,8 +7,8 @@ a card, and a card session is invisible to agent-top and to a successor hub; the
 only in a turn the owner typed (`user_asked`). So in a registered hub the plugin's own routes win.
 
 Hook subcommands (hook JSON on stdin):
-  pre-tool       PreToolUse on mcp__ccd_session__start_session | mcp__ccd_session__hand_off_to_session: deny
-                 `hand_off_to_session` and a start with initiation own_initiative / offer in a hub's session; allow
+  pre-tool       PreToolUse on mcp__ccd_session__start_session | …hand_off_to_session | …spawn_task: deny
+                 `hand_off_to_session`, `spawn_task` and a start with initiation own_initiative / offer in a hub's session; allow
                  `user_asked`, a start from a card (`proposal_id`) and every call outside a hub
   session-start  SessionStart: one line of context in a hub's session (a resumed hub; `hub start` and `hub takeover`
                  print the same line in their digest, hubcore.DESKTOP_CARDS_LINE)
@@ -33,13 +33,15 @@ except Exception:  # noqa: BLE001 — fail-open: as a hook, never block a sessio
 
 START = "mcp__ccd_session__start_session"
 HAND_OFF = "mcp__ccd_session__hand_off_to_session"
+SPAWN_TASK = "mcp__ccd_session__spawn_task"  # the older task-card tool of the same server: it only ever makes a card
 CARD_INITIATIONS = ("own_initiative", "offer")
 DENY_REASON = (
     "In a registered hub Desktop's session cards and forks are off: autopilot turns cannot click a card, and agents "
     "must be visible to agent-top and reachable by successors.\n"
     "Executor work: `agent spawn --engine … --role … --brief …`. A decision the owner must make: `ask add`. "
     "A shift of the hub: `hub handoff` / `hub succeed`.\n"
-    "If the owner asked for a session in their own message, call start_session with initiation \"user_asked\"."
+    "A session or fork the owner asked for in their own message: start_session with initiation \"user_asked\" "
+    "(and context \"fork\" for a fork)."
 )
 
 
@@ -72,7 +74,7 @@ def is_hub(session_id, host_id="") -> bool:
 
 def decide(tool, tool_input) -> str | None:
     """The deny reason for one call of the Desktop session tools (before the hub check), or None."""
-    if tool == HAND_OFF:
+    if tool in (HAND_OFF, SPAWN_TASK):
         return DENY_REASON
     if tool != START or not isinstance(tool_input, dict):
         return None

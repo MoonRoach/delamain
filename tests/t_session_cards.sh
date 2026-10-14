@@ -17,7 +17,7 @@ printf '{"sessionId":"local_%s","cliSessionId":"%s","title":"Hub stage-a #3","is
 hook(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":sys.argv[1],"session_id":sys.argv[3],"cwd":sys.argv[4],"tool_input":json.loads(sys.argv[2])}))' "$1" "$2" "$3" "$R" \
   | CLAUDE_CODE_HOST_SESSION_ID="${4:-}" python3 $HOOK pre-tool; }
 denied(){ hook "$@" | grep -q '"permissionDecision": "deny"'; }
-S=mcp__ccd_session__start_session; H=mcp__ccd_session__hand_off_to_session
+S=mcp__ccd_session__start_session; H=mcp__ccd_session__hand_off_to_session; SP=mcp__ccd_session__spawn_task
 
 # ---- no registry at all: nobody is a hub, nothing is denied (and nothing is printed)
 denied $S '{"initiation":"own_initiative","title":"x","prompt":"y"}' $HUB; check $? 1 "no registry: own_initiative passes"
@@ -34,8 +34,9 @@ denied $S '{"initiation":"offer","title":"fix","prompt":"do it"}' $HUB; check $?
 denied $S '{"initiation":"Own_Initiative"}' $HUB; check $? 0 "hub: the initiation is compared without case"
 denied $H '{"title":"fork","prompt":"continue"}' $HUB; check $? 0 "hub: hand_off_to_session is denied"
 denied $H '{}' $HUB; check $? 0 "hub: hand_off_to_session with no arguments is denied"
+denied $SP '{"title":"fix","prompt":"do it"}' $HUB; check $? 0 "hub: spawn_task (a task card) is denied"
 out=$(hook $S '{"initiation":"own_initiative"}' $HUB)
-for w in 'agent spawn' 'ask add' 'hub handoff' 'agent-top'; do echo "$out" | grep -q -- "$w"; check $? 0 "deny text names: $w"; done
+for w in 'agent spawn' 'ask add' 'hub handoff' 'agent-top' 'context \\"fork\\"'; do echo "$out" | grep -q -- "$w"; check $? 0 "deny text names: $w"; done
 check "$(echo "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"].splitlines()))')" 3 "deny text is at most 4 lines (3)"
 echo "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin)["hookSpecificOutput"]; assert d["hookEventName"]=="PreToolUse" and d["permissionDecision"]=="deny"'; check $? 0 "deny output has the PreToolUse shape"
 
@@ -64,6 +65,7 @@ denied $S '{"initiation":"offer"}' $WORKER "local_$LOC"; check $? 1 "negative: a
 # ---- not a hub
 denied $S '{"initiation":"own_initiative"}' $WORKER; check $? 1 "executor (registered, not the hub role): passes"
 denied $H '{}' $WORKER; check $? 1 "executor: hand_off_to_session passes"
+denied $SP '{"title":"fix"}' $WORKER; check $? 1 "executor: spawn_task passes"
 denied $S '{"initiation":"own_initiative"}' 44444444-4444-4444-8444-444444444444; check $? 1 "unregistered session: passes"
 denied $H '{}' ""; check $? 1 "no session id: passes"
 $B/roles retire hub >/dev/null; check $? 0 "retire the hub role"
@@ -100,12 +102,12 @@ rm -rf $R/digest-a; CODEX_THREAD_ID=thread-1 $B/hub start --stage digest-b --goa
 grep -q 'follow-up-card rules' $R/start-codex.out; check $? 1 "negative: a Codex hub's digest does not carry it"
 
 # ---- hooks.json wires both events to this script
-python3 - "$T/../hooks/hooks.json" <<'PY'; check $? 0 "hooks.json: session_cards on SessionStart and on both Desktop tools"
+python3 - "$T/../hooks/hooks.json" <<'PY'; check $? 0 "hooks.json: session_cards on SessionStart and on the Desktop tools"
 import json, sys
 hooks = json.load(open(sys.argv[1]))["hooks"]
 def has(event, matcher, tail):
     return any(g.get("matcher") == matcher and any(h["command"].endswith(tail) for h in g["hooks"]) for g in hooks[event])
 assert has("SessionStart", None, 'session_cards.py" session-start')
-assert has("PreToolUse", "mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session", 'session_cards.py" pre-tool')
+assert has("PreToolUse", "mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session|mcp__ccd_session__spawn_task", 'session_cards.py" pre-tool')
 PY
 exit $fail

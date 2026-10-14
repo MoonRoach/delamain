@@ -65,7 +65,7 @@
         ]
       },
       {
-        "matcher": "mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session",
+        "matcher": "mcp__ccd_session__start_session|mcp__ccd_session__hand_off_to_session|mcp__ccd_session__spawn_task",
         "hooks": [
           {
             "type": "command",

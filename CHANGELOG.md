@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,
+  in a session registered as a stage's `hub`, `start_session` with `initiation` `own_initiative` or `offer`,
+  `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's
+  own `user_asked` and an accepted `proposal_id` pass, as does every non-hub session. Hubs also get one line saying the
+  host's card rules are superseded.
+
 - **A stage whose hub is no longer needed can be closed.** Finished stages stayed in agent-top, the watchdog, the night
   queue and the question summaries for good (31 stages on the owner's home, most of them long done), and their hubs kept
   locks and roles. `hub close --stage S --why "…"` refuses while an agent runs or an owner question waits (`--force`

@@ -18,6 +18,16 @@
   (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
   `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
   threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
+- **A stage whose hub is no longer needed can be closed.** Finished stages stayed in agent-top, the watchdog, the night
+  queue and the question summaries for good (31 stages on the owner's home, most of them long done), and their hubs kept
+  locks and roles. `hub close --stage S --why "…"` refuses while an agent runs or an owner question waits (`--force`
+  stops the agents, leaves the questions), then stops an idle background hub, releases the stage's locks, retires its
+  roles, journals the close and marks `stage.json`; the stage drops out of those views, `agent spawn` refuses it, and
+  its files stay. A hub session or lock that another open stage still holds (or may: a registry unread) is left
+  alone. `hub start` or `hub takeover` reopens it and continues the hub numbering. agent-top's Summary lists the stages, marks the idle ones
+  (open, no live agent, quiet for 48 h, `AGENT_TOP_IDLE_S`) and closes one with `c` in the console or the `close` button
+  (pressed twice) in the `/agent-top` pane; `--json` carries `stage_info`, `closed_hidden` and `idle_after_s`. The hub
+  skill has a *Closing a stage* procedure, the status skill names idle stages.
 
 ## 1.0.5 — 2026-10-14
 

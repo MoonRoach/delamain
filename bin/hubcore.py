@@ -374,7 +374,8 @@ def project_warnings(cwd=None) -> list:
 # place is refreshed, a bad one gets a fresh worktree of origin's default branch and the order to move there (exit 4).
 
 NO_PROJECT_ENV = "AGENT_HUB_NO_PROJECT"  # environment only (a cloned repository must not switch the rule off)
-STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"}
+STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"},
+#                           {"closed": {"at", "why", "by", "hub"}} while the stage is closed (`hub close`)
 LOCATION_EXIT = 4
 FETCH_TIMEOUT_S = 30
 HUB_WORKTREES = ".claude/worktrees"  # <repo>/…/<stage>-hub-<n>, where Claude Code puts its own worktrees
@@ -461,6 +462,22 @@ def record_stage_project(stage: str, repo: Optional[Path]) -> None:
     else:  # the latest choice wins: a recorded repo would overrule it at the next folderless start
         want = dict(data, no_project=True)
         want.pop("repo", None)
+    if want != data:
+        atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
+
+
+def stage_closed(stage: str) -> Optional[dict]:
+    """The stage's `closed` record ({"at", "why", "by", "hub"}) once `hub close` closed it, else None. A closed stage
+    is left out of agent-top's default view, the watchdog, the night queue and the questions summary; a takeover
+    (or `hub start`) reopens it."""
+    rec = stage_record(stage).get("closed")
+    return rec if isinstance(rec, dict) else None
+
+
+def record_stage_closed(stage: str, rec: Optional[dict]) -> None:
+    """Write the stage's `closed` record into stage.json; None removes it (the stage is open again)."""
+    data = stage_record(stage)
+    want = dict(data, closed=rec) if rec else {k: v for k, v in data.items() if k != "closed"}
     if want != data:
         atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
 

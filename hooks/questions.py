@@ -45,7 +45,7 @@ def build_line() -> str:
     ask = load_ask()
     now = ask.now_local()
     parts = []
-    for stage in ask.all_stages():
+    for stage in ask.open_stages():
         try:
             _, entries = ask.load(stage)
         except BaseException:  # a broken file must not hide the other stages

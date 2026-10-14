@@ -1078,8 +1078,10 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
  if not p.exists(): continue
  pid,expected=json.loads(p.read_text())
  try:
+  fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+  if fields[19]!=expected or fields[0]=='Z': continue
   fd=os.pidfd_open(pid)
- except ProcessLookupError: continue
+ except (FileNotFoundError,ProcessLookupError): continue
  try:
   fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
   if fields[19]==expected: signal.pidfd_send_signal(fd,signal.SIGKILL)
@@ -1095,6 +1097,7 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
   if fields[19]!=expected or fields[0]=='Z': break
   time.sleep(.02)
  else: raise RuntimeError('Owned fixture remained alive')
+ print(f'cleanup verified {name}: PID {pid}, start {expected}, gone or zombie')
 """
         for shell in self.native_shells():
             for mode in modes:
@@ -1124,7 +1127,7 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
                         self.assertTrue(detached,"Abort killed a detached worker")
                         self.assertFalse(foreground,"Quiet Linux foreground survived the Windows client cancellation")
                     finally:
-                        wsl("python3","-c",cleanup,linux_directory)
+                        print(wsl("python3","-c",cleanup,linux_directory).stdout.decode(),end="")
 
     def test_warning_stays_stderr_real_error_unicode_stdin_and_exit_codes(self):
         import base64

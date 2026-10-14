@@ -146,6 +146,19 @@ check(lp.note_crossing("stage-z", calm) is not None and lp.note_crossing("stage-
 moved = lp.Pace("codex", "7d", level="exhaust", used=75, expected=20, resets_at=p.resets_at + 7 * 86400, seen_at=p.seen_at, age_s=1)
 check(lp.note_crossing("stage-x", moved) is not None, "a new window instance is a new crossing")
 check(lp.note_crossing("stage-q", lp.Pace("codex", "7d", level="ok", used=1, expected=5, resets_at=p.resets_at)) is None, "on pace: no line")
+# the per-file cache: an unchanged log is not read again, a rewritten one is
+fx("clear"); fx("codex", "60,75"); fx("claude", "20,21")
+read()
+calls = []
+orig_c, orig_x = lp._claude_file, lp._codex_file
+lp._claude_file = lambda path: calls.append(path) or orig_c(path)
+lp._codex_file = lambda path: calls.append(path) or orig_x(path)
+P = read()
+check(calls == [] and P["codex"]["7d"].used == 75, "unchanged logs: served from the cache, same numbers")
+fx("codex", "60,80")
+P = read()
+check(len(calls) == 1 and P["codex"]["7d"].used == 80, "a rewritten rollout is read again")
+lp._claude_file, lp._codex_file = orig_c, orig_x
 print("RESULT", "FAIL" if fails else "PASS")
 sys.exit(1 if fails else 0)
 PY

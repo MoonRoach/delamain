@@ -104,45 +104,114 @@ def _tail_lines(path: Path, limit: int = TAIL_BYTES) -> list:
         return f.read(limit).splitlines(keepends=True)
 
 
-def claude_samples(home: Optional[Path] = None, now: Optional[float] = None) -> dict:
+class _Cache:
+    """What each log's tail held, by path, size and mtime: a log only grows, so an unchanged one is not read again
+    (agent-top --json runs every few seconds). Kept in <state dir>/limit-pace/samples.json; entries of files not seen in
+    a read are dropped, so it never grows beyond the recent logs."""
+
+    def __init__(self):
+        self.path = hc.state_dir() / "limit-pace" / "samples.json"
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            self.old = data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            self.old = {}
+        self.new: dict = {}
+
+    def get(self, path: Path, st, parse):
+        key, stamp = str(path), [st.st_size, st.st_mtime_ns]
+        hit = self.old.get(key)
+        if isinstance(hit, list) and len(hit) == 2 and hit[0] == stamp and isinstance(hit[1], list):
+            got = hit[1]
+        else:
+            got = parse(path)
+        self.new[key] = [stamp, got]
+        return got
+
+    def save(self):
+        if self.new == self.old:
+            return
+        try:
+            hc.atomic_write(self.path, json.dumps(self.new, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
+
+
+def _claude_file(path: Path) -> list:
+    """[[window, used, resets_at], …] of the log's last rate_limit_event."""
+    for line in reversed(_tail_lines(path)):
+        if not line.endswith(b"\n") or b'"rate_limit_event"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        info = ev.get("rate_limit_info") if isinstance(ev, dict) else None
+        wins = info.get("unifiedWindows") if isinstance(info, dict) else None
+        if not isinstance(wins, dict):
+            continue
+        out = []
+        for key, label in (("seven_day", "7d"), ("five_hour", "5h")):
+            w = wins.get(key)
+            if isinstance(w, dict) and _number(w.get("utilization")) and w["utilization"] >= 0:
+                out.append([label, 100 * w["utilization"], w["resetsAt"] if _number(w.get("resetsAt")) else None])
+        return out
+    return []
+
+
+def claude_samples(home: Optional[Path] = None, now: Optional[float] = None, cache: Optional[_Cache] = None) -> dict:
     """{"7d": [Sample…], "5h": […]} from the last rate_limit_event of each recently written headless agent's log."""
     now = time.time() if now is None else now
     home = home or hc.root()
     logs = []
     for p in home.glob("*/agents/*/log.jsonl"):
         try:
-            m = p.stat().st_mtime
+            st = p.stat()
         except OSError:
             continue
-        if m >= now - LOG_HOURS * 3600:
-            logs.append((m, p))
+        if st.st_mtime >= now - LOG_HOURS * 3600:
+            logs.append((st.st_mtime, p, st))
     out: dict = {"7d": [], "5h": []}
-    for mtime, path in sorted(logs, reverse=True)[:LOG_MAX]:
+    for mtime, path, st in sorted(logs, key=lambda x: x[0], reverse=True)[:LOG_MAX]:
         try:
-            lines = _tail_lines(path)
+            got = cache.get(path, st, _claude_file) if cache else _claude_file(path)
         except OSError:
             continue
-        for line in reversed(lines):
-            if not line.endswith(b"\n") or b'"rate_limit_event"' not in line:
-                continue
-            try:
-                ev = json.loads(line)
-            except ValueError:
-                continue
-            info = ev.get("rate_limit_info") if isinstance(ev, dict) else None
-            wins = info.get("unifiedWindows") if isinstance(info, dict) else None
-            if not isinstance(wins, dict):
-                continue
-            for key, label in (("seven_day", "7d"), ("five_hour", "5h")):
-                w = wins.get(key)
-                if isinstance(w, dict) and _number(w.get("utilization")) and w["utilization"] >= 0:
-                    out[label].append(Sample(100 * w["utilization"], mtime,
-                                             w["resetsAt"] if _number(w.get("resetsAt")) else None, LENGTH[label]))
-            break
+        for label, used, resets in got:
+            out[label].append(Sample(used, mtime, resets, LENGTH[label]))
     return out
 
 
-def codex_samples(now: Optional[float] = None) -> dict:
+def _codex_file(path: Path) -> list:
+    """[[window, used, seen_at, resets_at, length_s], …] of every account-bucket rate-limit event in the tail."""
+    import codex_rollouts
+    out = []
+    for line in _tail_lines(path):
+        if not line.endswith(b"\n") or b'"rate_limits"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+            payload = ev.get("payload")
+            if ev.get("type") != "event_msg" or payload.get("type") != "token_count":
+                continue
+            info = payload.get("rate_limits")
+            seen = codex_rollouts.epoch(ev.get("timestamp"))
+            if not isinstance(info, dict) or seen is None or (info.get("limit_id") or "codex") != "codex":
+                continue
+        except (ValueError, AttributeError):
+            continue
+        for key in ("primary", "secondary"):
+            w = info.get(key)
+            if not isinstance(w, dict) or not _number(w.get("used_percent")) or not _number(w.get("window_minutes")):
+                continue
+            minutes = int(w["window_minutes"])
+            label = {300: "5h", 10080: "7d"}.get(minutes, f"{minutes}m")
+            out.append([label, float(w["used_percent"]), seen, w["resets_at"] if _number(w.get("resets_at")) else None,
+                        minutes * 60])
+    return out
+
+
+def codex_samples(now: Optional[float] = None, cache: Optional[_Cache] = None) -> dict:
     """{"7d": [Sample…], …} from every `token_count` rate-limit event of the account bucket (limit_id "codex") in the
     tails of the recently written rollouts. A window is labelled by its length; one of another length gets its own key."""
     import codex_rollouts
@@ -153,32 +222,11 @@ def codex_samples(now: Optional[float] = None) -> dict:
         if mtime < now - LOG_HOURS * 3600:
             break
         try:
-            lines = _tail_lines(path)
+            got = cache.get(path, path.stat(), _codex_file) if cache else _codex_file(path)
         except OSError:
             continue
-        for line in lines:
-            if not line.endswith(b"\n") or b'"rate_limits"' not in line:
-                continue
-            try:
-                ev = json.loads(line)
-                payload = ev.get("payload")
-                if ev.get("type") != "event_msg" or payload.get("type") != "token_count":
-                    continue
-                info = payload.get("rate_limits")
-                seen = codex_rollouts.epoch(ev.get("timestamp"))
-                if not isinstance(info, dict) or seen is None or (info.get("limit_id") or "codex") != "codex":
-                    continue
-            except (ValueError, AttributeError):
-                continue
-            for key in ("primary", "secondary"):
-                w = info.get(key)
-                if not isinstance(w, dict) or not _number(w.get("used_percent")) or not _number(w.get("window_minutes")):
-                    continue
-                minutes = int(w["window_minutes"])
-                label = {300: "5h", 10080: "7d"}.get(minutes, f"{minutes}m")
-                out.setdefault(label, []).append(Sample(float(w["used_percent"]), seen,
-                                                        w["resets_at"] if _number(w.get("resets_at")) else None,
-                                                        minutes * 60))
+        for label, used, seen, resets, length in got:
+            out.setdefault(label, []).append(Sample(used, seen, resets, length))
     return out
 
 
@@ -186,13 +234,16 @@ def read_all(now: Optional[float] = None) -> dict:
     """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always."""
     now = time.time() if now is None else now
     out = {}
-    for engine, reader in (("claude", lambda: claude_samples(now=now)), ("codex", lambda: codex_samples(now))):
+    cache = _Cache()
+    for engine, reader in (("claude", lambda: claude_samples(now=now, cache=cache)),
+                           ("codex", lambda: codex_samples(now, cache=cache))):
         try:
             series = reader()
         except Exception:  # noqa: BLE001 — a broken source is "unknown", never a failed spawn or digest
             series = {}
         series.setdefault("7d", [])
         out[engine] = {w: assess(engine, w, s, now) for w, s in series.items()}
+    cache.save()
     return out
 
 

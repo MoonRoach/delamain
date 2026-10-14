@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Run a wait command (CI, a merge, a lock) detached from the caller; journal ONE line when it ends.
+
+  await [--stage S] [--tag T] [--to hub] [--label TEXT] [--link URL] [--ok WORD] [--on RC=WORD ...]
+        [--timeout 2h] [--log PATH] [--wait] -- COMMAND [ARGS ...]
+  await --ok MERGED --label "MR !12" -- python -m scripts.ci_wait --mr 12 --on 2=TIMEOUT
+
+The hub keeps its single `jwait`; this replaces a background Bash that re-reads the hub's whole context on every exit
+of the wait. By default `await` starts a supervisor in its own session, prints its pid and log path and returns at
+once: run it as an ordinary foreground Bash call. The supervisor runs COMMAND with its output in the log and writes
+nothing while it runs, whatever COMMAND prints. When COMMAND ends it appends exactly one line, addressed `@hub`
+(`--to`), to the stage journal, signed `<your tag>-await` (a sub-tag `<tag>/await` would be dropped by your own jwait):
+
+  @hub WORD LABEL — LINK (exit N, 12m, log PATH)
+
+WORD comes from COMMAND's exit code: 0 -> the --ok word (default DONE; use MERGED for a merge), 124 or the end of
+--timeout -> TIMEOUT, anything else -> FAILED. `--on RC=WORD` (repeatable) maps other codes, e.g. `--on 3=CONFLICT`,
+and wins over the defaults; scripts/ci_wait.py needs `--on 2=TIMEOUT` (its 2 is a timeout or an unreachable GitLab).
+LINK is `--link`, else the last http(s) URL COMMAND printed (a failed job, the merge request). A COMMAND that cannot
+start, is killed by a signal, or a supervisor that gets SIGTERM/SIGHUP (which also stops COMMAND's process group)
+ends in FAILED. A supervisor killed with SIGKILL writes nothing: the hub's jwait alarm is the backstop.
+
+--wait keeps `await` attached (the supervisor's work in the foreground; exit 0 once the line is written).
+--timeout is the supervisor's own limit on COMMAND (default 2h, the process group gets SIGTERM, then SIGKILL).
+Tag: --tag, else the caller's signing tag + "-await". Stage: --stage, else $HUB_STAGE. Log: --log, else
+<stage>/coordinator/work/await/<time>-<label>.log.
+Exit: 0 started (or, with --wait, the line written), 1 the line could not be written, 2 usage / COMMAND not found.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+DEFAULT_TIMEOUT = "2h"
+KILL_GRACE_S = 5.0
+LOG_SCAN_BYTES = 65536
+URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
+WORD_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+class Interrupted(Exception):
+    def __init__(self, signum: int):
+        self.signum = signum
+
+
+def _raise_interrupted(signum, frame) -> None:
+    raise Interrupted(signum)
+
+
+def parse_on(items: list) -> dict:
+    out = {}
+    for item in items:
+        m = re.fullmatch(r"(\d+)=(\S+)", item)
+        if not m or not WORD_RE.fullmatch(m.group(2)):
+            raise hc.UsageError(f"--on {item!r}: use RC=WORD with an upper-case word, e.g. 3=CONFLICT")
+        out[int(m.group(1))] = m.group(2)
+    return out
+
+
+def last_url(log: Path) -> str:
+    try:
+        with open(log, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - LOG_SCAN_BYTES))
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    urls = URL_RE.findall(text)
+    return urls[-1].rstrip(".,;:") if urls else ""
+
+
+def human(secs: float) -> str:
+    s = int(secs)
+    return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s // 3600}h{s % 3600 // 60:02d}m"
+
+
+def stop_group(proc: subprocess.Popen) -> None:
+    for sig, grace in ((signal.SIGTERM, KILL_GRACE_S), (signal.SIGKILL, KILL_GRACE_S)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
+    """Run the command to its end; return (WORD, detail). Writes nothing to the journal."""
+    started = time.monotonic()
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _raise_interrupted)
+    try:
+        with open(log, "ab") as out:
+            try:
+                proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+            except OSError as e:
+                return "FAILED", f"could not start: {e.strerror or e}"
+            try:
+                rc = proc.wait(timeout=hc.parse_duration(args.timeout).total_seconds())
+            except subprocess.TimeoutExpired:
+                stop_group(proc)
+                return "TIMEOUT", f"stopped after {args.timeout}, no verdict yet"
+            except Interrupted as e:
+                stop_group(proc)
+                return "FAILED", f"await interrupted by signal {e.signum}, the command was stopped"
+    except Interrupted as e:  # a signal between the open and the start
+        return "FAILED", f"await interrupted by signal {e.signum}"
+    took = human(time.monotonic() - started)
+    if rc < 0:
+        return "FAILED", f"killed by signal {-rc} after {took}"
+    word = on.get(rc) or (args.ok if rc == 0 else "TIMEOUT" if rc == 124 else "FAILED")
+    return word, f"exit {rc}, {took}"
+
+
+def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int:
+    try:
+        word, detail = run_wait(args, cmd, log, on)
+    finally:
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)  # the verdict is known: a late signal must not cost the line
+    link = args.link or last_url(log)
+    text = f"@{args.to} {word} {args.label}" + (f" — {link}" if link else "") + f" ({detail}, log {log})"
+    try:
+        hc.journal_append(stage, tag, text)
+    except OSError as e:
+        print(f"await: could not write the journal: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def default_label(cmd: list) -> str:
+    label = " ".join([os.path.basename(cmd[0])] + cmd[1:])
+    return label if len(label) <= 80 else label[:77] + "…"
+
+
+def main(argv: list) -> int:
+    if "--" not in argv:
+        raise hc.UsageError("no command: await [options] -- COMMAND [ARGS ...]")
+    cut = argv.index("--")
+    argv, cmd = argv[:cut], argv[cut + 1:]
+    p = argparse.ArgumentParser(prog="await", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--stage", default=None)
+    p.add_argument("--tag", default=None, help="line tag (default: the caller's signing tag + \"-await\")")
+    p.add_argument("--to", default="hub", help="who the line is addressed to (default: hub)")
+    p.add_argument("--label", default=None, help="what is awaited, e.g. \"MR !12\" (default: the command)")
+    p.add_argument("--link", default=None, help="link for the line (default: the last URL the command printed)")
+    p.add_argument("--ok", default="DONE", help="word for exit 0 (default DONE; MERGED for a merge)")
+    p.add_argument("--on", action="append", default=[], metavar="RC=WORD", help="word for another exit code (repeatable)")
+    p.add_argument("--timeout", default=DEFAULT_TIMEOUT, help="limit for the command: 30m, 2h (default 2h)")
+    p.add_argument("--log", default=None, help="file for the command's output")
+    p.add_argument("--wait", action="store_true", help="stay attached instead of detaching a supervisor")
+    args = p.parse_args(argv)
+
+    if not cmd:
+        raise hc.UsageError("no command after --")
+    if not WORD_RE.fullmatch(args.ok):
+        raise hc.UsageError(f"--ok {args.ok!r}: an upper-case word, e.g. MERGED")
+    if not re.fullmatch(r"[\w.-]+", args.to):
+        raise hc.UsageError(f"--to {args.to!r}: a tag such as hub or hub-3")
+    on = parse_on(args.on)
+    hc.parse_duration(args.timeout)
+    stage = hc.check_stage(args.stage or hc.default_stage())
+    base = args.tag or hc.signing_tag(stage)
+    if not base:
+        raise hc.UsageError("no tag: pass --tag or set $HUB_TAG (the line is signed <tag>-await)")
+    tag = args.tag or f"{base}-await"
+    if not shutil.which(cmd[0]):
+        raise hc.UsageError(f"command not found or not executable: {cmd[0]}")
+    args.label = hc.one_line(args.label or default_label(cmd))
+    if args.log:
+        log = Path(os.path.abspath(args.log))
+    else:
+        slug = re.sub(r"[^\w.-]+", "-", args.label, flags=re.UNICODE).strip("-")[:40] or "wait"
+        log = hc.work_dir(stage) / "await" / f"{hc.now():%Y%m%d-%H%M%S}-{slug}-{os.getpid()}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.wait:
+        return supervise(args, cmd, log, stage, tag, on)
+    child = [sys.executable, os.path.realpath(__file__), "--stage", stage, "--tag", tag, "--to", args.to,
+             "--label", args.label, "--ok", args.ok, "--timeout", args.timeout, "--log", str(log), "--wait"]
+    if args.link:
+        child += ["--link", args.link]
+    for item in args.on:
+        child += ["--on", item]
+    proc = subprocess.Popen(child + ["--"] + cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    print(f"await: started supervisor pid {proc.pid} for \"{args.label}\"; log {log}; "
+          f"one line @{args.to} lands in the journal when it ends (stop it: kill {proc.pid})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

@@ -106,11 +106,11 @@ def _tail_lines(path: Path, limit: int = TAIL_BYTES) -> list:
 
 class _Cache:
     """What each log's tail held, by path, size and mtime: a log only grows, so an unchanged one is not read again
-    (agent-top --json runs every few seconds). Kept in <state dir>/limit-pace/samples.json; entries of files not seen in
-    a read are dropped, so it never grows beyond the recent logs."""
+    (agent-top --json runs every few seconds). Kept in the file the caller names (agent-top: in its own cache directory);
+    entries of files not seen in a read are dropped, so it never grows beyond the recent logs."""
 
-    def __init__(self):
-        self.path = hc.state_dir() / "limit-pace" / "samples.json"
+    def __init__(self, path: Path):
+        self.path = path
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.old = data if isinstance(data, dict) else {}
@@ -230,13 +230,13 @@ def codex_samples(now: Optional[float] = None, cache: Optional[_Cache] = None) -
     return out
 
 
-def read_all(now: Optional[float] = None, cached: bool = False) -> dict:
-    """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always. `cached`
-    (agent-top, which runs every few seconds) keeps what each log held in the state dir; without it nothing is written,
+def read_all(now: Optional[float] = None, cache: Optional[Path] = None) -> dict:
+    """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always. `cache`
+    (agent-top, which runs every few seconds) is a file that keeps what each log held; without it nothing is written,
     so a dry run stays a dry run."""
     now = time.time() if now is None else now
     out = {}
-    cache = _Cache() if cached else None
+    cache = _Cache(cache) if cache else None
     for engine, reader in (("claude", lambda: claude_samples(now=now, cache=cache)),
                            ("codex", lambda: codex_samples(now, cache=cache))):
         try:

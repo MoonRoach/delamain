@@ -21,12 +21,14 @@ sys.path.insert(0, b)
 import limit_pace as lp
 import codex_rollouts
 
+cache_file = lp.hc.state_dir() / "agent-top" / "limit-pace.json"
+
 def fx(*args):
     subprocess.run([sys.executable, f"{t}/limit_pace_fixture.py", *args], check=True)
 
 def read(cached=False):
     codex_rollouts.INDEX.checked = None
-    return lp.read_all(cached=cached)
+    return lp.read_all(cache=cache_file if cached else None)
 
 fails = []
 def check(cond, name):
@@ -148,9 +150,8 @@ check(lp.note_crossing("stage-x", moved) is not None, "a new window instance is 
 check(lp.note_crossing("stage-q", lp.Pace("codex", "7d", level="ok", used=1, expected=5, resets_at=p.resets_at)) is None, "on pace: no line")
 # the per-file cache: an unchanged log is not read again, a rewritten one is
 fx("clear"); fx("codex", "60,75"); fx("claude", "20,21")
-cache_file = lp._Cache().path
 read()
-check(not cache_file.exists(), "without `cached` nothing is written (dry runs stay dry)")
+check(not (lp.hc.state_dir() / "agent-top").exists(), "without a cache file nothing is written (dry runs stay dry)")
 read(cached=True)
 check(cache_file.exists(), "agent-top's cached read keeps the samples")
 calls = []

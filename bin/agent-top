@@ -1608,7 +1608,8 @@ def pace_lines(snap: dict) -> list:
     """The limit-pace advisor line of each engine (bin/limit_pace.py); [] when AGENT_HUB_LIMIT_PACE=off."""
     if limit_pace.mode() == "off":
         return []
-    paces = limit_pace.read_all(now=snap["now"], cached=True)
+    cache = hc.state_dir() / "agent-top" / "limit-pace.json" if os.environ.get("AGENT_TOP_CACHE", "1") != "0" else None
+    paces = limit_pace.read_all(now=snap["now"], cache=cache)
     stage = snap["stages"][0] if len(snap["stages"]) == 1 else None
     return [(e, paces[e].get("7d"), limit_pace.summary(e, paces, stage)) for e in limit_pace.ENGINES]
 

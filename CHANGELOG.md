@@ -9,8 +9,17 @@
   the hub's worktree in `roles.json`; `hub succeed` and the hook take it from there. A `--cwd` outside git, or in another
   repository than the stage's project, exits 2 and starts nothing (a `--no-project` stage excepted). The fall back to a
   headless hub is a `WARNING` in the output and the journal, with the reason and the `--replace --force` that restarts
-  it as a visible session.
+  it as a visible session. A hub registered before this release has no recorded worktree: `hub succeed` then takes the
+  project from `stage.json`, and `--fallback` never needs a directory. A headless successor that is the designed
+  outcome (Codex, `--headless`) gets a neutral line, not the warning.
 
+## 1.0.7 — 2026-10-15
+
+- **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,
+  in a session registered as a stage's `hub`, `start_session` with `initiation` `own_initiative` or `offer`,
+  `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's
+  own `user_asked` and an accepted `proposal_id` pass, as does every non-hub session. Hubs also get one line saying the
+  host's card rules are superseded.
 - **Limit pace: how each engine's week is going, before the spend.** On 07.10 the Claude week ran out and cut off four
   agents mid-work; on 08.10 the Codex week went from 0 to 100 % in 11.5 hours; nothing compared spend with the
   window's pace, so hubs found out when agents died. `agent spawn`, the `hub start`/`takeover` digest and

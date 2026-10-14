@@ -23,7 +23,8 @@ def check(ok, what):
 
 HOOKS = [("questions.py", []), ("delegation.py", ["session-start"]), ("delegation.py", ["prompt"]),
          ("delegation.py", ["pre-tool"]), ("path_shadow.py", []), ("board_locks.py", []), ("polling_guard.py", []),
-         ("handoff_size.py", []), ("context_budget.py", [])]
+         ("handoff_size.py", []), ("context_budget.py", []),
+         ("session_cards.py", ["session-start"]), ("session_cards.py", ["pre-tool"])]
 deep = b"[" * 60000 + b"]" * 60000
 INPUTS = {
     "empty": b"", "garbage": b"not json", "list": b"[]", "null": b"null", "string": b'"x"',

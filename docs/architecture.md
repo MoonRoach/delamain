@@ -123,6 +123,7 @@ PreToolUse hook imports it on every Bash call.
 | `board_locks` | PreToolUse, Bash | In every session on the machine, but only on merges and pushes to protected branches and on commands a `lock-rules.json` names. |
 | `handoff_size` | PreToolUse, Write or Edit of `HANDOFF-*.md` | Only in the hub home, in a repository with `.agent-hub/`, or under a directory of `AGENT_HUB_SCOPE_DIRS`. |
 | `questions` | SessionStart | The same places, and in hub agents (`HUB_TAG` set by `agent spawn`). |
+| `session_cards` | PreToolUse of Desktop's `start_session` / `hand_off_to_session`; SessionStart | Only in a session registered as the `hub` role of a stage; a non-hub, or a registry that cannot be read, is never blocked. |
 
 `AGENT_HUB_SCOPE_DIRS` is a hub-wide setting (directories separated by `:`; the hub home's `config.json` or the
 environment, never a repository's). A session in an unrelated project hears nothing from the last two.

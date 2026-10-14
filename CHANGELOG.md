@@ -14,6 +14,10 @@
   `hub start`/`takeover`/`succeed` already get the setting or the warning (1.0.5); `setup` now offers the setting too, and
   detached `agent spawn`/`agent send` workers get `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000` unless the caller sets
   it. `AGENT_HUB_JWAIT_FOR` still overrides the default.
+- **A hub in Claude Desktop is told the handoff threshold must come first.** Desktop runs its own bundled Claude Code
+  (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
+  `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
+  threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
 
 ## 1.0.5 — 2026-10-14
 

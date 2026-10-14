@@ -1202,6 +1202,27 @@ def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
             f"{where or user} (the background successors of `hub succeed` get it on their command line)")
 
 
+def desktop_compaction_note() -> Optional[str]:
+    """One line for a hub that runs in Claude Desktop (`hub start`/`takeover` with a local_… session), unless
+    $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1. Desktop runs its own bundled CLI, which can be older than the terminal's
+    (2.1.295 against 2.1.299 on 14.10); neither the changelog nor the docs say whether that session reads
+    `idleCompaction` from settings.json, whether the setting reaches it at all, or whether Desktop compacts on a schedule
+    of its own, and nothing here can observe it. So the handoff threshold of the context budget is what has to come
+    first, and the line says where that threshold stands against the 200K minimum of idle compaction."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    cli = desktop_cli()
+    warn = int_setting("AGENT_HUB_CONTEXT_WARN", 300_000)
+    version = fmt_version(cli[0]) if cli else "version unknown"
+    where = (f"the context budget warns at {warn // 1000}k tokens, above the 200K at which idle compaction starts: set "
+             f"AGENT_HUB_CONTEXT_WARN to 150000 in the hub home's config.json (hub-wide) if the handoff must come first"
+             if warn >= 200_000 else f"the context budget warns at {warn // 1000}k tokens, below the 200K at which idle "
+             "compaction starts")
+    return (f"this hub runs in Claude Desktop, with Desktop's own Claude Code ({version} bundled here); whether it honours "
+            f"\"idleCompaction\": false from settings.json, or compacts on its own, is not verified and cannot be seen from "
+            f"here, so the handoff threshold has to fire before any compaction: {where}")
+
+
 def plugin_tools() -> list:
     """The plugin's commands: every executable file of this bin/ without an extension (the .py files are modules)."""
     try:

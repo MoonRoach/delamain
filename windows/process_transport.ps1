@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 namespace Delamain {
@@ -14,30 +15,167 @@ namespace Delamain {
         public int ExitCode;
         public string Output;
     }
+    // A Linux session leader stays unreaped until cancellation finishes, so
+    // its process-group id cannot be reused while we signal owned foreground
+    // children. Workers that detach into another session keep running.
+    internal sealed class Foreground : IDisposable {
+        internal string[] Arguments;
+        string control;
+        internal Foreground(string executable, string[] arguments) {
+            string trusted = ProcessTransport.WslExecutable();
+            if (!String.Equals(executable, "wsl.exe", StringComparison.OrdinalIgnoreCase) &&
+                !String.Equals(executable, trusted, StringComparison.OrdinalIgnoreCase)) {
+                Arguments = arguments; return;
+            }
+            int at = Array.IndexOf(arguments, "--exec");
+            if (at < 0 || at + 1 == arguments.Length)
+                throw new ArgumentException("Owned WSL foreground commands require --exec and an executable.");
+            control = Path.GetTempFileName();
+            try {
+                File.WriteAllText(control, "run", new UTF8Encoding(false));
+                List<string> mapping = new List<string>();
+                for (int i = 0; i <= at; i++) mapping.Add(arguments[i]);
+                mapping.Add("wslpath"); mapping.Add("-a"); mapping.Add("-u"); mapping.Add(control);
+                ProcessResult mapped = ProcessTransport.RunCore(trusted, mapping.ToArray(), true, true, false, "", false);
+                if (mapped.ExitCode != 0 || String.IsNullOrWhiteSpace(mapped.Output))
+                    throw new IOException("WSL could not resolve its private foreground cancellation path.");
+                List<string> owned = new List<string>();
+                for (int i = 0; i <= at; i++) owned.Add(arguments[i]);
+                owned.Add("python3"); owned.Add("-c"); owned.Add(Guardian); owned.Add(mapped.Output.Trim());
+                for (int i = at + 1; i < arguments.Length; i++) owned.Add(arguments[i]);
+                Arguments = owned.ToArray();
+            } catch { Dispose(); throw; }
+        }
+        internal void Cancel(Process process) {
+            if (control == null) return;
+            File.WriteAllText(control, "cancel", new UTF8Encoding(false));
+            Stopwatch deadline = Stopwatch.StartNew();
+            while (!process.HasExited && deadline.ElapsedMilliseconds < 1500) {
+                try { if (File.ReadAllText(control) == "done") break; }
+                catch (IOException) { }
+                Thread.Sleep(20);
+            }
+            // If WSL has not started Python yet, removing the control below
+            // also tells a late guardian to exit before launching the command.
+        }
+        public void Dispose() {
+            if (control == null) return;
+            File.Delete(control);
+            control = null;
+        }
+        const string Guardian = @"
+import os,signal,subprocess,sys,time
+from pathlib import Path
+control=Path(sys.argv[1])
+child=None
+reaped=False
+requested=False
+def request(signum,frame):
+    global requested
+    requested=True
+signal.signal(signal.SIGHUP,request)
+signal.signal(signal.SIGTERM,request)
+def cancelled():
+    if requested: return True
+    try: return control.read_text() != 'run'
+    except FileNotFoundError: return True
+def exited():
+    return os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
+def stop():
+    # Popen's leader is still pinned, even when it has already become a zombie.
+    for sig in (signal.SIGTERM,signal.SIGKILL):
+        try: os.killpg(child.pid,sig)
+        except ProcessLookupError: pass
+        if sig == signal.SIGTERM: time.sleep(.2)
+    child.wait(timeout=1)
+try:
+    if cancelled(): sys.exit(1)
+    child=subprocess.Popen(sys.argv[2:],start_new_session=True)
+    while True:
+        if cancelled():
+            stop(); reaped=True; sys.exit(1)
+        if exited():
+            code=child.wait(); reaped=True
+            sys.exit(code if code >= 0 else -code)
+        time.sleep(.02)
+finally:
+    if child is not None and not reaped: stop()
+    # Acknowledgement is written only after the exact foreground has exited.
+    try:
+        fd=os.open(control,os.O_WRONLY|os.O_TRUNC)
+        try: os.write(fd,b'done')
+        finally: os.close(fd)
+    except FileNotFoundError: pass
+";
+    }
     public sealed class ProcessOutput : IDisposable {
         Process process;
         StreamReader reader;
         Thread stderr;
         Exception stderrError;
+        bool complete;
+        Foreground owner;
         internal ProcessOutput(string executable, string[] arguments, bool redirectInput, bool rawInput, string input) {
-            process = Process.Start(ProcessTransport.Info(executable, arguments, redirectInput));
-            reader = new StreamReader(process.StandardOutput.BaseStream, new UTF8Encoding(false), false);
-            stderr = new Thread(delegate() {
-                try { ProcessTransport.Errors(process.StandardError.BaseStream); }
-                catch (Exception e) { stderrError = e; }
-            });
-            stderr.IsBackground = true; stderr.Start();
-            if (redirectInput) ProcessTransport.Input(process, rawInput, input);
+            try {
+                owner = new Foreground(executable, arguments);
+                process = Process.Start(ProcessTransport.Info(executable, owner.Arguments, redirectInput));
+                reader = new StreamReader(process.StandardOutput.BaseStream, new UTF8Encoding(false), false);
+                stderr = new Thread(delegate() {
+                    try { ProcessTransport.Errors(process.StandardError.BaseStream); }
+                    catch (Exception e) { stderrError = e; }
+                });
+                stderr.IsBackground = true; stderr.Start();
+                if (redirectInput) ProcessTransport.Input(process, rawInput, input);
+            } catch { Dispose(); throw; }
         }
         public string ReadLine() { return reader.ReadLine(); }
         public int Complete() {
             process.WaitForExit(); stderr.Join();
             if (stderrError != null) throw stderrError;
-            return process.ExitCode;
+            int code = process.ExitCode;
+            complete = true;
+            return code;
         }
-        public void Dispose() { reader.Dispose(); process.Dispose(); }
+        public void Dispose() {
+            if (process == null) { if (owner != null) owner.Dispose(); return; }
+            try {
+                if (!complete) {
+                    try { owner.Cancel(process); } finally { ProcessTransport.Stop(process); }
+                }
+            } finally {
+                if (reader != null) reader.Dispose();
+                process.StandardError.Close();
+                if (stderr != null && stderr.IsAlive) stderr.Join(500);
+                process.Dispose(); process = null;
+                if (owner != null) owner.Dispose();
+            }
+        }
     }
     public static class ProcessTransport {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetWindowsDirectory(StringBuilder buffer, uint size);
+        public static string WslExecutable() {
+            // Ask Windows, rather than trusting the caller's cwd, PATH or
+            // SystemRoot environment variable. Sysnative bypasses WOW64 redirection.
+            StringBuilder directory = new StringBuilder(32768);
+            uint length = GetWindowsDirectory(directory, (uint)directory.Capacity);
+            if (length == 0 || length >= directory.Capacity)
+                throw new IOException("Windows could not resolve its system directory.");
+            string system = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess ? "Sysnative" : "System32";
+            string executable = Path.Combine(directory.ToString(), system, "wsl.exe");
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("The trusted Windows WSL executable is unavailable.", executable);
+            return executable;
+        }
+        internal static void Stop(Process process) {
+            // Process keeps the handle of the exact child; never rediscover a
+            // process by name or signal unrelated/detached worker processes.
+            try {
+                if (!process.HasExited) process.Kill();
+                if (!process.WaitForExit(2000))
+                    throw new IOException("The owned Windows WSL client did not exit within the cleanup deadline.");
+            } catch (InvalidOperationException) { }
+        }
         static string Quote(string value) {
             bool simple = value.Length > 0;
             foreach (char c in value) if (Char.IsWhiteSpace(c) || c == '"') simple = false;
@@ -102,7 +240,8 @@ namespace Delamain {
         }
         internal static ProcessStartInfo Info(string executable, string[] arguments, bool redirectInput) {
             ProcessStartInfo info = new ProcessStartInfo();
-            info.FileName = executable;
+            info.FileName = String.Equals(executable, "wsl.exe", StringComparison.OrdinalIgnoreCase)
+                ? WslExecutable() : executable;
             List<string> quoted = new List<string>();
             foreach (string arg in arguments) quoted.Add(Quote(arg));
             info.Arguments = String.Join(" ", quoted.ToArray());
@@ -129,28 +268,59 @@ namespace Delamain {
         }
         public static ProcessResult Run(string executable, string[] arguments,
                                         bool capture, bool redirectInput, bool rawInput, string input) {
-            using (Process process = Process.Start(Info(executable, arguments, redirectInput))) {
-                MemoryStream buffer = capture ? new MemoryStream() : null;
+            return RunCore(executable, arguments, capture, redirectInput, rawInput, input, true);
+        }
+        internal static ProcessResult RunCore(string executable, string[] arguments,
+                                        bool capture, bool redirectInput, bool rawInput, string input, bool supervise) {
+            Process process = null;
+            MemoryStream buffer = capture ? new MemoryStream() : null;
+            bool complete = false;
+            Foreground owner = null;
+            Thread stdout = null, stderr = null;
+            try {
+                if (supervise) owner = new Foreground(executable, arguments);
+                process = Process.Start(Info(executable, owner == null ? arguments : owner.Arguments, redirectInput));
                 Stream output = capture ? (Stream)buffer : Console.OpenStandardOutput();
                 Exception outputError = null;
-                Thread stdout = new Thread(delegate() {
+                stdout = new Thread(delegate() {
                     try { process.StandardOutput.BaseStream.CopyTo(output); output.Flush(); }
-                    catch (Exception e) { outputError = e; }
+                    catch (Exception e) { Volatile.Write(ref outputError, e); }
                 });
                 Exception errorError = null;
-                Thread stderr = new Thread(delegate() {
+                stderr = new Thread(delegate() {
                     try { Errors(process.StandardError.BaseStream); }
-                    catch (Exception e) { errorError = e; }
+                    catch (Exception e) { Volatile.Write(ref errorError, e); }
                 });
                 stdout.IsBackground = true; stderr.IsBackground = true;
                 stdout.Start(); stderr.Start();
                 if (redirectInput) Input(process, rawInput, input);
-                process.WaitForExit(); stdout.Join(); stderr.Join();
+                // An output failure must cancel a quiet child as well; waiting
+                // for its normal exit first can otherwise block indefinitely.
+                while (!process.WaitForExit(50)) {
+                    if (Volatile.Read(ref outputError) != null) throw outputError;
+                    if (Volatile.Read(ref errorError) != null) throw errorError;
+                }
+                stdout.Join(); stderr.Join();
                 if (outputError != null) throw outputError;
                 if (errorError != null) throw errorError;
                 ProcessResult result = new ProcessResult(); result.ExitCode = process.ExitCode;
-                if (capture) { result.Output = new UTF8Encoding(false).GetString(buffer.ToArray()); buffer.Dispose(); }
+                if (capture) result.Output = new UTF8Encoding(false).GetString(buffer.ToArray());
+                complete = true;
                 return result;
+            } finally {
+                if (process != null) {
+                    try { if (!complete) {
+                        try { if (owner != null) owner.Cancel(process); } finally { Stop(process); }
+                    } }
+                    finally {
+                        process.StandardOutput.Close(); process.StandardError.Close();
+                        if (stdout != null && stdout.IsAlive) stdout.Join(500);
+                        if (stderr != null && stderr.IsAlive) stderr.Join(500);
+                        process.Dispose();
+                    }
+                }
+                if (owner != null) owner.Dispose();
+                if (buffer != null) buffer.Dispose();
             }
         }
     }
@@ -160,10 +330,10 @@ namespace Delamain {
 
 function Invoke-DelamainWsl([string[]]$Arguments, [switch]$Capture, [switch]$RedirectInput, [AllowNull()][object]$InputText) {
     if ($Capture) {
-        return [Delamain.ProcessTransport]::Run('wsl.exe', $Arguments, $true,
+        return [Delamain.ProcessTransport]::Run([Delamain.ProcessTransport]::WslExecutable(), $Arguments, $true,
             $RedirectInput.IsPresent, ($null -eq $InputText), $InputText)
     }
-    $child = [Delamain.ProcessTransport]::Start('wsl.exe', $Arguments,
+    $child = [Delamain.ProcessTransport]::Start([Delamain.ProcessTransport]::WslExecutable(), $Arguments,
         $RedirectInput.IsPresent, ($null -eq $InputText), $InputText)
     try {
         # Strings are already scalar pipeline objects. -NoEnumerate wraps them

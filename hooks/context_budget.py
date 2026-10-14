@@ -340,7 +340,7 @@ def main() -> None:
     def plan(now_block: bool) -> str:
         model = ap.successor_model(None, path)
         mode = ap.configured_mode() or data.get("permission_mode") or None
-        return ap.instruction(hub_stage, model, mode, data.get("cwd") or None, now_block, fmt(block),
+        return ap.instruction(hub_stage, model, mode, ap.predecessor_cwd(hub_stage, data.get("cwd") or None), now_block, fmt(block),
                               ap.hub_effort(data))
 
     if event == "PreToolUse":

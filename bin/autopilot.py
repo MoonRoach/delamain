@@ -430,6 +430,18 @@ def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: 
     return " ".join(parts)
 
 
+def predecessor_cwd(stage: str, hint: Optional[str]) -> Optional[str]:
+    """The directory the budget hook's `hub succeed --cwd` names: the hub's registered worktree, else `hint` (the hook
+    input's directory, which drifts with the hub's shell) when it is a good place, else None (`hub succeed` then decides
+    and refuses a bad directory itself)."""
+    recorded = hc.registered_worktree(stage)
+    if recorded is not None:
+        return str(recorded)
+    if hint and hc.project_cwd_problem(stage, hint) is None:
+        return hint
+    return None
+
+
 def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], now_block: bool,
                 block_k: str, effort: Optional[str] = None) -> str:
     """The autopilot paragraph of the context budget's warning and deny reason. `effort`: what the hub runs at now (the
@@ -1286,8 +1298,11 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             return 0
         except Start as e:
             why = str(e)
-    hc.journal_append(stage, tag, f"auto-handoff: background successor not started — {why}; falling back to a "
-                                  "headless hub (agent spawn)")
+    loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
+            "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
+            f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
+    hc.journal_append(stage, tag, loud)
+    print(loud + "\n")
     phase = {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
              "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
              "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}

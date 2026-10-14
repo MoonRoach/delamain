@@ -1232,6 +1232,12 @@ def _cmd_takeover(a) -> int:
                     data["roles"]["hub"].pop("host", None)
                 if host == "codex-app":
                     data["roles"]["hub"]["cwd"] = os.getcwd()
+                # where `hub succeed` starts the successor from, whatever directory the hub's shell drifts to later
+                top = hc.git_toplevel(os.getcwd()) if getattr(a, "project", None) is not None else None
+                if top is not None:
+                    data["roles"]["hub"]["worktree"] = str(top)
+                else:
+                    data["roles"]["hub"].pop("worktree", None)
                 if request:
                     pend = autopilot.load_state(stage)["pending"]
                     data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
@@ -1513,6 +1519,26 @@ def check_replace_caller(stage: str, pend: dict) -> None:
         raise hc.UsageError(f"HUB_TAG {tag} is not the hub that handed over (hub-{(pend.get('n') or 1) - 1}) — only it may replace its successor")
 
 
+def successor_cwd(stage: str, given) -> tuple:
+    """(directory, note) the successor is started from: --cwd, else the worktree the registered hub recorded at takeover
+    (the hub's shell may have drifted anywhere since), else the shell's directory. A directory that is outside git or in
+    another project than the stage's is refused: a successor there would not be a session of the project."""
+    note = ""
+    if given:
+        cwd = Path(given).expanduser().resolve()
+    elif (recorded := hc.registered_worktree(stage)) is not None:
+        cwd = recorded.resolve()
+        if cwd != Path.cwd().resolve():
+            note = f"started from the hub's registered worktree {cwd}, not from the shell's directory {Path.cwd()}"
+    else:
+        cwd = Path(os.getcwd()).resolve()
+    if cwd.is_dir() and (problem := hc.project_cwd_problem(stage, cwd)):
+        raise hc.UsageError(f"--cwd {cwd}: {problem}. A successor hub works in a git worktree of its project, never outside "
+                            "git. Run `hub succeed` from the hub's own worktree or pass --cwd <that worktree> (a stage "
+                            "that has no repository: hub start/takeover --no-project)")
+    return cwd, note
+
+
 def cmd_succeed(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
@@ -1534,7 +1560,7 @@ def cmd_succeed(a) -> int:
             raise hc.UsageError(f"--handoff {handoff}: no such file")
         if not a.replace:  # a replacement restarts the handoff the first successor was started from
             check_handoff_todos(handoff, a.allow_todo)
-    cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
+    cwd, cwd_note = successor_cwd(stage, a.cwd)
     if a.replace:
         # the registered hub is the successor by now: the numbers come from the record, not from the registry
         succ = pend.get("n")
@@ -1561,6 +1587,8 @@ def cmd_succeed(a) -> int:
         return autopilot.fallback(stage, n, a.why, succ)
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
+    if cwd_note:
+        notes.append(cwd_note)
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
                              engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree)
 

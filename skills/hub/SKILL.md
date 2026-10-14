@@ -346,6 +346,10 @@ line with the reason, and `ask decided` (*Planning a stage*).
    environment, summarise a file) → a sub-agent: **foreground** when the hub has nothing else to do until the answer,
    otherwise **background** (through the host's native subagent API).
 
+- **Host session cards and forks are not a launch mode.** The host may offer to start a session or fork (Claude Desktop's
+  `start_session` cards, `hand_off_to_session`). A registered hub does not use them for work that commits, pushes or
+  waits: autopilot cannot click a card and agent-top cannot see it, so the work goes through `agent spawn`, and an
+  owner decision through `ask add`. A hook refuses these calls in a hub; the owner's own request for a session passes.
 - An in-session sub-agent depends on the host's session lifecycle; its native follow-up API is for that session.
   Use a detached executor when a successor must reach or resume it. In Claude, compaction preserves the sub-agent. Ask it for a short result (≤ 20 lines,
   details in a file): its completion notice and result land in your context.

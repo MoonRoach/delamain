@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Trusted WSL launch and bounded foreground cancellation.** Windows transport resolves
+  the system WSL executable, including Sysnative for 32-bit PowerShell. A broken output
+  pipeline cancels the owned Linux foreground group and bounds Windows-client cleanup;
+  workers that detach into their own session survive.
 - **Configured Windows hub-home fallback.** A fresh repository uses the hub home selected
   during installation, preserving the shared lock board. Explicit environment, project
   and legacy selections retain priority.

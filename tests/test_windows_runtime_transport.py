@@ -699,6 +699,48 @@ public static class FakeWsl {
 
 @unittest.skipUnless(sys.platform == "linux", "Real embedded Linux guardian")
 class ForegroundGuardianTests(unittest.TestCase):
+    def test_completion_drains_both_pipes_before_ack_and_late_start_is_cancelled(self):
+        source = (ROOT / "windows/process_transport.ps1").read_text()
+        guardian = source.split('const string Guardian = @"', 1)[1].split('";', 1)[0]
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            control = base / "control"
+            marker = base / "should-not-launch"
+            # Missing or already cancelled startup must never launch a command.
+            for initial in (None, "cancel"):
+                if initial is not None: control.write_text(initial)
+                run = subprocess.run([sys.executable, "-c", guardian, str(control),
+                    sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                    str(marker)], capture_output=True, timeout=3)
+                self.assertEqual(run.returncode, 1)
+                self.assertFalse(marker.exists())
+                control.unlink(missing_ok=True)
+            control.write_text("run")
+            run = subprocess.Popen([sys.executable, "-c", guardian, str(control),
+                sys.executable, "-c", "import os,sys,time; print(os.getpid(),flush=True); print('error 日本語',file=sys.stderr,flush=True); os.close(1); os.close(2); time.sleep(.2); sys.exit(4)"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                # WSL entry status and both EOFs must arrive without host ack.
+                output, error = run.communicate(timeout=3)
+                self.assertEqual(run.returncode, 4)
+                self.assertEqual(error.decode(), "error 日本語\n")
+                leader = int(output)
+                stat = Path(f"/proc/{leader}/stat")
+                self.assertEqual(stat.read_text().rsplit(')',1)[1].split()[0], "Z")
+                # A transient truncate during a host decision is not cancellation.
+                control.write_text("")
+                time.sleep(.1)
+                self.assertTrue(stat.exists())
+                control.write_text("complete")
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline and control.read_text() != "done": time.sleep(.02)
+                self.assertEqual(control.read_text(), "done")
+                self.assertFalse(stat.exists(), "Completion left the pinned leader unreaped")
+                print(f"embedded normal completion: entry {run.pid}, leader {leader}; stdout/stderr EOF before ack, status 4, pinned leader reaped")
+            finally:
+                control.unlink(missing_ok=True)
+                if run.poll() is None: run.kill(); run.communicate(timeout=3)
+
     def test_early_leader_exit_then_cancel_preserves_detached_control(self):
         # Execute the exact embedded program, including its real file protocol.
         source = (ROOT / "windows/process_transport.ps1").read_text()

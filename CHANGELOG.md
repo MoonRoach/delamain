@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The hub skill is a 16 KB core plus references.** `skills/hub/SKILL.md` was 47 KB (about 17,000 tokens) that every
+  hub loaded and re-read on every call, and about half of it was procedure for a Codex hub or for a situation that
+  comes up once a shift. It is now a 16,346-byte core (about 6,300 tokens, measured by input tokens): first commands, starting
+  and taking over, waiting (with `await` for CI, merge and lock waits), talking, planning, launch choice, executors, a
+  short Claude Desktop host block and the twelve recommended rules. The rest sits in
+  `skills/hub/references/` — `stage-lifecycle.md`, `autopilot.md`, `owner-and-planning.md`,
+  `launch-and-executors.md`, `codex-hub.md` — moved word for word, each with a "read … when …" line in the core;
+  a Codex hub reads `codex-hub.md` and `autopilot.md` at start. Pointers to *Terminal follow-through* (the handoff
+  template and skill, the Codex successor briefs) name the new file. The tests that read the Autopilot paragraphs
+  read `references/autopilot.md`, and `tests/t_hub_skill_layout.sh` holds the core's size budget and every pointer.
+  `docs/proposals/hub-rules-slim.md` proposes the same cut for the owner's `hub-rules.md`.
+
 ## 1.0.5 — 2026-10-14
 
 - **Hubs are not compacted when idle.** Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle about

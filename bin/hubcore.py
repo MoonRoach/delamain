@@ -470,6 +470,44 @@ def record_stage_project(stage: str, repo: Optional[Path]) -> None:
         atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
 
 
+def project_cwd_problem(stage: str, cwd) -> Optional[str]:
+    """Why `cwd` is no place to start the stage's successor hub from, None when it is: outside git, or in another
+    repository than the stage's recorded project. A stage with no project (`--no-project`, or AGENT_HUB_NO_PROJECT in the
+    environment) accepts any directory."""
+    if truthy(os.environ.get(NO_PROJECT_ENV)) or stage_record(stage).get("no_project"):
+        return None
+    here = main_tree(cwd)
+    if here is None:
+        if _git(cwd, "rev-parse", "--git-dir") is None:  # a timeout or no git at all says nothing about the directory
+            return f"git did not answer for {cwd} (not installed, or no reply in 5 s): cannot tell whether it is in a repository"
+        return f"{cwd} is not inside a git repository"
+    repo = stage_record(stage).get("repo")
+    project = main_tree(Path(str(repo)).expanduser()) if repo else None
+    if project is not None and not _same(here, project):
+        return f"{cwd} is in {here}, not in a worktree of the project of stage {stage} ({project})"
+    return None
+
+
+def stage_project(stage: str) -> Optional[Path]:
+    """The main checkout of the stage's recorded project (stage.json `repo`); None when the stage has none, or it is gone."""
+    repo = stage_record(stage).get("repo")
+    if not repo or stage_record(stage).get("no_project"):
+        return None
+    try:
+        return main_tree(Path(str(repo)).expanduser())
+    except (RuntimeError, OSError):  # `~user` that does not exist
+        return None
+
+
+def registered_worktree(stage: str) -> Optional[Path]:
+    """The worktree the stage's registered hub recorded at takeover (roles.json, hub.worktree) while it is still a good
+    place for a successor (project_cwd_problem); None when nothing was recorded or it is gone."""
+    path = (roles_load(stage)["roles"].get("hub") or {}).get("worktree")
+    if not path or not Path(str(path)).is_dir() or project_cwd_problem(stage, path):
+        return None
+    return Path(str(path))
+
+
 def stage_closed(stage: str) -> Optional[dict]:
     """The stage's `closed` record ({"at", "why", "by", "hub"}) once `hub close` closed it, else None. A closed stage
     is left out of agent-top's default view, the watchdog, the night queue and the questions summary; a takeover

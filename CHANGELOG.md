@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's
+  directory into the `hub succeed --cwd` it suggested, and that directory drifts with the hub's shell: a hub that had
+  `cd`-ed into the hub home got a successor there, outside git, and when `claude --bg` refused the untrusted folder `hub
+  succeed` quietly fell back to a headless hub that Claude Desktop does not list. `hub start`/`hub takeover` now record
+  the hub's worktree in `roles.json`; `hub succeed` and the hook take it from there. A `--cwd` outside git, or in another
+  repository than the stage's project, exits 2 and starts nothing (a `--no-project` stage excepted). The fall back to a
+  headless hub is a `WARNING` in the output and the journal, with the reason and the `--replace --force` that restarts
+  it as a visible session. A hub registered before this release has no recorded worktree: `hub succeed` then takes the
+  project from `stage.json`, and `--fallback` never needs a directory. A headless successor that is the designed
+  outcome (Codex, `--headless`) gets a neutral line, not the warning.
+
 ## 1.0.7 — 2026-10-15
 
 - **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,

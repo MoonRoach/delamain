@@ -132,13 +132,15 @@ handoff --finish is the last step of writing one: it checks the draft (--handoff
 a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
-exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd in a new worktree
-(`--worktree <stage>-hub-<n+1>`, a free name; outside git: in --cwd) with the hub's model and permission mode, an explicit
+exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd (default: the
+worktree the registered hub recorded at takeover, else here; outside git or in another project: refused, exit 2) in a new worktree
+(`--worktree <stage>-hub-<n+1>`, a free name) with the hub's model and permission mode, an explicit
 effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at now — `hub effort`; when that cannot be read,
 succeed exits 1 and starts nothing) and the prompt "/delamain:hub take over stage … [agent-hub auto-handoff k/N]" (the marker keeps the name used before the rename for
 one release), reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
-When the background session cannot start (CLI not logged in, the main checkout untrusted) it starts a headless hub
+When the background session cannot start (CLI not logged in, the main checkout untrusted) it says so loudly (WARNING, in
+the output and the journal: the successor is not listed in Claude Desktop) and starts a headless hub
 with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
 becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
 tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
@@ -1251,6 +1253,12 @@ def _cmd_takeover(a) -> int:
                     data["roles"]["hub"].pop("host", None)
                 if host == "codex-app":
                     data["roles"]["hub"]["cwd"] = os.getcwd()
+                # where `hub succeed` starts the successor from, whatever directory the hub's shell drifts to later
+                top = hc.git_toplevel(os.getcwd()) if getattr(a, "project", None) is not None else None
+                if top is not None:
+                    data["roles"]["hub"]["worktree"] = str(top)
+                else:
+                    data["roles"]["hub"].pop("worktree", None)
                 if request:
                     pend = autopilot.load_state(stage)["pending"]
                     data["roles"]["hub"].update(surface="desktop", project_id=pend["project_id"],
@@ -1532,6 +1540,30 @@ def check_replace_caller(stage: str, pend: dict) -> None:
         raise hc.UsageError(f"HUB_TAG {tag} is not the hub that handed over (hub-{(pend.get('n') or 1) - 1}) — only it may replace its successor")
 
 
+def successor_cwd(stage: str, given) -> tuple:
+    """(directory, note) the successor is started from: --cwd, else the worktree the registered hub recorded at takeover
+    (the hub's shell may have drifted anywhere since), else the stage's recorded project, else the shell's directory. A directory that is outside git or in
+    another project than the stage's is refused: a successor there would not be a session of the project."""
+    note = ""
+    if given:
+        cwd = Path(given).expanduser().resolve()
+    elif (recorded := hc.registered_worktree(stage)) is not None:
+        cwd = recorded.resolve()
+        if cwd != Path.cwd().resolve():
+            note = f"started from the hub's registered worktree {cwd}, not from the shell's directory {Path.cwd()}"
+    elif (project := hc.stage_project(stage)) is not None:  # a hub registered before worktrees were recorded
+        cwd = project.resolve()
+        if cwd != Path.cwd().resolve():
+            note = f"started from the stage's project {cwd}, not from the shell's directory {Path.cwd()}"
+    else:
+        cwd = Path(os.getcwd()).resolve()
+    if cwd.is_dir() and (problem := hc.project_cwd_problem(stage, cwd)):
+        raise hc.UsageError(f"--cwd {cwd}: {problem}. A successor hub works in a git worktree of its project, never outside "
+                            "git. Run `hub succeed` from the hub's own worktree or pass --cwd <that worktree> (a stage "
+                            "that has no repository: hub start/takeover --no-project)")
+    return cwd, note
+
+
 def cmd_succeed(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
@@ -1553,8 +1585,8 @@ def cmd_succeed(a) -> int:
             raise hc.UsageError(f"--handoff {handoff}: no such file")
         if not a.replace:  # a replacement restarts the handoff the first successor was started from
             check_handoff_todos(handoff, a.allow_todo)
-    cwd = Path(a.cwd or os.getcwd()).expanduser().resolve()
     if a.replace:
+        cwd, cwd_note = successor_cwd(stage, a.cwd)
         # the registered hub is the successor by now: the numbers come from the record, not from the registry
         succ = pend.get("n")
         if not isinstance(succ, int) or not handoff:
@@ -1576,10 +1608,13 @@ def cmd_succeed(a) -> int:
         notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
         succ = n + 1
     check_caller(stage, n)
-    if a.fallback:
+    if a.fallback:  # starts from the root the bg session was started in (pending.cwd): the shell's directory is no matter
         return autopilot.fallback(stage, n, a.why, succ)
+    cwd, cwd_note = successor_cwd(stage, a.cwd)
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
+    if cwd_note:
+        notes.append(cwd_note)
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
                              engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree)
 

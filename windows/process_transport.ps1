@@ -46,15 +46,36 @@ namespace Delamain {
                 Arguments = owned.ToArray();
             } catch { Dispose(); throw; }
         }
+        string ReadControl() {
+            using (FileStream file = new FileStream(control, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete))
+            using (StreamReader reader = new StreamReader(file, Encoding.UTF8)) return reader.ReadToEnd();
+        }
+        void Decide(string decision) {
+            Stopwatch deadline = Stopwatch.StartNew();
+            while (true) {
+                try {
+                    using (FileStream file = new FileStream(control, FileMode.Open, FileAccess.Write,
+                            FileShare.ReadWrite | FileShare.Delete)) {
+                        byte[] bytes = Encoding.UTF8.GetBytes(decision);
+                        file.SetLength(0); file.Write(bytes, 0, bytes.Length);
+                    }
+                    return;
+                } catch (IOException) {
+                    if (deadline.ElapsedMilliseconds >= 300) throw;
+                    Thread.Sleep(10);
+                }
+            }
+        }
         internal void Complete() {
-            if (control != null) File.WriteAllText(control, "complete", new UTF8Encoding(false));
+            if (control != null) Decide("complete");
         }
         internal void Cancel(Process process) {
             if (control == null) return;
-            File.WriteAllText(control, "cancel", new UTF8Encoding(false));
+            Decide("cancel");
             Stopwatch deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 1500) {
-                try { if (File.ReadAllText(control) == "done") break; }
+                try { if (ReadControl() == "done") break; }
                 catch (IOException) { }
                 Thread.Sleep(20);
             }
@@ -65,7 +86,8 @@ namespace Delamain {
             if (control == null) return;
             Stopwatch deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 1500) {
-                if (File.ReadAllText(control) == "done") return;
+                try { if (ReadControl() == "done") return; }
+                catch (IOException) { }
                 Thread.Sleep(20);
             }
             throw new IOException("The foreground guardian did not acknowledge completion within its cleanup deadline.");

@@ -919,7 +919,7 @@ $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 . $Transport
 $text='Русский 日本語 😀'+[char]0+"`nsecond line`n"
-$code='import base64,json,sys; print(json.dumps({"argv":sys.argv[2:],"stdin":base64.b64encode(sys.stdin.buffer.read()).decode()})); sys.exit(int(sys.argv[1]))'
+$code='import base64,json,sys; print("stderr 日本語",file=sys.stderr); print(json.dumps({"argv":sys.argv[2:],"stdin":base64.b64encode(sys.stdin.buffer.read()).decode()})); sys.exit(int(sys.argv[1]))'
 $results=@()
 foreach ($status in @(0,3,4)) {
     $arguments=@('--distribution','Ubuntu','--exec','python3','-c',$code,[string]$status,'','日本語 😀','quote" $literal')
@@ -935,6 +935,7 @@ ConvertTo-Json -InputObject $results -Depth 10 -Compress
             with self.subTest(shell=shell), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
                 result=self.run_transport_script(shell,source,env={**self.env,"TEMP":scratch,"TMP":scratch},timeout=45)
                 self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                self.assertEqual(result.stderr.decode("utf-8").count("stderr 日本語"), 6)
                 for value in json.loads(result.stdout):
                     self.assertEqual(value['captureExit'],value['expected'])
                     self.assertEqual(value['streamExit'],value['expected'])

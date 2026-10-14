@@ -21,6 +21,9 @@ export AGENT_HUB_NO_PROJECT=1
 # `hub start` refuses a stage name with no word about the work and wants --goal; the scripts start stages called s1, web,
 # stage-a, so they opt out the same way. t_naming.sh unsets it.
 export AGENT_HUB_NO_NAMING=1
+# `hub start` / `hub takeover` warn when no settings file turns Claude Code's idle compaction off, which a throw-away
+# environment never does. t_cli_models.sh unsets it.
+export AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

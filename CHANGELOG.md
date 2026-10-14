@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Hubs are not compacted when idle.** Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle about
+  54 minutes (on by default since 2.1.299). A hub waiting on a long `jwait` is such a conversation: compacted, the
+  context budget reads the smaller size and the hub goes on from a summary instead of handing over. The background
+  successor of `hub succeed` now starts with `"idleCompaction": false` in its `--settings`, in bypass mode too, and
+  `hub start`/`hub takeover` of a Claude hub warn unless the settings file that decides it, in Claude Code's order
+  (managed, the project's `settings.local.json`, its `settings.json`, the user's), turns it off.
+
 ## 1.0.4 — 2026-10-14
 
 - **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with

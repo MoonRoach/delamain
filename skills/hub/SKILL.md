@@ -62,13 +62,13 @@ Closing a stage whose hub is no longer needed (the owner decides; without it, as
 ## Waiting
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (55m by default,
+- **Claude Code:** Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (50m by default,
   `AGENT_HUB_JWAIT_FOR`). The prompt cache lives one hour: a wake after a longer sleep re-writes the whole context.
   The Bash `timeout` stays at or above `--for`. The completion notification wakes the coordinator.
 - **Codex:** `references/codex-hub.md` (*Waiting on a Codex hub*).
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 55m` — lines addressed to the hub, agents' status lines
+- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 50m` — lines addressed to the hub, agents' status lines
   and script questions echoed into the journal; your own lines (your tag and its sub-tags `hub-<N>/…`) do not wake
   you. Copy it from the digest. With `--caller <session id>` instead of the hub's tag, add `--exclude-tag hub-<N>`.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is

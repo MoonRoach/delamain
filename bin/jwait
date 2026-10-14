@@ -30,8 +30,9 @@ unseen matching line, even the first time (a script may have asked its question 
 started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
 Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
 Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone; a past clock time means
-tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
-sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
+tomorrow) or --for 6h; default --for 50m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
+sleeps longer pays for re-writing its whole context at every wake, and Claude Code 2.1.299+ compacts a 200K+ conversation idle for
+~54 minutes; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
 waiter is not woken).

@@ -24,6 +24,9 @@ export AGENT_HUB_NO_NAMING=1
 # The limit-pace advisor (bin/limit_pace.py) reads plan usage from $CODEX_HOME/sessions: the machine's real Codex week
 # must not decide whether a test's spawn is refused. A script that needs Codex data sets CODEX_HOME itself.
 export CODEX_HOME="$(mktemp -d)"
+# `hub start` / `hub takeover` warn when no settings file turns Claude Code's idle compaction off, which a throw-away
+# environment never does. t_cli_models.sh unsets it.
+export AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

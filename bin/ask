@@ -156,6 +156,21 @@ def all_stages() -> list[str]:
                   if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", p.parent.name))
 
 
+def stage_closed(stage: str) -> bool:
+    """`hub close` closed the stage (<stage dir>/stage.json "closed"): it is left out of `ask summary`, a `list` and an
+    `inbox` across stages and the questions hook; a lookup by id, `--stage S` and the permissions still read it."""
+    try:
+        data = json.loads((ROOT / stage / "stage.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("closed"), dict)
+
+
+def open_stages() -> list[str]:
+    """all_stages() without the closed ones."""
+    return [s for s in all_stages() if not stage_closed(s)]
+
+
 def default_prefix(stage: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", stage.split("-")[-1].upper()) or "X"
 
@@ -1049,7 +1064,7 @@ def cmd_digest(args) -> int:
 
 def cmd_list(args) -> int:
     now = now_local()
-    stages = [args.stage] if args.stage else all_stages()
+    stages = [args.stage] if args.stage else open_stages()
     shown = 0
     if args.since and not args.pending:
         raise SystemExit("ask: --since is only for --pending")
@@ -1389,7 +1404,7 @@ def cmd_inbox(args) -> int:
         stage_file(name)
         if name not in known:
             raise SystemExit(f"ask: no stage {name!r} in {ROOT} (stages: {', '.join(known) or '—'})")
-    names = list(dict.fromkeys(args.stage)) or known
+    names = list(dict.fromkeys(args.stage)) or [n for n in known if not stage_closed(n)]
     registers, unreadable = {}, set()
     for name in known:
         try:
@@ -1429,7 +1444,7 @@ def cmd_inbox(args) -> int:
 def summary_text() -> str:
     """What `ask summary` prints (agent-top calls it in-process)."""
     now = now_local()
-    return "".join(summary_line(stage, counts(load(stage)[1], now)) + "\n" for stage in all_stages())
+    return "".join(summary_line(stage, counts(load(stage)[1], now)) + "\n" for stage in open_stages())
 
 
 def open_text(stage: str) -> str:

@@ -69,9 +69,17 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
 AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
-# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
-# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
-DEFAULT_JWAIT_FOR = "55m"
+# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 50m or 1h30m).
+# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it. Claude
+# Code 2.1.299 also compacts a 200K+ conversation left idle ~54 minutes (idle_compaction_warning), and the old 55m wait
+# always ended after that point; a hub that did not turn the compaction off would have woken up on a summary. 50m ends
+# before it, and costs about one extra wake an hour, a turn that reads a warm cache.
+DEFAULT_JWAIT_FOR = "50m"
+# Claude Code's idle compaction (2.1.290+) starts at 200K tokens unless this raises the minimum; a detached `claude -p` worker
+# (`agent spawn`/`agent send`) that waits on a `jwait` should never be compacted behind its hub's back (the owner forbids
+# compaction), so it gets a minimum above any context window. The caller's own value wins. Older CLIs ignore the variable.
+IDLE_COMPACT_ENV = "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"
+IDLE_COMPACT_NEVER = "100000000"
 MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
@@ -970,7 +978,7 @@ def status_pattern(exit_word: bool = True) -> str:
 
 
 def jwait_for() -> str:
-    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 50m). A value that is not a duration between zero
     (exclusive) and 24h is reported on stderr and replaced by the default."""
     raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
     if not raw:
@@ -980,7 +988,7 @@ def jwait_for() -> str:
             return raw
     except (UsageError, OverflowError):
         pass
-    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 50m or 1h30m between 1s and 24h ({raw!r}); "
           f"using {DEFAULT_JWAIT_FOR}")
     return DEFAULT_JWAIT_FOR
 

@@ -192,7 +192,7 @@ gets an answer and the same loop resumes unless the owner cancels or changes sco
 ## Waiting
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (55m by
+- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (50m by
   default, `AGENT_HUB_JWAIT_FOR`). The prompt cache lives one hour: a wake after a longer sleep re-writes the whole
   context into it, so a longer wait costs more than it saves. The Bash `timeout` stays at or above `--for`. Its
   completion notification wakes the coordinator.
@@ -203,10 +203,10 @@ Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
   `jwait` and handle its result before starting another. A detached successor uses the same foreground procedure.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 55m` —
+- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 50m` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. `--for` defaults to 55m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
+  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. `--for` defaults to 50m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
   `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is

@@ -34,7 +34,7 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
 4. **Wait without polling.** One background waiter; the harness wakes the hub when it exits.
    ```bash
    jwait --journal --stage payments --tag hub-3 --tag hub \
-         --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|ENDED|REVIEWED|QUESTION)\b' --for 55m --note "scheduled round"
+         --match '\b(MERGED|STOP|DONE|BLOCKED|EXIT|ENDED|REVIEWED|QUESTION)\b' --for 50m --note "scheduled round"
    ```
 
 5. **An agent asks.** The journal shows `[hub-3-reviewer] @hub QUESTION is the Parquet export on by default?` and

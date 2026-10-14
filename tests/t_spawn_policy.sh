@@ -134,7 +134,7 @@ tail -1 $W/codex-argv.jsonl | grep -qF 'model_reasoning_effort=\"high\"'; check 
 unset AGENT_HUB_REASON_MODELS
 AGENT_HUB_REASON_POLICY=refuse spawn y7 --engine codex; check $? 0 "REASON_MODELS empty (the default): nothing changes"; wait_dead y7
 spawn y8 --engine codex; grep -q 'cannot be checked' $R/y8.err; check $? 1 "…and no warning"; wait_dead y8
-unset CODEX_HOME
+export CODEX_HOME="$(mktemp -d)"   # back to an empty one: the limit-pace reader must not see the real ~/.codex
 
 # ---- 4. the resume limit
 spawn s1 --model haiku; wait_dead s1

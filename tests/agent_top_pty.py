@@ -289,7 +289,7 @@ def stub_calls(log):
 
 def run(argv):
     root, stub, log = argv
-    env = dict(os.environ, AGENT_HUB_HOME=root, AGENT_TOP_AGENT_BIN=stub, STUB_LOG=log)
+    env = dict(os.environ, AGENT_HUB_HOME=root, AGENT_TOP_AGENT_BIN=stub, AGENT_TOP_HUB_BIN=stub, STUB_LOG=log)
     for k in ("HUB_TAG", "CLAUDE_CODE_SESSION_ID", "HUB_STAGE", "AGENT_BOARD_FILE"):
         env.pop(k, None)
 
@@ -305,7 +305,7 @@ def run(argv):
           and re.search(r"✓ stage-a\s+done1", t) and re.search(r"✓ stage-b\s+b1", t), t)
     check("ui list: header counts live 2, failed 4", "● 2" in t and "✗ 4" in t, t.splitlines()[0])
     check("ui list: quiet agent flagged", re.search(r"quiet1\s+quiet", t) is not None, t)
-    check("ui list: the key bar offers m and x (positive control for --read-only)", "m message" in t and "x stop" in t, t)
+    check("ui list: the key bar offers m, x and c (positive control for --read-only)", "m message" in t and "x stop" in t and "c close stage" in t, t)
     check("ui list: selected agent detail pane", "▸ Bash: run the tests" in t and "✉ 1 unread" in t, t)
     check("ui list: archive and old agents hidden", "oldie" not in t and "done1*" not in t, t)
 
@@ -378,6 +378,21 @@ def run(argv):
     calls = stub_calls(log)
     check("ui stop: exact argv", calls[-1:] == ["HUB_TAG=owner stop alive1 --stage stage-a"] and len(calls) == 2, str(calls))
 
+    # close a stage (`hub close`, the stub stands in) --------------------------------------------------------
+    s.send("c")
+    check("ui close: asks which stage, the selected agent's prefilled", s.wait_for(r"close stage \(Enter, Esc cancels\): stage-a"), s.text())
+    s.send("ENTER")
+    t = s.text()
+    check("ui close: confirmation names the stage and its live agents", "CLOSE stage stage-a" in t and "live agent" in t and "[y/N]" in t, t)
+    s.send("n")
+    check("ui close: n cancels", stub_calls(log) == calls, str(stub_calls(log)))
+    s.send("c", "BS", "BS", "x", "ENTER")
+    check("ui close: an unknown stage is refused", s.wait_for(r"no stage 'stagex' in this view") and stub_calls(log) == calls, s.text())
+    s.send("c", "ENTER", "y")
+    check("ui close: y runs hub close", s.wait_for(r"✓ close stage-a"), s.text())
+    calls = stub_calls(log)
+    check("ui close: exact argv", calls[-1:] == ["HUB_TAG= close --stage stage-a --why closed from agent-top"] and len(calls) == 3, str(calls))
+
     # message to a dead agent warns about the resume; nothing sent ------------------------------------------
     s.send("DOWN", "DOWN")
     s.send("m", "x", "ENTER")
@@ -391,7 +406,7 @@ def run(argv):
     s.send("a")
     s.settle(0.8)
     check("ui a: toggles back", "oldie" not in s.text(), s.text())
-    check("ui: no action leaked into the stub", len(stub_calls(log)) == 2, str(stub_calls(log)))
+    check("ui: no action leaked into the stub", len(stub_calls(log)) == 3, str(stub_calls(log)))
     s.send("q")
     check("ui q: exit code 0", s.wait_exit() == 0)
     s.close()
@@ -439,12 +454,15 @@ def run(argv):
     before = stub_calls(log)
     s = start(extra=("--read-only",))
     s.wait_for(r"alive1")
-    check("ui read-only: key bar has no m/x", "m message" not in s.text() and "x stop" not in s.text(), s.text())
+    check("ui read-only: key bar has no m/x/c", "m message" not in s.text() and "x stop" not in s.text() and "c close" not in s.text(), s.text())
     s.send("m")
     check("ui read-only: m refused", s.wait_for(r"read-only"), s.text())
     s.send("x")
     s.send("y")
-    check("ui read-only: nothing sent or stopped", stub_calls(log) == before, str(stub_calls(log)))
+    s.send("c")
+    check("ui read-only: c refused", s.wait_for(r"read-only"), s.text())
+    s.send("ENTER", "y")
+    check("ui read-only: nothing sent, stopped or closed", stub_calls(log) == before, str(stub_calls(log)))
     s.send("q")
     s.wait_exit()
     s.close()

@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions Delamain (formerly agent-hub) or "the hub skill", or asks you to plan work for agents or to run work through agents.
+description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when closing a stage whose hub is no longer needed, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions Delamain (formerly agent-hub) or "the hub skill", or asks you to plan work for agents or to run work through agents.
 ---
 
 # Stage hub: tools and recommended rules
@@ -165,6 +165,27 @@ Questions go to `ask add` with a default; hand over again when the budget requir
 Ordinary authorized fresh CLI executors start bounded, checkable independent work under their existing brief.
 Another hub's context shift or transfer is not a prerequisite. Wait only for an actual data, resource or permission
 dependency; preserve shared locks and existing owner decisions.
+
+## Closing a stage
+
+Close a stage when its hub is no longer needed: the goal is delivered or dropped, and nothing of the stage should wake,
+nag or hold a lock any more. The owner decides that (in words, or in the stage plan they approved); without it, ask.
+1. Stop the work: no live agent (`agent stop --stage <S> <role>`) and no sub-agent of yours still running; open MRs,
+   branches and worktrees are handed to someone or named in the closing report.
+2. Resolve the owner questions: record answers (`ask close`), withdraw the ones that lost their point (`ask withdraw`).
+3. `hub close --stage <S> --why "<one line: delivered X / dropped because Y>"` (`--dry-run` first if unsure). It
+   refuses (exit 2) while an agent runs or a question waits; `--force` only on the owner's word — it stops the agents
+   and leaves the questions in the register. It stops an idle background hub, releases the stage's locks (not one whose
+   holder still works in another open stage), retires every role, journals the close and marks `stage.json`. The stage
+   drops out of agent-top (`--all` shows it), the watchdog, the night queue and the question summaries; its files stay.
+4. Tell the owner in one or two lines what the stage delivered and what stays open, and where. If you are the hub being
+   closed, that is your last message: no more tool calls. A Desktop hub is archived by the owner, or by another session
+   with `mcp__ccd_session_mgmt__archive_session`; a busy or terminal one is named in the command's ATTENTION line.
+Asked from another session to close a stage whose hub is alive: `tell <S> "…"` first, so its hub reports and stops;
+a hub that is gone or silent is closed directly. The owner can close an idle stage from agent-top: Summary lists the
+stages and marks as idle an open one with no live agent and no activity for 48 h; `c` in the terminal console, the
+`close` button (pressed twice) in the `/agent-top` pane. `hub start` or `hub takeover` on a closed stage reopens it, and
+the new hub's number continues after the closed one's.
 
 ## Terminal follow-through
 

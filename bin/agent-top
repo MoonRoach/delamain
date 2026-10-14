@@ -2181,7 +2181,9 @@ class App:
             r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=240)
             out = (r.stdout.strip().splitlines() or [""])[0] if r.returncode == 0 else (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
             self.busy = ""
-            self.say(("✓ " if r.returncode == 0 else "✗ ") + f"{kind} {role}: {one_line(out)}", "ok" if r.returncode == 0 else "err_bar", 12)
+            warn = r.returncode == 0 and "ATTENTION:" in out   # closed, but its hub session still runs: keep it in sight
+            self.say(("✓ " if r.returncode == 0 else "✗ ") + f"{kind} {role}: {one_line(out)}",
+                     "warn" if warn else "ok" if r.returncode == 0 else "err_bar", 60 if warn else 12)
         except (OSError, subprocess.TimeoutExpired) as e:
             self.busy = ""
             self.say(f"✗ {kind} {role}: {e}", "err_bar", 12)

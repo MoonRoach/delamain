@@ -1765,13 +1765,16 @@ def waiting_questions(stage: str) -> list:
     return [f"{e.id} {e.title}" for e in entries if e.kind_letter == "Q" and e.state in ("open", "default-taken")]
 
 
-def stage_lock_sessions(stage: str, roles: dict) -> dict:
-    """{session id: role} of every role of the stage — the sessions whose locks the stage holds."""
+def stage_lock_sessions(data: dict) -> dict:
+    """{session id: role} of every role of the stage, live and retired — the sessions whose locks the stage holds. A
+    retired one counts: an agent `agent stop` retired (also by a close that died before its locks were released), an
+    earlier hub whose lock nobody took over."""
     out = {}
-    for role, rec in roles.items():
+    recs = [(rec.get("role"), rec) for rec in data.get("retired", [])] + list(data.get("roles", {}).items())
+    for role, rec in recs:   # live roles last: their names win
         for sid in (rec.get("session"), rec.get("cli_session_id")):
             if isinstance(sid, str) and sid:
-                out[sid] = role
+                out[sid] = role or "?"
     return out
 
 
@@ -1838,7 +1841,7 @@ def close_stage(a, say) -> str:
     # agent's session are the stage's all the same
     data = hc.roles_load(stage)
     hub_rec = data["roles"].get("hub") or {}
-    sessions = stage_lock_sessions(stage, data["roles"])
+    sessions = stage_lock_sessions(data)
     sessions.update({m["session_id"]: r for r, m in live if isinstance(m.get("session_id"), str) and m["session_id"]})
 
     # 1. live agents (only with --force): stopped through `agent stop`, which also retires their roles
@@ -1912,7 +1915,8 @@ def close_stage(a, say) -> str:
     with (contextlib.nullcontext() if a.dry_run else hc.roles_lock(stage)):
         cur = hc.roles_load(stage)
         now_hub = cur["roles"].get("hub") or {}
-        if not a.dry_run and now_hub.get("session") != hub_rec.get("session"):
+        # a hub that is gone is the one stopped above (`agent stop hub` retires it); only another one is a takeover
+        if not a.dry_run and now_hub and now_hub.get("session") != hub_rec.get("session"):
             raise hc.Failure(f"stage {stage} got a new hub while it was being closed ({now_hub.get('title') or now_hub.get('session')}); "
                              f"its roles are kept and the stage stays open — locks released: {', '.join(released) or 'none'}")
         hub_tag = closed_hub_tag(stage, hub_rec)

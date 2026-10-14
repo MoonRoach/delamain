@@ -632,7 +632,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     if (note) {
       // closed, but its hub session still runs (Desktop, terminal, busy): the whole ATTENTION, how to end it included
       const color = note.isError ? 'red' : note.isWarn ? 'yellow' : 'green'
-      wrapLines(`${note.isError ? '✗' : note.isWarn ? '⚠' : '✓'} ${note.text}`, sw, note.isWarn ? 5 : 2).forEach((l, i) =>
+      wrapLines(`${note.isError ? '✗' : note.isWarn ? '⚠' : '✓'} ${note.text}`, sw, note.isWarn ? 8 : 2).forEach((l, i) =>
         stageRows.push(row(i === 0 ? 'close-note' : undefined, [t(l, { color })])),
       )
     }

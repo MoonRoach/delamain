@@ -124,6 +124,27 @@ $B/hub close --stage desk > $R/c5.out 2>&1; check $? 0 "close of a stage with a 
 head -1 $R/c5.out | grep -q "^closed stage desk: .* ATTENTION: the stage's hub .* archive it in Desktop (local_$HUB)"; check $? 0 "…the first line says to archive the Desktop hub"
 $B/hub close --stage retry > $R/c6.out 2>&1; check $? 0 "a re-run after a close that died after retiring the roles"
 check "$(field $R/retry/stage.json 'd["closed"]["hub"]')" "hub-7" "…keeps the hub's tag from the retired record"
+# 7b. a headless hub stopped by --force is not taken for a takeover; a retired agent's lock (a close that died after
+# `agent stop`) is released
+HL=55555555-5555-4555-8555-555555555555; S9=66666666-6666-4666-8666-666666666666
+python3 -c 'import os, time; os.setsid(); time.sleep(600)' $HL & HPID=$!; disown $HPID
+python3 - "$R" "$HL" "$HPID" "$S9" <<'PY'
+import json, os, sys
+root, hl, pid, s9 = sys.argv[1:]
+os.makedirs(f"{root}/headless/agents/hub", exist_ok=True)
+json.dump({"version": 1, "roles": {"hub": {"session": hl, "kind": "headless", "tag": "hub-2", "title": "Hub headless #2"}},
+           "retired": [{"role": "w9", "session": s9, "kind": "headless", "tag": "w9", "retired_why": "agent-stop"}], "sends": []},
+          open(f"{root}/headless/roles.json", "w"))
+json.dump({"role": "hub", "pid": int(pid), "session_id": hl, "model": "opus"}, open(f"{root}/headless/agents/hub/meta.json", "w"))
+open(f"{root}/headless/agents/hub/log.jsonl", "w").write("")
+t = open(f"{root}/board.md").read().replace("\n```\n", f'\n{{"kind": "w9-lock", "repo": "headless", "owner_name": "w9", "session_id": "{s9}", "until": "2099-12-31T23:59:00+00:00", "why": "w9"}}\n```\n')
+open(f"{root}/board.md", "w").write(t)
+PY
+$B/hub close --stage headless --force > $R/c8.out 2>&1; check $? 0 "close --force of a stage whose hub is a headless agent"
+sleep 0.5; kill -0 $HPID 2>/dev/null; check $? 1 "…the headless hub was stopped"
+check "$(field $R/headless/stage.json 'd["closed"]["hub"]')" "hub-2" "…and the stage is closed, not taken for a takeover"
+grep -q "released lock w9-lock (headless)" $R/c8.out; check $? 0 "…a retired agent's lock is released"
+
 # 8. an unreadable registry of another stage keeps the lock (its holder may be live there)
 python3 - "$R" <<'PY'
 import json, os, sys

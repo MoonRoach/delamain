@@ -40,9 +40,9 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 # to older models. `haiku` is haiku-5-5 only from 2.1.296; the minimum is not raised for it, since both Haiku models take
 # `--effort`. The plugin pins no ids: the alias follows the CLI.
 MIN_CLI_VERSION = (2, 1, 287)
-# From this CLI on, Claude Code can compact a 200K+ conversation left idle ~54 min (on by default since 2.1.299; settings
-# key `idleCompaction`): idle_compaction_warning.
-IDLE_COMPACTION_SINCE = (2, 1, 290)
+# Managed settings files, which win over every other settings file (Claude Code's settings precedence): macOS, Linux.
+MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+                    Path("/etc/claude-code/managed-settings.json"))
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -1153,26 +1153,39 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
             "fable) resolve to older models and the agent-top mod does not run")
 
 
-def idle_compaction_warning(cli: Optional[Cli]) -> Optional[str]:
-    """One line when the user settings ($CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json) leave idle
-    compaction on for a CLI that has it, else None. A hub waiting on a long `jwait` is an idle conversation: compacted,
-    the context budget reads the smaller size and the hub goes on from a summary instead of handing over. A version or a
-    file that cannot be read is no warning; project settings, which can override the user's, are not read."""
-    if cli is None or cli.version is None or cli.version < IDLE_COMPACTION_SINCE:
+def idle_compaction_source(project: Optional[Path] = None) -> tuple:
+    """(value, file) of the settings file that decides `idleCompaction` for a session in `project`, in Claude Code's
+    precedence: managed, the project's settings.local.json, its settings.json, the user's ($CLAUDE_CONFIG_DIR, else
+    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Command-line
+    `--settings` (what `hub succeed` gives its background successors) are not visible from here."""
+    files = list(MANAGED_SETTINGS)
+    if project is not None:
+        files += [project / ".claude" / "settings.local.json", project / ".claude" / "settings.json"]
+    files.append(Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "idleCompaction" in data:
+            return data["idleCompaction"], f
+    return None, None
+
+
+def idle_compaction_warning(project: Optional[Path] = None) -> Optional[str]:
+    """One line unless the settings that decide it (idle_compaction_source) turn idle compaction off. Claude Code
+    2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
+    `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
+    handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
+    to a CLI without the feature."""
+    value, where = idle_compaction_source(project)
+    if value is False:
         return None
-    path = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        data = {}
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("idleCompaction") is False:
-        return None
-    return (f"Claude Code {fmt_version(cli.version)} compacts a conversation over 200K tokens left idle ~54 min, and "
-            f"{path} does not set \"idleCompaction\": false: a hub waiting on a long jwait would go on from a summary "
-            "instead of handing over — add it there (the background successors of `hub succeed` get it on their "
-            "command line)")
+    user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    state = f"{where} sets \"idleCompaction\": {json.dumps(value)}" if where else "no settings file sets \"idleCompaction\""
+    return (f"Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle ~54 min, and {state}: a hub waiting "
+            f"on a long jwait would go on from a summary instead of handing over — set \"idleCompaction\": false in "
+            f"{where or user} (the background successors of `hub succeed` get it on their command line)")
 
 
 def plugin_tools() -> list:

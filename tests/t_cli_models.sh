@@ -124,24 +124,35 @@ FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-startold $B/hub start --stage web
 AGENT_HUB_STATE_DIR=$P/st-startnew $B/hub start --stage web --session $H1 --dry-run > $P/start-new.out 2>&1
 grep -q 'older than' $P/start-new.out; check $? 1 "negative: hub start with CLI 2.1.287 does not warn"
 
-# ---- idle compaction (CLI 2.1.290+, on by default): a Claude hub's start/takeover warns unless the user settings turn
-# it off; the background successor gets it off on its command line (t_autopilot.sh)
-CD=$P/claude-config; mkdir -p $CD
-idle_start(){ # idle_start NAME VERSION [ENGINE]
-  FAKE_VERSION=$2 CLAUDE_CONFIG_DIR=$CD AGENT_HUB_ENGINE=${3:-claude} AGENT_HUB_STATE_DIR=$P/st-$1 \
-    $B/hub start --stage web --session $H1 --dry-run > $P/$1.out 2>&1
+# ---- idle compaction (CLI 2.1.290+, on by default): a Claude hub's start/takeover warns unless the settings that decide
+# it (managed > project local > project > user) turn it off; the background successor gets it off on its command line
+# (t_autopilot.sh)
+CD=$P/claude-config; PJ=$P/proj; mkdir -p $CD $PJ/.claude
+idle_start(){ # idle_start NAME [ENGINE]: hub start from the project $PJ
+  (cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_ENGINE=${2:-claude} AGENT_HUB_STATE_DIR=$P/st-$1 \
+    $B/hub start --stage web --session $H1 --dry-run) > $P/$1.out 2>&1
 }
-idle_start idle-none 2.1.299; check $? 0 "idle compaction: hub start with CLI 2.1.299 and no user settings file"
-grep -q "^ATTENTION: Claude Code 2.1.299 compacts a conversation over 200K tokens left idle .*$CD/settings.json does not set \"idleCompaction\": false" $P/idle-none.out; check $? 0 "…warns, naming the settings file and the key"
-echo '{"idleCompaction": true}' > $CD/settings.json; idle_start idle-true 2.1.290
-grep -q 'idleCompaction' $P/idle-true.out; check $? 0 "…and so does a file that turns it on, from CLI 2.1.290"
-echo '{"model": "opus", "idleCompaction": false}' > $CD/settings.json; idle_start idle-off 2.1.299
-grep -q 'idleCompaction' $P/idle-off.out; check $? 1 "negative: \"idleCompaction\": false in the user settings silences it"
-rm $CD/settings.json; idle_start idle-old 2.1.289
-grep -q 'idleCompaction' $P/idle-old.out; check $? 1 "negative: CLI 2.1.289, before idle compaction, is not warned about"
-echo '{not json' > $CD/settings.json; idle_start idle-bad 2.1.299
-grep -q 'idleCompaction' $P/idle-bad.out; check $? 1 "negative: an unreadable settings file is no warning"
+idle_start idle-none; check $? 0 "idle compaction: hub start with no settings file setting it"
+grep -q "^ATTENTION: Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle .*no settings file sets \"idleCompaction\": .*set \"idleCompaction\": false in $CD/settings.json" $P/idle-none.out; check $? 0 "…warns, naming the user settings file and the key"
+echo '{"model": "opus", "idleCompaction": false}' > $CD/settings.json; idle_start idle-off
+check "$?:$(grep -c 'idleCompaction' $P/idle-off.out)" 0:0 "negative: \"idleCompaction\": false in the user settings silences it"
+echo '{"idleCompaction": true}' > $PJ/.claude/settings.local.json; idle_start idle-local
+grep -q "$PJ/.claude/settings.local.json sets \"idleCompaction\": true" $P/idle-local.out; check $? 0 "…but the project's settings.local.json turning it on wins, and is named"
+echo '{"idleCompaction": false}' > $PJ/.claude/settings.json; rm $CD/settings.json $PJ/.claude/settings.local.json; idle_start idle-proj
+check "$?:$(grep -c 'idleCompaction' $P/idle-proj.out)" 0:0 "negative: the project's settings.json turning it off is enough"
+rm $PJ/.claude/settings.json; echo '{not json' > $CD/settings.json; idle_start idle-bad
+grep -q 'no settings file sets' $P/idle-bad.out; check $? 0 "an unreadable settings file counts as not setting it"
+idle_start idle-codex codex
+check "$?:$(grep -c 'idleCompaction' $P/idle-codex.out)" 0:0 "negative: a Codex hub is not warned about"
 rm $CD/settings.json
+python3 - $B $P <<'PY' > $P/idle-managed.out
+import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import hubcore as hc
+d = Path(sys.argv[2]) / "managed"; d.mkdir(); (d / "m.json").write_text('{"idleCompaction": true}')
+p = Path(sys.argv[2]) / "mp"; (p / ".claude").mkdir(parents=True); (p / ".claude" / "settings.json").write_text('{"idleCompaction": false}')
+hc.MANAGED_SETTINGS = (d / "m.json",)
+print(hc.idle_compaction_source(p) == (True, d / "m.json") and f"{d / 'm.json'} sets" in (hc.idle_compaction_warning(p) or ""))
+PY
+check "$(cat $P/idle-managed.out)" True "managed settings win over the project's"
 
 # ---- fable is an alias like the others
 $B/agent spawn --role fab --cwd $W --model fable --brief $W/b.md > $P/fab.out 2>&1; check $? 0 "spawn --model fable is accepted"

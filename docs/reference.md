@@ -665,8 +665,9 @@ A successor not in bypass mode starts with the hub's own commands (`hub takeover
 anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed. Every background
 successor, bypass or not, also gets `"idleCompaction": false` there: Claude Code 2.1.290+ compacts a conversation over
 200K tokens left idle ~54 minutes, and a compacted hub goes on from a summary instead of handing over. For a hub you
-start yourself, put `"idleCompaction": false` into `~/.claude/settings.json`; `hub start` and `hub takeover` warn while
-it is missing. Both kinds of
+start yourself, put `"idleCompaction": false` into `~/.claude/settings.json`; `hub start` and `hub takeover` warn unless
+the settings file that decides it (managed, the project's `settings.local.json`, its `settings.json`, the user's) turns
+it off. Both kinds of
 successor are pinned to the old hub's home (`AGENT_HUB_HOME`, plus `--add-dir <home>` when it is not under their
 directory); the background one does not inherit `AGENT_SESSION_ID` (a headless hub's own id), which would make its
 `--session self` name the old hub.

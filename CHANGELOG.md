@@ -6,8 +6,8 @@
   54 minutes (on by default since 2.1.299). A hub waiting on a long `jwait` is such a conversation: compacted, the
   context budget reads the smaller size and the hub goes on from a summary instead of handing over. The background
   successor of `hub succeed` now starts with `"idleCompaction": false` in its `--settings`, in bypass mode too, and
-  `hub start`/`hub takeover` of a Claude hub warn when the user settings (`$CLAUDE_CONFIG_DIR` or `~/.claude`
-  `settings.json`) do not set it for a CLI that has the feature.
+  `hub start`/`hub takeover` of a Claude hub warn unless the settings file that decides it, in Claude Code's order
+  (managed, the project's `settings.local.json`, its `settings.json`, the user's), turns it off.
 
 ## 1.0.4 — 2026-10-14
 

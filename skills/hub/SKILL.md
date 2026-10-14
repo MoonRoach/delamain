@@ -143,6 +143,11 @@ itself: one line with the reason, and `ask decided`.
 4. **Read-only, the answer is a short digest, nothing external to wait on** → a sub-agent: **foreground** when the hub
    has nothing else to do until the answer, otherwise **background**.
 
+- **Host session cards and forks are not a launch mode.** The host may offer to start a session or fork (Claude Desktop's
+  `start_session` cards, `hand_off_to_session`). A registered hub does not use them for work that commits, pushes or
+  waits: autopilot cannot click a card and agent-top cannot see it, so the work goes through `agent spawn`, and an
+  owner decision through `ask add`. A hook refuses these calls in a hub; the owner's own request for a session passes.
+
 Every sub-agent brief ends with a call budget: "if not done after N tool calls, stop and return a partial result and
 what is left" (N = 40 for a probe or a read, up to 80 for a wide read-only investigation); ask for a result of ≤ 20
 lines, details in a file. `hub handoff` refuses while a sub-agent of your session runs. More:

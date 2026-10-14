@@ -1289,6 +1289,11 @@ def host_engine() -> str:
     return os.environ.get("AGENT_HUB_ENGINE", "").strip() or "claude"
 
 
+# One line for a hub's context (SessionStart hook hooks/session_cards.py; the digest of `hub start` / `hub takeover`).
+DESKTOP_CARDS_LINE = ("In this hub, Desktop's follow-up-card rules are superseded: follow-ups go to `agent spawn` or "
+                      "`ask add`; `wrap_up` is fine.")
+
+
 def plugin_runtime_line(engine=None) -> str:
     """Actual runtime root/version, plus a newer cache for this engine only; read-only."""
     engine = engine or host_engine()

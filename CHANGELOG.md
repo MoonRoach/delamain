@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,
+  in a session registered as a stage's `hub`, `start_session` with `initiation` `own_initiative` or `offer`,
+  `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's
+  own `user_asked` and an accepted `proposal_id` pass, as does every non-hub session. Hubs also get one line saying the
+  host's card rules are superseded.
 - **Limit pace: how each engine's week is going, before the spend.** On 07.10 the Claude week ran out and cut off four
   agents mid-work; on 08.10 the Codex week went from 0 to 100 % in 11.5 hours; nothing compared spend with the
   window's pace, so hubs found out when agents died. `agent spawn`, the `hub start`/`takeover` digest and

@@ -34,6 +34,7 @@ DEADLINES = {
     "path_shadow.py": 8.5,
     "handoff_size.py": 8.5,
     "context_budget.py": 8.5,
+    "session_cards.py": 8.5,
 }
 
 _state: dict = {}

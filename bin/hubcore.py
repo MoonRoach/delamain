@@ -40,6 +40,9 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 # to older models. `haiku` is haiku-5-5 only from 2.1.296; the minimum is not raised for it, since both Haiku models take
 # `--effort`. The plugin pins no ids: the alias follows the CLI.
 MIN_CLI_VERSION = (2, 1, 287)
+# From this CLI on, Claude Code can compact a 200K+ conversation left idle ~54 min (on by default since 2.1.299; settings
+# key `idleCompaction`): idle_compaction_warning.
+IDLE_COMPACTION_SINCE = (2, 1, 290)
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -1148,6 +1151,28 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
     return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}, the "
             "oldest version Delamain supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
             "fable) resolve to older models and the agent-top mod does not run")
+
+
+def idle_compaction_warning(cli: Optional[Cli]) -> Optional[str]:
+    """One line when the user settings ($CLAUDE_CONFIG_DIR/settings.json, else ~/.claude/settings.json) leave idle
+    compaction on for a CLI that has it, else None. A hub waiting on a long `jwait` is an idle conversation: compacted,
+    the context budget reads the smaller size and the hub goes on from a summary instead of handing over. A version or a
+    file that cannot be read is no warning; project settings, which can override the user's, are not read."""
+    if cli is None or cli.version is None or cli.version < IDLE_COMPACTION_SINCE:
+        return None
+    path = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("idleCompaction") is False:
+        return None
+    return (f"Claude Code {fmt_version(cli.version)} compacts a conversation over 200K tokens left idle ~54 min, and "
+            f"{path} does not set \"idleCompaction\": false: a hub waiting on a long jwait would go on from a summary "
+            "instead of handing over — add it there (the background successors of `hub succeed` get it on their "
+            "command line)")
 
 
 def plugin_tools() -> list:

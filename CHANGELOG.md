@@ -10,7 +10,8 @@
   default, move to the other engine at an equivalent class (Opus ↔ Astra, Sonnet ↔ Sol medium, Haiku ↔ Luna), defer
   non-urgent work to the reset, then ask the owner. A stage locked to an engine (`AGENT_HUB_STAGE_ENGINES`) gets an
   `ask add` with the numbers, never a switch. `agent spawn` refuses only when the week runs out before its reset by
-  every rate, half of it is used, the work is not mechanical and no engine with headroom can take it; `--reason`
+  every rate, half of it is used, the work is not mechanical and no engine with fresh data and headroom can take it
+  (an unknown or stale other engine gets the advice and a ready `ask add`, not a refusal); `--reason`
   passes and is journalled. The watchdog (R6) writes one `@hub LIMIT …` line per crossing. New: `agent spawn
   --task-class`, `agent spawn --dry-run`, `AGENT_HUB_LIMIT_PACE`. See [Limit pace](docs/reference.md#limit-pace).
 

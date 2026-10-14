@@ -214,7 +214,8 @@ Before a hub spends, Delamain compares each engine's plan week with its pace and
   12 hours (the account bucket, `limit_id` `codex`), each with its own timestamp.
 - **Claude**: the last `rate_limit_event` (`unifiedWindows.seven_day`, `five_hour`) of each headless agent's
   `log.jsonl` in the hub home written in the last 12 hours; the event has no time, so the log's modification time is
-  the sample's. Interactive sessions do not log it: with no headless agent running, Claude's week is unknown or stale.
+  the sample's. Interactive sessions do not log it: with no headless agent running, Claude's week is unknown or stale. Among samples within 10 minutes of the newest, the window instance with the latest
+  reset stands, at its highest utilisation (inside an instance it only grows, and a log's mtime is not its event's time).
 
 The model, per window: the share of the window elapsed (from `resets_at` and the window's length), the usage against
 it, the burn rate over the last 6 hours of samples of the same window (when they span at least an hour), the window's
@@ -237,8 +238,10 @@ The advice follows one order, and a model is never swapped silently:
    `ask add` for the owner.
 
 The one hard stop: `agent spawn` refuses (exit 1, nothing created) when the week is over pace by every rate, at least
-half of it is used, the work is not mechanical (Haiku, Luna), and no engine with headroom can take it (or the stage is
-locked to this one). `--reason "…"` passes; the journal's start line then says `over the limit-pace stop (<numbers>)
+half of it is used, the work is not mechanical (Haiku, Luna), and no engine with headroom can take it: the other
+engine's fresh data shows it over pace too, or the stage is locked to this one. When the other engine is unknown or
+stale, the path is unchecked, not closed: the advice and the ready `ask add` come with "headroom on X is not verified:
+run a probe or pass --reason", and nothing is refused. `--reason "…"` passes; the journal's start line then says `over the limit-pace stop (<numbers>)
 by --reason`. `AGENT_HUB_LIMIT_PACE=warn` keeps the advice and drops the refusal; `off` drops both.
 
 Where it shows:

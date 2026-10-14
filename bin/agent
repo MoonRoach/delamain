@@ -43,8 +43,8 @@ Limit pace: when the engine's plan week runs ahead of its pace, spawn prints the
 launch (lower an effort above the --task-class default, move to the other engine at an equivalent class, defer
 non-urgent work, ask the owner) and journals one `@hub LIMIT …` line per crossing. It refuses (exit 1) only when the
 week is projected to run out before its reset, at least half of it is used, the work is not mechanical, and no engine
-with headroom can take it (or the stage is locked to this engine by AGENT_HUB_STAGE_ENGINES); --reason passes and is
-journalled. Stale data is reported, never refused on. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
+with fresh data and headroom can take it (or the stage is locked to this engine by AGENT_HUB_STAGE_ENGINES); --reason
+passes and is journalled. Stale or unknown data is reported, never refused on. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
 --dry-run runs every check and prints the advice, then stops before anything is started or written.
 A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the

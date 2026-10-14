@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`run-python` usage errors no longer block hooks.** A bad `--min-version` value or a missing script exited 2,
+  which Claude and Codex hooks treat as "block", so a manifest typo would have blocked every tool call. Both now exit 1
+  and fail open. Docs note that a detached `agent` loses its exit journal line if its launch interpreter is removed
+  mid-run, while the worker's exit code is still propagated.
+
 ## 1.0.4 — 2026-10-14
 
 - **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with

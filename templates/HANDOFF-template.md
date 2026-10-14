@@ -27,7 +27,7 @@ Report progress against it with technical evidence separately.
      Next ready work first; separate preparation dependencies from publication/merge/stage/production gates.
      Item = action | "done" check | brief stop condition | who (model).
      Wait = exact item | blocker | owner/resource | expected event (question id when applicable). -->
-Codex successor: apply the bundled hub skill's Terminal follow-through (`<plugin-root>/skills/hub/SKILL.md#terminal-follow-through`); reconcile this snapshot against Business DoD before DONE.
+Codex successor: apply the bundled hub skill's Terminal follow-through (`<plugin-root>/skills/hub/references/codex-hub.md#terminal-follow-through`); reconcile this snapshot against Business DoD before DONE.
 1.
 
 ## 3. Night queue (optional module — delete this section if the stage has none)

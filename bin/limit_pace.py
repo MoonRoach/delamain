@@ -230,11 +230,13 @@ def codex_samples(now: Optional[float] = None, cache: Optional[_Cache] = None) -
     return out
 
 
-def read_all(now: Optional[float] = None) -> dict:
-    """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always."""
+def read_all(now: Optional[float] = None, cached: bool = False) -> dict:
+    """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always. `cached`
+    (agent-top, which runs every few seconds) keeps what each log held in the state dir; without it nothing is written,
+    so a dry run stays a dry run."""
     now = time.time() if now is None else now
     out = {}
-    cache = _Cache()
+    cache = _Cache() if cached else None
     for engine, reader in (("claude", lambda: claude_samples(now=now, cache=cache)),
                            ("codex", lambda: codex_samples(now, cache=cache))):
         try:
@@ -243,7 +245,8 @@ def read_all(now: Optional[float] = None) -> dict:
             series = {}
         series.setdefault("7d", [])
         out[engine] = {w: assess(engine, w, s, now) for w, s in series.items()}
-    cache.save()
+    if cache:
+        cache.save()
     return out
 
 

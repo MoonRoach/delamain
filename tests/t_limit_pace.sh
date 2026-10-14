@@ -24,9 +24,9 @@ import codex_rollouts
 def fx(*args):
     subprocess.run([sys.executable, f"{t}/limit_pace_fixture.py", *args], check=True)
 
-def read():
+def read(cached=False):
     codex_rollouts.INDEX.checked = None
-    return lp.read_all()
+    return lp.read_all(cached=cached)
 
 fails = []
 def check(cond, name):
@@ -148,15 +148,19 @@ check(lp.note_crossing("stage-x", moved) is not None, "a new window instance is 
 check(lp.note_crossing("stage-q", lp.Pace("codex", "7d", level="ok", used=1, expected=5, resets_at=p.resets_at)) is None, "on pace: no line")
 # the per-file cache: an unchanged log is not read again, a rewritten one is
 fx("clear"); fx("codex", "60,75"); fx("claude", "20,21")
+cache_file = lp._Cache().path
 read()
+check(not cache_file.exists(), "without `cached` nothing is written (dry runs stay dry)")
+read(cached=True)
+check(cache_file.exists(), "agent-top's cached read keeps the samples")
 calls = []
 orig_c, orig_x = lp._claude_file, lp._codex_file
 lp._claude_file = lambda path: calls.append(path) or orig_c(path)
 lp._codex_file = lambda path: calls.append(path) or orig_x(path)
-P = read()
+P = read(cached=True)
 check(calls == [] and P["codex"]["7d"].used == 75, "unchanged logs: served from the cache, same numbers")
 fx("codex", "60,80")
-P = read()
+P = read(cached=True)
 check(len(calls) == 1 and P["codex"]["7d"].used == 80, "a rewritten rollout is read again")
 lp._claude_file, lp._codex_file = orig_c, orig_x
 print("RESULT", "FAIL" if fails else "PASS")

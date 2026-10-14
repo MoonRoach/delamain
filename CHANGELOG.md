@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- **The hub skill is a 16 KB core plus references.** `skills/hub/SKILL.md` was 47 KB (about 17,000 tokens) that every
+- **The hub skill is a 17 KB core plus references.** `skills/hub/SKILL.md` was 49 KB (about 17,700 tokens) that every
   hub loaded and re-read on every call, and about half of it was procedure for a Codex hub or for a situation that
-  comes up once a shift. It is now a 16,346-byte core (about 6,300 tokens, measured by input tokens): first commands, starting
+  comes up once a shift. It is now a 17,409-byte core (about 6,700 tokens, measured by input tokens): first commands, starting
   and taking over, waiting (with `await` for CI, merge and lock waits), talking, planning, launch choice, executors, a
   short Claude Desktop host block and the twelve recommended rules. The rest sits in
   `skills/hub/references/` — `stage-lifecycle.md`, `autopilot.md`, `owner-and-planning.md`,

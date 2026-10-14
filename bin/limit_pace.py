@@ -382,7 +382,7 @@ def describe(p: Pace) -> str:
     """One sentence of numbers about a window."""
     name = f"{ENGINE_NAME[p.engine]} {p.window}"
     if p.level == "unknown":
-        return f"{name}: no sample in the logs of the last {LOG_HOURS} h (unknown)"
+        return f"{ENGINE_NAME[p.engine]}: no plan-usage sample in the logs of the last {LOG_HOURS} h (unknown)"
     if p.level == "stale":
         return f"{name}: {_pct(p.used)} used, data stale ({p.why_stale}): not judged"
     text = f"{name}: {_pct(p.used)} used at {_pct(p.expected)} of the window, reset {_when(p.resets_at)}"

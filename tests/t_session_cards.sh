@@ -74,10 +74,11 @@ denied $S '{"initiation":"own_initiative"}' $LOCCLI "local_$LOC"; check $? 0 "co
 echo '{not json' > $R/stage-b/roles.json
 denied $S '{"initiation":"own_initiative"}' $LOCCLI "local_$LOC"; check $? 1 "corrupt registry: passes"
 $B/roles set hub $HUB --kind cli --tag hub-3 >/dev/null
-denied $S '{"initiation":"own_initiative"}' $HUB; check $? 0 "control: a readable registry beside the corrupt one still finds the hub"
+mkdir -p $R/aaa-bad; echo '{not json' > $R/aaa-bad/roles.json   # sorts before stage-a: read first
+denied $S '{"initiation":"own_initiative"}' $HUB; check $? 0 "control: a readable registry beside a corrupt one read earlier still finds the hub"
 echo '[1, 2]' > $R/stage-a/roles.json
 denied $S '{"initiation":"own_initiative"}' $HUB; check $? 1 "registry of the wrong shape: passes"
-rm -rf $R/stage-a $R/stage-b
+rm -rf $R/stage-a $R/stage-b $R/aaa-bad
 denied $S '{"initiation":"own_initiative"}' $HUB; check $? 1 "registry gone: passes"
 echo 'garbage' | python3 $HOOK pre-tool; check $? 0 "garbage on stdin: exit 0"
 python3 $HOOK pre-tool < /dev/null; check $? 0 "empty stdin: exit 0"

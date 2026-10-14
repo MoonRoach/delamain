@@ -12,6 +12,14 @@ file, old_string not found) -> exit 0, no output.
 """
 from __future__ import annotations
 
+if __name__ == "__main__":  # fail-safe first, before anything that can fail: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 import fnmatch
 import json
 import os

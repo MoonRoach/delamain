@@ -38,6 +38,14 @@ import sys
 import time
 from pathlib import Path
 
+if __name__ == "__main__" and sys.argv[1:2] in (["session-start"], ["prompt"], ["pre-tool"]):  # hook mode: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # bin/delegation loads this module by filename
 from codex_compat import agent_call as codex_agent_call, native_tool, policy_tool
 

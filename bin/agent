@@ -46,6 +46,7 @@ week is projected to run out before its reset, at least half of it is used, the 
 with headroom can take it (or the stage is locked to this engine by AGENT_HUB_STAGE_ENGINES); --reason passes and is
 journalled. Stale data is reported, never refused on. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
 --dry-run runs every check and prints the advice, then stops before anything is started or written.
+A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
@@ -520,6 +521,9 @@ def pace_advice(stage: str, engine: str, model_names: list, effort: str, task_cl
 
 def cmd_spawn(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
+    if (closed := hc.stage_closed(stage)) is not None:  # `hub close`: nothing watches it, nothing lists its agents
+        raise hc.UsageError(f"stage {stage} is closed ({closed.get('at')}: {closed.get('why')}) — reopen it with "
+                            f"`hub takeover --stage {stage} --session …` before starting agents there")
     cwd = Path(a.cwd).expanduser().resolve()
     brief = Path(a.brief).expanduser().resolve()
     if not cwd.is_dir():

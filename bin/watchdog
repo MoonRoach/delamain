@@ -1031,10 +1031,12 @@ def stage_names(only=None) -> list:
         return []
     names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and ((p / "roles.json").is_file() or (p / "agents").is_dir())]
     if only:
+        if only in names and hc.stage_closed(only):
+            return []  # `hub close`: nothing of the stage is watched any more
         if only not in names:
             raise hc.Failure(f"no stage {only!r} with a registry or agents in {root}")
         return [only]
-    return names
+    return [n for n in names if not hc.stage_closed(n)]
 
 
 def rule_r5(tick: Tick) -> None:

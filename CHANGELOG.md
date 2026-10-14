@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.8 — 2026-10-15
+
 - **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's
   directory into the `hub succeed --cwd` it suggested, and that directory drifts with the hub's shell: a hub that had
   `cd`-ed into the hub home got a successor there, outside git, and when `claude --bg` refused the untrusted folder `hub

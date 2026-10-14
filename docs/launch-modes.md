@@ -125,6 +125,33 @@ bare `jlog` writes under the parent's tag. The convention:
   notice is what wakes the hub;
 - an executor's sub-agents write nothing to the journal (above).
 
+## Waiting for CI, a merge or a lock
+
+A wait command run as the hub's own background Bash wakes the hub on every exit, and each wake re-reads the hub's whole
+context: in the 07–14.10 audit 202 of 913 background wakes were CI, merge or lock waits. The hub should wake once, on
+a result it must decide on. `await` does the waiting outside the hub's context:
+
+```bash
+# an ordinary foreground call: it returns in a moment with the supervisor's pid and the log path
+await --ok MERGED --label "MR !12" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr 12
+```
+
+The supervisor runs the command in its own session with its output in a log (`<stage>/coordinator/work/await/`),
+journals nothing while it runs and, when it ends, one line:
+
+```
+- 14:07 [hub-3-await] @hub MERGED MR !12 — https://gitlab.example/mr/12 (exit 0, 11m, log …/await/….log)
+```
+
+The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `@hub` addresses the hub, and the tag
+`<tag>-await` is neither the hub's own tag nor its sub-tag `<tag>/…`, which `jwait` drops. Outcomes: exit 0 → the
+`--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group is
+stopped) → `TIMEOUT`; any other exit code, a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds
+words such as `CONFLICT` for a command that distinguishes them. An executor can use it the same way (its tag becomes
+`<its tag>-await`). `kill <supervisor pid>` stops the wait and journals `FAILED … interrupted`; a supervisor killed
+with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails
+at once with exit 2 and no line.
+
 ## What did not make it into the plugin
 
 - Recording sub-agents in `roles` (kind `subagent`): their id is an address only inside the parent session (E8), no

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`await`: a hub no longer wakes for CI, merge or lock progress.** `await [--ok MERGED] [--on RC=WORD] -- <wait
+  command>` runs the wait detached from the hub's context (a supervisor in its own session, output in a log) and
+  journals exactly one line, `@hub WORD LABEL — LINK (exit N, …)`, when the command ends: `DONE`/`MERGED`, `FAILED`,
+  `TIMEOUT` or a word of the caller's choice. Nothing is written on progress. The hub keeps its single `jwait`. In the
+  token audit of 07–14.10, 202 of a week's 913 background wakes were such waits, each re-reading ~130k tokens of hub
+  context. [Waiting for CI](docs/launch-modes.md#waiting-for-ci-a-merge-or-a-lock).
+
 ## 1.0.4 — 2026-10-14
 
 - **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with

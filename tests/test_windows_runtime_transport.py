@@ -697,6 +697,64 @@ public static class FakeWsl {
 '''
 
 
+@unittest.skipUnless(sys.platform == "linux", "Real embedded Linux guardian")
+class ForegroundGuardianTests(unittest.TestCase):
+    def test_early_leader_exit_then_cancel_preserves_detached_control(self):
+        # Execute the exact embedded program, including its real file protocol.
+        source = (ROOT / "windows/process_transport.ps1").read_text()
+        guardian = source.split('const string Guardian = @"', 1)[1].split('";', 1)[0]
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            control = base / "control"
+            control.write_text("run")
+            helper = base / "fixture.py"
+            helper.write_text("""import json,os,signal,subprocess,sys,time
+from pathlib import Path
+base=Path(sys.argv[1])
+if sys.argv[2]=='leader':
+ child=subprocess.Popen([sys.executable,__file__,str(base),'child'])
+ while not (base/'child-owner').exists(): time.sleep(.01)
+ print(os.getpid(),flush=True)
+ sys.exit(3)
+os.close(1); os.close(2)
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+fields=Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')',1)[1].split()
+(base/'child-owner').write_text(json.dumps([os.getpid(),fields[19]]))
+time.sleep(1.5); (base/'effect').touch(); time.sleep(20)
+""")
+            detached = subprocess.Popen([sys.executable, "-c",
+                "import sys,time; from pathlib import Path; time.sleep(1.5); Path(sys.argv[1]).touch()",
+                str(base / "detached-effect")], start_new_session=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run = subprocess.Popen([sys.executable, "-c", guardian, str(control),
+                sys.executable, str(helper), str(base), "leader"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                leader = int(run.stdout.readline())
+                time.sleep(.4)  # A downstream consumer still owns the output.
+                stat = Path(f"/proc/{leader}/stat")
+                self.assertTrue(not stat.exists() or stat.read_text().rsplit(')',1)[1].split()[0]=='Z')
+                control.write_text("cancel")
+                output, error = run.communicate(timeout=3)
+                detached.wait(timeout=3)
+                self.assertEqual(output, b"")
+                self.assertEqual(error, b"")
+                print(f"embedded guardian {run.pid}, leader {leader}, child {json.loads((base/'child-owner').read_text())}, detached {detached.pid}: effect={(base/'effect').exists()}, detached effect={(base/'detached-effect').exists()}")
+                self.assertTrue((base / "detached-effect").exists())
+                self.assertFalse((base / "effect").exists(), "Early leader exit abandoned its same-group descendant")
+                self.assertEqual(control.read_text(), "done")
+            finally:
+                control.unlink(missing_ok=True)
+                if run.poll() is None:
+                    try: run.communicate(timeout=3)
+                    except subprocess.TimeoutExpired: run.kill(); run.communicate(timeout=3)
+                if detached.poll() is None: detached.kill(); detached.wait()
+                record = base / "child-owner"
+                if record.exists():
+                    pid, token = json.loads(record.read_text())
+                    proxy.stop_owned(pid, token, signal.SIGKILL)
+
+
 @unittest.skipUnless(os.name == "nt", "Native PowerShell 5.1/7 process controls")
 class WindowsTransportTests(unittest.TestCase):
     @classmethod
@@ -904,6 +962,13 @@ exit $value.ExitCode
 
     @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
     def test_aborted_pipeline_stops_quiet_linux_foreground_and_preserves_detached(self):
+        self.check_aborted_linux_pipeline(("normal", "ignore"))
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_early_leader_exit_retains_foreground_until_delayed_pipeline_abort(self):
+        self.check_aborted_linux_pipeline(("early",))
+
+    def check_aborted_linux_pipeline(self, modes):
         # Test the Linux side effect after the caller has returned, not merely
         # disappearance of the Windows client. Exact start tokens pin teardown.
         helper=self.directory/"foreground.py"
@@ -911,7 +976,18 @@ exit $value.ExitCode
 from pathlib import Path
 base=Path(sys.argv[1]); mode=sys.argv[2]
 def token(pid): return Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
-if mode=='detached':
+if mode=='inspect':
+ pid=int((base/'foreground-owner').read_text().split(',')[0].lstrip('['))
+ try: state=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[0]
+ except FileNotFoundError: state='gone'
+ (base/'leader-state').write_text(state)
+ sys.exit(0)
+elif mode=='quiet-child':
+ os.close(1); os.close(2)
+ signal.signal(signal.SIGTERM,signal.SIG_IGN)
+ (base/'descendant-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
+ time.sleep(3); (base/'foreground-marker').write_text('survived'); time.sleep(30)
+elif mode=='detached':
  (base/'detached-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
  time.sleep(3); (base/'detached-marker').write_text('survived'); time.sleep(30)
 else:
@@ -921,13 +997,19 @@ else:
   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  (base/'foreground-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
  while not (base/'detached-owner').exists(): time.sleep(.01)
+ if mode=='early':
+  subprocess.Popen([sys.executable,__file__,str(base),'quiet-child'])
+  while not (base/'descendant-owner').exists(): time.sleep(.01)
  print(json.dumps({'pid':os.getpid(),'token':token(os.getpid())}),flush=True)
+ if mode=='early': sys.exit(3)
  time.sleep(3); (base/'foreground-marker').write_text('survived'); time.sleep(30)
 """,encoding="utf-8")
         trusted=str(Path(os.environ["WINDIR"])/"System32/wsl.exe")
         def wsl(*args):
-            return subprocess.run([trusted,"--distribution","Ubuntu","--exec",*args],
-                stdin=subprocess.DEVNULL,capture_output=True,timeout=15,check=True)
+            result = subprocess.run([trusted,"--distribution","Ubuntu","--exec",*args],
+                stdin=subprocess.DEVNULL,capture_output=True,timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            return result
         linux_helper=wsl("wslpath","-a","-u",str(helper)).stdout.decode().strip()
         source=r"""
 param($Transport,$Helper,$Directory,$Mode,$NativeDirectory)
@@ -936,6 +1018,11 @@ $ErrorActionPreference='Stop'
 . $Transport
 Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3',$Helper,$Directory,$Mode) | ForEach-Object {
     [IO.File]::WriteAllText((Join-Path $NativeDirectory 'first-ticks'),[DateTime]::UtcNow.Ticks.ToString())
+    if ($Mode -eq 'early') {
+        Start-Sleep -Milliseconds 800
+        & ([Delamain.ProcessTransport]::WslExecutable()) --distribution Ubuntu --exec python3 $Helper $Directory inspect
+        if ($LASTEXITCODE -ne 0) { throw 'Leader inspection failed' }
+    }
     $_
 } | Select-Object -First 1
 [IO.File]::WriteAllText((Join-Path $NativeDirectory 'return-ticks'),[DateTime]::UtcNow.Ticks.ToString())
@@ -943,7 +1030,7 @@ Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3',$He
         cleanup=r"""import json,os,signal,sys,time
 from pathlib import Path
 base=Path(sys.argv[1])
-for name in ('foreground-owner','detached-owner'):
+for name in ('foreground-owner','descendant-owner','detached-owner'):
  p=base/name
  if not p.exists(): continue
  pid,expected=json.loads(p.read_text())
@@ -953,9 +1040,9 @@ for name in ('foreground-owner','detached-owner'):
  try:
   fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
   if fields[19]==expected: signal.pidfd_send_signal(fd,signal.SIGKILL)
- except FileNotFoundError: pass
+ except (FileNotFoundError,ProcessLookupError): pass
  finally: os.close(fd)
-for name in ('foreground-owner','detached-owner'):
+for name in ('foreground-owner','descendant-owner','detached-owner'):
  p=base/name
  if not p.exists(): continue
  pid,expected=json.loads(p.read_text()); deadline=time.monotonic()+3
@@ -967,7 +1054,7 @@ for name in ('foreground-owner','detached-owner'):
  else: raise RuntimeError('Owned fixture remained alive')
 """
         for shell in self.native_shells():
-            for mode in ("normal","ignore"):
+            for mode in modes:
                 with self.subTest(shell=shell,mode=mode), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
                     directory=Path(scratch)
                     linux_directory=wsl("wslpath","-a","-u",scratch).stdout.decode().strip()
@@ -984,6 +1071,9 @@ for name in ('foreground-owner','detached-owner'):
                         self.assertEqual(list(controls.iterdir()),[],"Aborted caller left a private cancellation file")
                         abort_seconds=(int((directory/'return-ticks').read_text())-int((directory/'first-ticks').read_text()))/10_000_000
                         time.sleep(4)
+                        if mode=='early':
+                            self.assertIn((directory/'leader-state').read_text(),('gone','Z'), 'Abort did not follow leader exit')
+                            self.assertTrue((directory/'descendant-owner').exists())
                         foreground=(directory/'foreground-marker').exists()
                         detached=(directory/'detached-marker').exists()
                         print(f"abort {shell} {mode}: exact Linux owner {owner}, startup+return {elapsed:.2f}s, abort {abort_seconds:.2f}s, foreground marker={foreground}, detached marker={detached}")

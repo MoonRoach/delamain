@@ -46,17 +46,29 @@ namespace Delamain {
                 Arguments = owned.ToArray();
             } catch { Dispose(); throw; }
         }
+        internal void Complete() {
+            if (control != null) File.WriteAllText(control, "complete", new UTF8Encoding(false));
+        }
         internal void Cancel(Process process) {
             if (control == null) return;
             File.WriteAllText(control, "cancel", new UTF8Encoding(false));
             Stopwatch deadline = Stopwatch.StartNew();
-            while (!process.HasExited && deadline.ElapsedMilliseconds < 1500) {
+            while (deadline.ElapsedMilliseconds < 1500) {
                 try { if (File.ReadAllText(control) == "done") break; }
                 catch (IOException) { }
                 Thread.Sleep(20);
             }
             // If WSL has not started Python yet, removing the control below
             // also tells a late guardian to exit before launching the command.
+        }
+        internal void Finish() {
+            if (control == null) return;
+            Stopwatch deadline = Stopwatch.StartNew();
+            while (deadline.ElapsedMilliseconds < 1500) {
+                if (File.ReadAllText(control) == "done") return;
+                Thread.Sleep(20);
+            }
+            throw new IOException("The foreground guardian did not acknowledge completion within its cleanup deadline.");
         }
         public void Dispose() {
             if (control == null) return;
@@ -75,10 +87,10 @@ def request(signum,frame):
     requested=True
 signal.signal(signal.SIGHUP,request)
 signal.signal(signal.SIGTERM,request)
-def cancelled():
-    if requested: return True
-    try: return control.read_text() != 'run'
-    except FileNotFoundError: return True
+def state():
+    if requested: return 'cancel'
+    try: return control.read_text()
+    except FileNotFoundError: return 'cancel'
 def exited():
     return os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT) is not None
 def stop():
@@ -88,18 +100,40 @@ def stop():
         except ProcessLookupError: pass
         if sig == signal.SIGTERM: time.sleep(.2)
     child.wait(timeout=1)
+# WSL keeps its Windows pipe handles until its entry process exits. A separate
+# session owns the pinned command; this entry process returns the observed
+# leader status without reaping it or releasing cancellation ownership.
+status_read,status_write=os.pipe()
+if os.fork():
+    os.close(status_write)
+    try: status=os.read(status_read,32)
+    finally: os.close(status_read)
+    sys.exit(int(status) if status else 1)
+os.close(status_read)
+os.setsid()
+status=None
 try:
-    if cancelled(): sys.exit(1)
+    if state() != 'run': sys.exit(1)
     child=subprocess.Popen(sys.argv[2:],start_new_session=True)
+    # Only the command and its descendants own these pipes. The guardian must
+    # not hold EOF hostage while waiting for the host's completion decision.
+    os.close(0); os.close(1); os.close(2)
     while True:
-        if cancelled():
+        decision=state()
+        if decision == 'cancel':
             stop(); reaped=True; sys.exit(1)
-        if exited():
-            code=child.wait(); reaped=True
-            sys.exit(code if code >= 0 else -code)
+        if status is None and exited():
+            status=os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOWAIT).si_status
+            os.write(status_write,str(status).encode())
+            os.close(status_write); status_write=None
+        if decision == 'complete' and status is not None:
+            # Same-group descendants remain owned through the host decision.
+            stop(); reaped=True
+            sys.exit(0)
         time.sleep(.02)
 finally:
     if child is not None and not reaped: stop()
+    if status_write is not None: os.close(status_write)
     # Acknowledgement is written only after the exact foreground has exited.
     try:
         fd=os.open(control,os.O_WRONLY|os.O_TRUNC)
@@ -130,8 +164,11 @@ finally:
         }
         public string ReadLine() { return reader.ReadLine(); }
         public int Complete() {
-            process.WaitForExit(); stderr.Join();
+            stderr.Join();
             if (stderrError != null) throw stderrError;
+            owner.Complete();
+            process.WaitForExit();
+            owner.Finish();
             int code = process.ExitCode;
             complete = true;
             return code;
@@ -296,13 +333,17 @@ finally:
                 if (redirectInput) Input(process, rawInput, input);
                 // An output failure must cancel a quiet child as well; waiting
                 // for its normal exit first can otherwise block indefinitely.
-                while (!process.WaitForExit(50)) {
+                while (stdout.IsAlive || stderr.IsAlive) {
                     if (Volatile.Read(ref outputError) != null) throw outputError;
                     if (Volatile.Read(ref errorError) != null) throw errorError;
+                    Thread.Sleep(20);
                 }
                 stdout.Join(); stderr.Join();
                 if (outputError != null) throw outputError;
                 if (errorError != null) throw errorError;
+                if (owner != null) owner.Complete();
+                process.WaitForExit();
+                if (owner != null) owner.Finish();
                 ProcessResult result = new ProcessResult(); result.ExitCode = process.ExitCode;
                 if (capture) result.Output = new UTF8Encoding(false).GetString(buffer.ToArray());
                 complete = true;

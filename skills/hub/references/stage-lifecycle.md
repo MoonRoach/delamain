@@ -110,6 +110,27 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
 - Sources and filters combine in one command. What was read is remembered: lines that arrived while you worked come
   with the next `jwait`.
 
+## Closing a stage
+
+Close a stage when its hub is no longer needed: the goal is delivered or dropped, and nothing of the stage should wake,
+nag or hold a lock any more. The owner decides that (in words, or in the stage plan they approved); without it, ask.
+1. Stop the work: no live agent (`agent stop --stage <S> <role>`) and no sub-agent of yours still running; open MRs,
+   branches and worktrees are handed to someone or named in the closing report.
+2. Resolve the owner questions: record answers (`ask close`), withdraw the ones that lost their point (`ask withdraw`).
+3. `hub close --stage <S> --why "<one line: delivered X / dropped because Y>"` (`--dry-run` first if unsure). It
+   refuses (exit 2) while an agent runs or a question waits; `--force` only on the owner's word — it stops the agents
+   and leaves the questions in the register. It stops an idle background hub, releases the stage's locks (not one whose
+   holder still works in another open stage), retires every role, journals the close and marks `stage.json`. The stage
+   drops out of agent-top (`--all` shows it), the watchdog, the night queue and the question summaries; its files stay.
+4. Tell the owner in one or two lines what the stage delivered and what stays open, and where. If you are the hub being
+   closed, that is your last message: no more tool calls. A Desktop hub is archived by the owner, or by another session
+   with `mcp__ccd_session_mgmt__archive_session`; a busy or terminal one is named in the command's ATTENTION line.
+Asked from another session to close a stage whose hub is alive: `tell <S> "…"` first, so its hub reports and stops;
+a hub that is gone or silent is closed directly. The owner can close an idle stage from agent-top: Summary lists the
+stages and marks as idle an open one with no live agent and no activity for 48 h; `c` in the terminal console, the
+`close` button (pressed twice) in the `/agent-top` pane. `hub start` or `hub takeover` on a closed stage reopens it, and
+the new hub's number continues after the closed one's.
+
 ## Watchdog
 
 **With the watchdog on** (the takeover digest says so; `docs/monitoring.md`): a hub that sleeps without a waiter is fine, the

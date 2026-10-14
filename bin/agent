@@ -39,6 +39,7 @@ and meta.json (bin/spawn_policy.py). The title registered for the agent is `<rol
 without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Load hold: while `bin/watchdog` holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD, off by default), spawn warns
 or, with AGENT_HUB_SPAWN_HOLD=refuse, refuses (exit 1); --ignore-hold passes. `send` is never held (bin/spawn_hold.py).
+A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
@@ -491,6 +492,9 @@ def journal(stage: str, fallback_tag: str, text: str) -> str:
 
 def cmd_spawn(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
+    if (closed := hc.stage_closed(stage)) is not None:  # `hub close`: nothing watches it, nothing lists its agents
+        raise hc.UsageError(f"stage {stage} is closed ({closed.get('at')}: {closed.get('why')}) — reopen it with "
+                            f"`hub takeover --stage {stage} --session …` before starting agents there")
     cwd = Path(a.cwd).expanduser().resolve()
     brief = Path(a.brief).expanduser().resolve()
     if not cwd.is_dir():

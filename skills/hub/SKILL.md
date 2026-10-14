@@ -1,6 +1,6 @@
 ---
 name: hub
-description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions Delamain (formerly agent-hub) or "the hub skill", or asks you to plan work for agents or to run work through agents.
+description: Tools and recommended rules for a stage hub — the one interactive session that plans a stream of work and runs headless Claude Code or Codex agents. Load it when you are the hub of a stage, when starting a stage, taking over or handing off a hub shift, when closing a stage whose hub is no longer needed, when spawning or messaging a long-running background agent, when you need a review of a change, and when you need to wait for events — journal lines, an agent's status, a script's question, an alarm. Also load it when the user mentions Delamain (formerly agent-hub) or "the hub skill", or asks you to plan work for agents or to run work through agents.
 ---
 
 # Stage hub: tools and recommended rules
@@ -8,7 +8,7 @@ description: Tools and recommended rules for a stage hub — the one interactive
 The core: what a hub needs from its first minute. Situational procedures sit in `references/` beside this file, moved
 whole; read one when its situation comes up. **A Codex hub reads `codex-hub.md` and `autopilot.md` at start.**
 
-- `references/stage-lifecycle.md` — *Starting a stage*, *Taking over a shift*, leaving, the shared-file table, the watchdog.
+- `references/stage-lifecycle.md` — *Starting a stage*, *Taking over a shift*, leaving, *Closing a stage*, the shared-file table, the watchdog.
 - `references/autopilot.md` — *Autopilot* (`AGENT_HUB_AUTO_HANDOFF=on`, automatic successors, Codex Desktop native launch).
 - `references/owner-and-planning.md` — *Talking* and *Planning a stage* in full: `ask`, standing permissions, grilling.
 - `references/launch-and-executors.md` — *Choosing how to launch work*, *Reviews*, *Executors*, *Locks*, *Project
@@ -22,7 +22,8 @@ Run the bundled tools through the host's shell tool. The plugin root is `PLUGIN_
 (GitHub CLI `hub`, an old `jlog`) and tell the owner in one line. `HUB_BIN` is set in detached workers. Paths below
 are relative to that root. Choose the executor engine before the model: offer the owner one choice at stage planning
 (Codex, Claude or mixed; the host is the default, an existing explicit choice already answers it), record it in the
-stage's `hub-rules.md`, pass `agent spawn --engine claude|codex`. Engine rules in full: `references/codex-hub.md`.
+stage's `hub-rules.md`, pass `agent spawn --engine claude|codex`. Engine rules in full: `references/codex-hub.md`. For installation assessment or task routing, read
+`<plugin-root>/docs/agents/README.md`; this skill owns the stage workflow once the plugin is selected.
 
 ## First commands
 
@@ -48,11 +49,15 @@ matter once there is more than one session, shift or shared resource. Each tool 
 
 `hub takeover --stage <S> --session self [--handoff <file>]` (`--dry-run` first if unsure; exit 4 as for `hub start`)
 takes the previous hub's locks, registers you as the next `hub-<N>`, writes the start line and prints a digest:
-§ 0 of the handoff next to the `ask` register — check every "the owner said" against it, the register wins; the first
+§ 0 of the handoff next to the `ask` register — check every "the owner said" against it, the register wins, and ask the owner about the disagreement; the first
 `jwait` to start (its `--since` delivers the handover lines); the `hub-rules.md` and `HUB-NOTES.md` to read before
 planning. Leaving: `hub handoff --stage <S>`, fill the TODOs (skill `handoff`); it refuses while a sub-agent of your
 session runs; locks are not released. Flags and the rest: `references/stage-lifecycle.md`; automatic handover
 (`hub succeed`): `references/autopilot.md`.
+
+Closing a stage whose hub is no longer needed (the owner decides; without it, ask): `hub close --stage <S> --why "<one line>"`
+(`--dry-run` first; exit 2 while an agent runs or a question waits, `--force` only on the owner's word). Read
+`references/stage-lifecycle.md` (*Closing a stage*) before running it.
 
 ## Waiting
 
@@ -72,8 +77,8 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
 - Sources and filters combine in one command. What was read is remembered.
 
 A CI, merge or lock wait is never a background Bash of the hub itself: run `await --ok MERGED --label "MR !N" --on
-2=TIMEOUT -- python -m scripts.ci_wait --mr N` (`bin/await`, a foreground call that returns at once; plugin versions
-before the CI-wait change lack it, and there an executor does the wait). It journals nothing while the command runs and
+2=TIMEOUT -- <the repo's wait command>` (santinel: `python -m scripts.ci_wait --mr N`, which needs `--on 2=TIMEOUT`;
+`bin/await`, a foreground call that returns at once; if `command -v await` finds nothing, an executor does the wait). It journals nothing while the command runs and
 one line `@hub MERGED|DONE|FAILED|TIMEOUT|<--on word> … <link>` when it ends: that line is the wake, and
 FAILED/TIMEOUT/CONFLICT are decisions for the hub, not retries. An executor that waits on CI uses the same `await`.
 
@@ -110,10 +115,12 @@ unless the owner supplied them.
    `<plugin-root>/skills/setup/SKILL.md` § 5, then one grilling round; record answers with `ask allow`.
 2. Business result unclear → the companion `grilling` skill, **limited to ambiguity whose answer materially changes
    the business result; stop once that result is clear.** Facts and implementation choices are agent-owned.
-3. Owner answers: `ask add`, then `ask close --answer …`; your own choices: `ask decided`.
+3. Owner answers: `ask add`, then `ask close --answer …`; your own choices: `ask decided`. Meaningful unresolved product
+   branches go to the owner and the register.
 4. Put the agreed Business DoD, with its source, in the plan or brief; a clear owner request can itself be the DoD.
    Before spawning, have a plan the owner said yes to (a clear, detailed request counts; honor an explicit request to
-   approve first) and record it: `ask plan --stage <S> "<plan in one line>"`.
+   approve first) and record it: `ask plan --stage <S> "<plan in one line>"`. A proposal that materially changes the
+   business scope or result needs the owner's agreement first.
 5. Brief executors with that result; keep implementation steps, technical verification and stop/permission
    conditions separate.
 
@@ -144,8 +151,8 @@ lines, details in a file. `hub handoff` refuses while a sub-agent of your sessio
 ## Executors
 
 - Work that commits, pushes or waits is a headless agent:
-  `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.
-  It survives the hub's handoff and any hub can talk to it. Its tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` is
+  `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`;
+  the role says what the work is (`mainmerge-fix`, never `wp23`). It survives the hub's handoff and any hub can talk to it. Its tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` is
   filtered out of your own `jwait`). An abnormal end leaves `EXIT <role>: …` in the journal, a normal one without a
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
@@ -168,6 +175,8 @@ maps: `references/launch-and-executors.md`.
 2. In a worktree that Desktop created, sync with the base through the host's `sync_with_base_branch`, not `git merge`.
 3. A PR whose CI an executor runs is not bound to the host's Auto-fix or monitor: two systems would wake the hub on
    one event.
+4. Desktop pauses cross-session sends after 10 without the owner typing: `roles sent` after each; at budget 0
+   `jlog "@<tag> …"` instead (`references/launch-and-executors.md`, *Optional modules*).
 
 ## Recommended hub rules
 

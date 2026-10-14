@@ -498,7 +498,7 @@ class Start(Exception):
 
 def followthrough_summary() -> str:
     """Point every successor surface at the hub skill's authoritative procedure."""
-    return """For Codex, apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
+    return """For Codex, apply the hub skill's Terminal follow-through (`references/codex-hub.md`): consume the report/result, verify resource ownership and
 remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
@@ -759,7 +759,8 @@ class CodexSuccessor(Successor):
 You are the next hub of stage `{self.stage}`. Your predecessor handed over automatically and stopped.
 The owner may be away; they reach you through `ask` and `agent send hub-{self.succ} "…"`.
 
-1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill), then run
+1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill) and its `references/codex-hub.md`
+   and `references/autopilot.md`, then run
    `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
 2. Run the digest's first `jwait` once unconditionally to replay handover events.
    {followthrough_summary()}
@@ -1389,7 +1390,8 @@ def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approva
 
 You are the automatic desktop successor for stage `{stage}`. Request `{req}`.
 Use the existing hub home `{hc.root()}` (pass AGENT_HUB_HOME explicitly to shell commands if not inherited).
-Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}` and the handoff `{handoff}`.
+Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}`, its `references/codex-hub.md` and `references/autopilot.md`,
+and the handoff `{handoff}`.
 Continue the unchanged Business DoD and human authority source/reference and scope recorded in that handoff.
 Consult these predecessor rule layers and the question register: {authority_sources}. Check standing explicit
 human instructions and revocation. Apply the hub skill's native authority check before any later context transfer;

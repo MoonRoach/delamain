@@ -69,9 +69,17 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
 AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
-# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
-# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
-DEFAULT_JWAIT_FOR = "55m"
+# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 50m or 1h30m).
+# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it. Claude
+# Code 2.1.299 also compacts a 200K+ conversation left idle ~54 minutes (idle_compaction_warning), and the old 55m wait
+# always ended after that point; a hub that did not turn the compaction off would have woken up on a summary. 50m ends
+# before it, and costs about one extra wake an hour, a turn that reads a warm cache.
+DEFAULT_JWAIT_FOR = "50m"
+# Claude Code's idle compaction (2.1.290+) starts at 200K tokens unless this raises the minimum; a detached `claude -p` worker
+# (`agent spawn`/`agent send`) that waits on a `jwait` should never be compacted behind its hub's back (the owner forbids
+# compaction), so it gets a minimum above any context window. The caller's own value wins. Older CLIs ignore the variable.
+IDLE_COMPACT_ENV = "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"
+IDLE_COMPACT_NEVER = "100000000"
 MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
@@ -991,7 +999,7 @@ def status_pattern(exit_word: bool = True) -> str:
 
 
 def jwait_for() -> str:
-    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 50m). A value that is not a duration between zero
     (exclusive) and 24h is reported on stderr and replaced by the default."""
     raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
     if not raw:
@@ -1001,7 +1009,7 @@ def jwait_for() -> str:
             return raw
     except (UsageError, OverflowError):
         pass
-    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 50m or 1h30m between 1s and 24h ({raw!r}); "
           f"using {DEFAULT_JWAIT_FOR}")
     return DEFAULT_JWAIT_FOR
 
@@ -1213,6 +1221,27 @@ def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
     return (f"Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle ~54 min, and {state}: a hub waiting "
             f"on a long jwait would go on from a summary instead of handing over — set \"idleCompaction\": false in "
             f"{where or user} (the background successors of `hub succeed` get it on their command line)")
+
+
+def desktop_compaction_note() -> Optional[str]:
+    """One line for a hub that runs in Claude Desktop (`hub start`/`takeover` with a local_… session), unless
+    $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1. Desktop runs its own bundled CLI, which can be older than the terminal's
+    (2.1.295 against 2.1.299 on 14.10); neither the changelog nor the docs say whether that session reads
+    `idleCompaction` from settings.json, whether the setting reaches it at all, or whether Desktop compacts on a schedule
+    of its own, and nothing here can observe it. So the handoff threshold of the context budget is what has to come
+    first, and the line says where that threshold stands against the 200K minimum of idle compaction."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    cli = desktop_cli()
+    warn = int_setting("AGENT_HUB_CONTEXT_WARN", 300_000)
+    version = fmt_version(cli[0]) if cli else "version unknown"
+    where = (f"the context budget warns at {warn // 1000}k tokens, above the 200K at which idle compaction starts: set "
+             f"AGENT_HUB_CONTEXT_WARN to 150000 in the hub home's config.json (hub-wide) if the handoff must come first"
+             if warn >= 200_000 else f"the context budget warns at {warn // 1000}k tokens, below the 200K at which idle "
+             "compaction starts")
+    return (f"this hub runs in Claude Desktop, with Desktop's own Claude Code ({version} bundled here); whether it honours "
+            f"\"idleCompaction\": false from settings.json, or compacts on its own, is not verified and cannot be seen from "
+            f"here, so the handoff threshold has to fire before any compaction: {where}")
 
 
 def plugin_tools() -> list:

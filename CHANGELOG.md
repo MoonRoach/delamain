@@ -15,6 +15,34 @@
   passes and is journalled. The watchdog (R6) writes one `@hub LIMIT …` line per crossing. New: `agent spawn
   --task-class`, `agent spawn --dry-run`, `AGENT_HUB_LIMIT_PACE`. See [Limit pace](docs/reference.md#limit-pace).
 
+- **The hub skill is a 17 KB core plus references.** `skills/hub/SKILL.md` was 49 KB (about 17,700 tokens) that every
+  hub loaded and re-read on every call, and about half of it was procedure for a Codex hub or for a situation that
+  comes up once a shift. It is now a 17,409-byte core (about 6,700 tokens, measured by input tokens): first commands, starting
+  and taking over, waiting (with `await` for CI, merge and lock waits), talking, planning, launch choice, executors, a
+  short Claude Desktop host block and the twelve recommended rules. The rest sits in
+  `skills/hub/references/` — `stage-lifecycle.md`, `autopilot.md`, `owner-and-planning.md`,
+  `launch-and-executors.md`, `codex-hub.md` — moved word for word, each with a "read … when …" line in the core;
+  a Codex hub reads `codex-hub.md` and `autopilot.md` at start. Pointers to *Terminal follow-through* (the handoff
+  template and skill, the Codex successor briefs) name the new file. The tests that read the Autopilot paragraphs
+  read `references/autopilot.md`, and `tests/t_hub_skill_layout.sh` holds the core's size budget and every pointer.
+  `docs/proposals/hub-rules-slim.md` proposes the same cut for the owner's `hub-rules.md`.
+- **Hooks stay safe on Claude Code 2.1.299.** From 2.1.299 a plugin hook that cannot hand back its answer (it crashes,
+  runs past its `timeout`, prints half a JSON document) blocks the user's call instead of letting it through. All seven
+  hook scripts now start with `hooks/failsafe.py`: stdout is delivered only if it is one complete JSON document, the
+  exit status is always 0 (a missing or broken sibling module used to end in exit 1 for `context_budget`,
+  `handoff_size` and `delegation`), and a timer answers "no decision" 1.5 s before the configured `timeout` (all hooks now have 10 s; `board_locks` and
+  `polling_guard` had 5) and says so on stderr.
+  `tests/t_hook_failsafe.sh` feeds every hook malformed input, breaks a module on purpose, stalls stdin, and checks the
+  deadlines against `hooks.json` and `codex-hooks.json`.
+- **`jwait` waits 50 minutes by default (was 55).** Claude Code compacts a 200K+ conversation left idle about 54 minutes;
+  a 55-minute wait always ended after that point for a hub that did not set `"idleCompaction": false`. Hubs of
+  `hub start`/`takeover`/`succeed` already get the setting or the warning (1.0.5); `setup` now offers the setting too, and
+  detached `agent spawn`/`agent send` workers get `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000` unless the caller sets
+  it. `AGENT_HUB_JWAIT_FOR` still overrides the default.
+- **A hub in Claude Desktop is told the handoff threshold must come first.** Desktop runs its own bundled Claude Code
+  (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
+  `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
+  threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
 - **`await`: a hub no longer wakes for CI, merge or lock progress.** `await [--ok MERGED] [--on RC=WORD] -- <wait
   command>` runs the wait detached from the hub's context (a supervisor in its own session, output in a log) and
   journals exactly one line, `@hub WORD LABEL — LINK (exit N, …)`, when the command ends: `DONE`/`MERGED`, `FAILED`,

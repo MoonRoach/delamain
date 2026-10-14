@@ -431,6 +431,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
     if engine == "claude":
         env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
+        env.setdefault(hc.IDLE_COMPACT_ENV, hc.IDLE_COMPACT_NEVER)
     else:
         env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
                     "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})

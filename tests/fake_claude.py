@@ -41,6 +41,7 @@ with open("env.log", "a", encoding="utf-8") as fh:
     fh.write(f"PATH_FIRST={os.environ.get('PATH', '').split(os.pathsep)[0]}\n")
     fh.write(f"HUB_BIN={os.environ.get('HUB_BIN', '<unset>')}\n")
     fh.write(f"AGENT_HUB_HOME={os.environ.get('AGENT_HUB_HOME', '<unset>')}\n")
+    fh.write(f"CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS={os.environ.get('CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS', '<unset>')}\n")
     fh.write(f"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS={os.environ.get('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', '<unset>')}\n")  # last: tests read it with tail -1
 if os.environ.get("FAKE_CLAUDE") == "hang":  # alive, never sends init (a slow MCP server, a stuck start)
     time.sleep(60)

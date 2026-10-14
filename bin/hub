@@ -1156,6 +1156,10 @@ def _cmd_takeover(a) -> int:
         idle = hc.idle_compaction_warning(Path.cwd())
         if idle:
             warns.append(idle)
+        if kind == "desktop":
+            note = hc.desktop_compaction_note()
+            if note:
+                warns.append(note)
     plan = Plan(a.dry_run)
     print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
           (retake.replace("re-took", "re-takes", 1) if retake else f"takes over from \"{prev_label}\"")

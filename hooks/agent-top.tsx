@@ -1,15 +1,16 @@
 // agent-top as a Claude Code mod: the headless agents of the Delamain plugin, live in a pane.
 //
 //   /agent-top [role] [--stage S] [--all]   opens the pane (a role opens that agent's card); a bare one closes it again
-//   pane views: Agents (a) · agent card (header + live feed) · Journal (j) · Summary (s: plan limits, owner questions, locks)
+//   pane views: Agents (a) · agent card (header + live feed) · Journal (j) · Summary (s: stages, plan limits, owner questions, locks)
 //   the drawing: hooks/agent-top-view.tsx; the list's cursor follows the pane's focus ring (ui.focus)
 //   footer: a Button `agents ● 2 ✓ 5 ✗ 1` beside the engine's mode labels (SessionMode) opens and closes the pane; where a
 //   surface without that footer looks on (a phone, VS Code) the same counts are the status line instead
 //   toasts when an agent finishes, fails or dies and when a new owner question opens
 //
-// Read-only. Data comes only from the plugin's own CLI, `bin/agent-top --json` (it keeps its read offsets in its own cache,
-// <hub home>/.state/agent-top/); the module itself writes nothing. Calls never overlap, each answer is drawn as it comes,
-// and a failed card call says why in the feed area instead of "loading". The module is
+// Reads only, with one exception. Data comes from the plugin's own CLI, `bin/agent-top --json` (it keeps its read offsets in
+// its own cache, <hub home>/.state/agent-top/); the module itself writes nothing. The exception is Summary's Stages section:
+// `close` on an idle stage runs `bin/hub close --stage S`, after two presses (the first arms it, 10 s). Calls never overlap, each
+// answer is drawn as it comes, and a failed card call says why in the feed area instead of "loading". The module is
 // plugin-name-agnostic (no $.state, no hard-coded plugin name): state lives in this closure, and a hot reload starts it over.
 // Needs Claude Code with mods (2.1.287+). Older CLIs ignore the module; there, and in Codex, the console `agent-top` stays.
 import type { EngineInterface, Register, Timer } from 'claude-code'
@@ -22,6 +23,7 @@ import {
   countsOf,
   findByRole,
   footerHolds,
+  idleStages,
   inStages,
   isBare,
   isOwnCommand,
@@ -33,6 +35,7 @@ import {
   parseSnapshot,
   planRun,
   remember,
+  ringTarget,
   sameTarget,
   statusText,
 } from './agent-top-model'
@@ -50,13 +53,16 @@ const DOCK_COLUMNS = 76 // body columns asked for beside a fullscreen transcript
 const CALL_TIMEOUT_MS = 60000
 const OPEN_WAIT_MS = 4000 // how long /agent-top waits for data before it answers; the pane fills when the data comes
 const SKILL_HINT = 'agent-top: the mod needs bin/agent-top of the Delamain plugin'
+const ARM_MS = 10000 // a first press of `close` waits this long for the second one
+const CLOSE_WHY = 'closed from the agent-top pane'
 
 type Called = { ok: true; stdout: string } | { ok: false; error: string; isMissing: boolean }
+type HubCalled = { ok: true; line: string } | { ok: false; error: string }
 
 const firstLine = (s: string): string => clip(oneLine(s.split('\n').find(l => l.trim() !== '') ?? ''), 140)
 
 let snap: Snapshot | null = null // the default view, every stage: feeds the status line and the toasts
-let allSnap: Snapshot | null = null // the same with --all, only while the pane shows it
+let allSnap: Snapshot | null = null // the pane's own list (--all, or the named stages), only while the pane shows it
 let card: Card | null = null // the card of `target` (an answer for another agent is dropped)
 let cardError: string | null = null // why the last card call failed; cleared by the next good one
 let view: View = 'list'
@@ -79,6 +85,11 @@ let isAutoFocus = true // until the ring first lands on a row, the cursor row is
 let ringKey: string | null = null // the element the ring was last moved onto (ui.focus)
 let lastControls = '' // the drawn Buttons' keys, in order, at the last drawing
 let edges: { prev: string | null; next: string | null } = { prev: null, next: null } // the agents past the list's window
+// Summary's `close` flow: a first press arms a stage, a second runs `bin/hub close`; one at a time, whatever the stage
+let armed: string | null = null
+let armTimer: Timer | null = null
+let closing: string | null = null // the stage whose close is running
+let closeNote: { text: string; isError: boolean; isWarn?: boolean } | null = null // its result, drawn in the Stages section
 
 // ---------------------------------------------------------------- data
 
@@ -96,6 +107,24 @@ async function callCli($: Api, args: string[]): Promise<Called> {
     // the engine's own words name the whole path; the pane has one line for it
     if (/still running|timed? ?out/i.test(msg)) return { ok: false, error: `agent-top gave no answer in ${CALL_TIMEOUT_MS / 1000} s`, isMissing: false }
     return { ok: false, error: `agent-top: ${clip(oneLine(msg), 100)}`, isMissing: false }
+  }
+}
+
+/** `bin/hub <args>` (close only: the module does nothing else with it). The first line of stdout on success, of stderr on a refusal. */
+async function callHub($: Api, args: string[]): Promise<HubCalled> {
+  const bin = `${$.plugin.root}/bin/hub`
+  try {
+    const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env: { PYTHONDONTWRITEBYTECODE: '1' } })
+    if (r.exitCode === 127) return { ok: false, error: `hub cannot run (${bin})` }
+    if (r.exitCode !== 0) return { ok: false, error: firstLine(r.stderr) || firstLine(r.stdout) || `hub exited with ${r.exitCode}` }
+    // the summary line; when the hub session still runs it carries the ATTENTION with how to end it, so it is kept long
+    return { ok: true, line: clip(oneLine(r.stdout.split('\n').find(l => l.trim() !== '') ?? ''), 600) || 'closed' }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/ENOENT|no such file|not found|cannot start|spawn/i.test(msg)) return { ok: false, error: `hub is missing (${bin})` }
+    // a killed call may have got part of the way: the pane does not claim it failed whole
+    if (/still running|timed? ?out/i.test(msg)) return { ok: false, error: `hub gave no answer in ${CALL_TIMEOUT_MS / 1000} s; look at the stage before closing again` }
+    return { ok: false, error: `hub: ${clip(oneLine(msg), 100)}` }
   }
 }
 
@@ -139,6 +168,9 @@ function giveUp($: Api, message: string): void {
   showCounts($)
 }
 
+/** What the pane shows: its own list (--all, or the named stages, which may include a closed one) once read, else the watch call's. */
+const paneSnap = (): Snapshot | null => ((isAll || stages.length > 0) && allSnap ? allSnap : snap)
+
 function applyWatch($: Api, s: Snapshot): void {
   snap = s
   lastWatchAt = s.fetchedAt
@@ -149,7 +181,7 @@ function applyWatch($: Api, s: Snapshot): void {
 
 async function runOnce($: Api, isForce: boolean): Promise<void> {
   const now = await $.clock.now()
-  const plan = planRun({ now, lastWatchAt, isOpen, view, isAll, hasTarget: target !== null, force: isForce })
+  const plan = planRun({ now, lastWatchAt, isOpen, view, isAll, hasStages: stages.length > 0, hasTarget: target !== null, force: isForce })
   if (!plan.watch && plan.extra === null) return
   const errors: string[] = []
   let isGone = false
@@ -175,7 +207,7 @@ async function runOnce($: Api, isForce: boolean): Promise<void> {
     }
     $.ui.invalidate('ui.render')
   } else if (plan.extra === 'all' && !isGone) {
-    const c = await callCli($, ['--json', '--all'])
+    const c = await callCli($, ['--json', ...(isAll ? ['--all'] : []), ...stages.flatMap(s => ['--stage', s])])
     if (c.ok) {
       try {
         allSnap = parseSnapshot(c.stdout, now)
@@ -288,7 +320,54 @@ function back($: Api): void {
   go($, 'list')
 }
 
+function disarm(): void {
+  armTimer?.cancel()
+  armTimer = null
+  armed = null
+}
+
+/** The `close` Button of an idle stage: the first press arms it for ARM_MS, the second one runs the close. */
+function pressClose($: Api, stage: string): void {
+  if (closing !== null) return // one close at a time: presses while one runs are ignored
+  ringKey = `close:${stage}` // the ring is on the pressed Button; should it vanish, the drawing moves the ring off it
+  if (armed !== stage) {
+    disarm() // another stage armed meanwhile: that one is dropped
+    armed = stage
+    closeNote = null
+    armTimer = $.clock.after(ARM_MS, () => {
+      if (armed !== stage) return
+      armed = null
+      armTimer = null
+      $.ui.invalidate('ui.render')
+    })
+    $.ui.invalidate('ui.render')
+    return
+  }
+  disarm()
+  void closeStage($, stage)
+}
+
+/** Runs `hub close`, says how it went in the Stages section, and refreshes at once so a closed stage leaves the list. */
+async function closeStage($: Api, stage: string): Promise<void> {
+  closing = stage
+  closeNote = null
+  $.ui.invalidate('ui.render')
+  try {
+    const c = await callHub($, ['close', '--stage', stage, '--why', CLOSE_WHY])
+    closeNote = c.ok
+      ? { text: c.line, isError: false, isWarn: c.line.includes('ATTENTION:') }
+      : { text: `${stage}: ${c.error}`, isError: true }
+  } finally {
+    closing = null
+  }
+  $.ui.invalidate('ui.render')
+  await refresh($, true)
+}
+
 function go($: Api, next: View): void {
+  disarm() // a first press does not outlive the view it was made in
+  closeNote = null
+  if (ringKey?.startsWith('close:')) ringKey = null // the ring is leaving the Stages section's Button
   view = next
   $.ui.invalidate('ui.render')
   // the ring onto the new view's own element: the cursor row, or the active tab (its old element may be gone)
@@ -311,6 +390,8 @@ async function onceText($: Api, a: CommandArgs): Promise<string> {
 async function openPane($: Api, args: CommandArgs): Promise<string> {
   stages = args.stages
   isAll = args.isAll
+  disarm()
+  closeNote = null
   isMissing = false
   error = null
   view = 'list'
@@ -333,7 +414,7 @@ async function openPane($: Api, args: CommandArgs): Promise<string> {
 
   let notFound = ''
   if (args.role !== null) {
-    const found = findByRole((isAll && allSnap ? allSnap : snap)?.agents ?? [], args.role, stages)
+    const found = findByRole(paneSnap()?.agents ?? [], args.role, stages)
     if (found) {
       await openCard($, found)
     } else if (snap || allSnap) notFound = `no agent "${args.role}"${stages.length ? ` in ${stages.join(', ')}` : ''}; `
@@ -365,7 +446,7 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'agent-top',
-        description: 'Show the headless agents live in a pane (read-only)',
+        description: 'Show the headless agents live in a pane; its Summary can close an idle stage',
         argumentHint: '[role] [--stage S] [--all]',
         immediate: true,
       })
@@ -454,7 +535,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     isOpen = true
-    const shown = isAll && allSnap ? allSnap : snap
+    const shown = paneSnap()
     const agents = shown ? inStages(shown.agents, stages) : []
     const model: PaneModel = {
       view,
@@ -473,6 +554,12 @@ export const register: Register = on => {
       cursorKey: cursorKey !== null && agents.some(a => agentKey(a) === cursorKey) ? cursorKey : agents[0] ? agentKey(agents[0]) : null,
       isAutoFocus,
       nowMs: shown?.fetchedAt ?? 0,
+      // armed only while the stage is still idle: a stage that stopped being so has no Button to confirm on
+      closing: {
+        armed: armed !== null && shown && idleStages(shown, stages).some(r => r.stage === armed) ? armed : null,
+        running: closing,
+        note: closeNote,
+      },
     }
     const drawn = drawPane($.ui.resolve(e), model, {
       go: next => go($, next),
@@ -480,10 +567,11 @@ export const register: Register = on => {
       toggleAll: () => {
         isAll = !isAll
         allSnap = null
-        go($, 'list')
+        go($, view === 'summary' ? 'summary' : 'list')
       },
       open: a => void openCard($, a),
       back: () => back($),
+      close: stage => pressClose($, stage),
       step: dir => {
         const to = dir < 0 ? edges.prev : edges.next
         if (to === null) return
@@ -500,8 +588,8 @@ export const register: Register = on => {
     const sig = drawn.controls.join('\n')
     if (sig !== lastControls) {
       lastControls = sig
-      const meant = ringKey?.startsWith('open:') && model.cursorKey !== null ? `open:${model.cursorKey}` : ringKey
-      if (meant !== null && drawn.controls.includes(meant)) $.clock.after(0, () => focusOn($, meant))
+      const meant = ringTarget(ringKey, model.cursorKey, drawn.controls)
+      if (meant !== null) $.clock.after(0, () => focusOn($, meant))
     }
 
     return drawn.tree

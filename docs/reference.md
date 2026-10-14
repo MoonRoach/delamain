@@ -67,11 +67,12 @@ flowchart LR
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
 | `hub start / takeover / handoff` | Register the first hub of a stage; hand a hub shift over in one command each. The shift number is derived. `hub handoff --finish` refuses a draft whose § 0–2 still hold `TODO` (`--allow-todo` overrides), `hub succeed` makes the same check, and `takeover` warns about such a handoff. Start and takeover run only in a fresh worktree of the project and move the session there otherwise (exit 4, `MOVE <path>`). `start` wants a stage name that says what the work is and a `--goal` line (see *Names*, below). `takeover` also records where the hub runs as `host:` in the stage's `hub` record of `roles.json` (`desktop`, `detached`, `bg` or `term`; left out for a Codex hub and when it cannot be told), and its digest prints the watchdog line: an active do-not-wake marker, and that the watchdog is on. |
 | `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
+| `hub close` | `hub close --stage S [--why TEXT] [--force] [--dry-run]`: close a stage whose hub is no longer needed. Refuses (exit 2) while an agent of the stage runs or an owner question waits (`--force` stops the agents and leaves the questions). Stops an idle background hub (a Desktop, terminal or busy one is named with how to end it), releases the locks held by the stage's sessions (not one whose holder plays a live role in another open stage, or may: a registry unread; such a hub session is not stopped either), retires every role, journals `close: …` and writes `"closed"` into `stage.json`. A closed stage is left out of agent-top (`--all` shows it), the watchdog, the night queue and the question summaries, and `agent spawn` refuses it; `hub start` / `hub takeover` reopens it and continues the hub numbering. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
-| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. |
+| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
 
 More diagrams and the file formats: [docs/architecture.md](architecture.md).
 
@@ -336,7 +337,8 @@ defect covers nothing and is shown as `INVALID` by
 ├── .state/                           context-budget warnings, delegation levels (agent discipline)
 ├── .state/watchdog/                  state.json, lock, log.md, run.sh (the job's shim), job.log (watchdog)
 └── <stage>/                          one directory per stream of work
-    ├── stage.json                    the stage's project (main clone) for the next hub, written by start/takeover
+    ├── stage.json                    the stage's project (main clone) for the next hub, written by start/takeover;
+    │                                 its goal; `closed` {at, why, by, hub} while `hub close` has it closed
     ├── roles.json                    role → full session id, kind, tag; send counts; `host:` of the hub (takeover)
     ├── do-not-wake.json              optional: watchdog quiet — who, when, until, reason
     ├── questions.md                  owner-question register (ask)
@@ -662,7 +664,13 @@ shares the hub's session id and could run `hub succeed` too — the hub runs it 
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
 `ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;
-anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed. Both kinds of
+anything else asks, and you answer over Remote Control. It never gets `agent spawn` pre-allowed. Every background
+successor, bypass or not, also gets `"idleCompaction": false` there: Claude Code 2.1.290+ compacts a conversation over
+200K tokens left idle ~54 minutes, and a compacted hub goes on from a summary instead of handing over. For a hub you
+start yourself, put `"idleCompaction": false` into `~/.claude/settings.json`; `hub start` and `hub takeover` warn unless
+the settings file that decides it (managed, the project's `settings.local.json`, its `settings.json`, the user's) turns
+it off; `AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1` skips that warning, for scripted environments and the test suite
+(environment only). Both kinds of
 successor are pinned to the old hub's home (`AGENT_HUB_HOME`, plus `--add-dir <home>` when it is not under their
 directory); the background one does not inherit `AGENT_SESSION_ID` (a headless hub's own id), which would make its
 `--session self` name the old hub.

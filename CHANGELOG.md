@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Limit pace: how each engine's week is going, before the spend.** On 07.10 the Claude week ran out and cut off four
+  agents mid-work; on 08.10 the Codex week went from 0 to 100 % in 11.5 hours; nothing compared spend with the
+  window's pace, so hubs found out when agents died. `agent spawn`, the `hub start`/`takeover` digest and
+  `agent-top --once` now show each engine's week against its pace (usage vs the elapsed share, the last 6 hours' burn
+  and the window average, when it runs out) and advise in the owner's order: lower an effort above the task class's
+  default, move to the other engine at an equivalent class (Opus ↔ Astra, Sonnet ↔ Sol medium, Haiku ↔ Luna), defer
+  non-urgent work to the reset, then ask the owner. A stage locked to an engine (`AGENT_HUB_STAGE_ENGINES`) gets an
+  `ask add` with the numbers, never a switch. `agent spawn` refuses only when the week runs out before its reset by
+  every rate, half of it is used, the work is not mechanical and no engine with headroom can take it; `--reason`
+  passes and is journalled. The watchdog (R6) writes one `@hub LIMIT …` line per crossing. New: `agent spawn
+  --task-class`, `agent spawn --dry-run`, `AGENT_HUB_LIMIT_PACE`. See [Limit pace](docs/reference.md#limit-pace).
+
 ## 1.0.4 — 2026-10-14
 
 - **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with

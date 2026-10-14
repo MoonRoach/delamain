@@ -204,6 +204,61 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
 - **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
   agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
 
+### Limit pace
+
+Before a hub spends, Delamain compares each engine's plan week with its pace and says what to do about it
+(`bin/limit_pace.py`). Nothing is queried online; it reads what the logs already hold:
+
+- **Codex**: the `token_count` rate-limit events of the rollouts under `$CODEX_HOME/sessions` written in the last
+  12 hours (the account bucket, `limit_id` `codex`), each with its own timestamp.
+- **Claude**: the last `rate_limit_event` (`unifiedWindows.seven_day`, `five_hour`) of each headless agent's
+  `log.jsonl` in the hub home written in the last 12 hours; the event has no time, so the log's modification time is
+  the sample's. Interactive sessions do not log it: with no headless agent running, Claude's week is unknown or stale.
+
+The model, per window: the share of the window elapsed (from `resets_at` and the window's length), the usage against
+it, the burn rate over the last 6 hours of samples of the same window (when they span at least an hour), the window's
+average rate, and when each rate runs the window out. A window is **on pace**, **ahead** (more than 10 points ahead
+of the elapsed share, or only the last hours' burn would run it out before the reset: a burst), or **over pace**
+(every known rate runs it out before the reset). A sample older than 3 hours, or a window that reset since the latest
+sample, is **stale**: reported, never judged, never refused on.
+
+The advice follows one order, and a model is never swapped silently:
+
+1. **Remove waste.** An effort above the task class's default for routine work (Sol high → medium, Sonnet xhigh →
+   high); briefs that will run past ~200k tokens of context split into stages; no parallel agents reading the same files.
+2. **Move to the engine with headroom at an equivalent class**: Opus/Fable ↔ Astra high (an executor that decides as
+   it goes: Sol high), Sonnet ↔ Sol medium, Haiku ↔ Luna. Headroom means fresh data and not over pace; an engine that
+   is itself ahead takes the urgent part only. A stage the owner locked to an engine (`AGENT_HUB_STAGE_ENGINES`) is
+   never moved: the advice is a ready `ask add` with the numbers and a default action.
+3. **Sequence by value.** Non-urgent work (the night queue, nice-to-haves) starts after the reset; the hub decides
+   what is urgent.
+4. **Say it plainly.** When the week runs out before its reset and nothing above covers it, the advice is an
+   `ask add` for the owner.
+
+The one hard stop: `agent spawn` refuses (exit 1, nothing created) when the week is over pace by every rate, at least
+half of it is used, the work is not mechanical (Haiku, Luna), and no engine with headroom can take it (or the stage is
+locked to this one). `--reason "…"` passes; the journal's start line then says `over the limit-pace stop (<numbers>)
+by --reason`. `AGENT_HUB_LIMIT_PACE=warn` keeps the advice and drops the refusal; `off` drops both.
+
+Where it shows:
+
+```text
+agent spawn … [--task-class mechanical|bounded|judgement] [--dry-run]
+    the reasoning and the advice before the launch; --task-class (default: by the model) sets the class the effort and
+    the equivalent are judged by; --dry-run runs every check, prints the advice and starts or writes nothing
+hub start / hub takeover     one line per engine in the digest
+agent-top --once             "Limit pace" lines per engine; --json: limit_pace {engine: level, used, expected, eta, …}
+watchdog (R6)                one `[pace] @hub LIMIT …` journal line per crossing in each stage with a hub
+```
+
+A crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; a level that falls
+and rises again within the same window is not announced twice. The record is `<state dir>/limit-pace/crossings.json`.
+`agent spawn` and the watchdog write it; the digest and `agent-top` only read.
+
+```json
+{ "AGENT_HUB_STAGE_ENGINES": { "dolya": { "engine": "codex", "decision": "Q-DL-054" } } }
+```
+
 ## Agent lifecycle
 
 ```mermaid
@@ -454,6 +509,8 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_NOTIFY_CMD` | none | Remote notification: a JSON list of strings, run without a shell, `{message}` replaced by the text (stage name, minutes, counts, event word only), e.g. `["curl","-fsS","-d","{message}","https://ntfy.sh/<topic>"]`. Empty = no remote channel. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD_LOAD` | none (off) | R5: the 1-minute load average per core above which the watchdog holds spawns (`1.5`, `0.75`); the hold ends below 80 % of it. Empty or invalid (warned) = off. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD` | `warn` | What `agent spawn` does while a load hold is on: `warn` (a warning, the spawn goes on) or `refuse` (exit 1); `--ignore-hold` passes either. Invalid (warned) = `warn`. Resumes (`agent send`) are never held. Hub-wide. |
+| `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
+| `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. The limit-pace advice never proposes moving that stage's work; it proposes an `ask add`. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |

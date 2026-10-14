@@ -437,6 +437,9 @@ def predecessor_cwd(stage: str, hint: Optional[str]) -> Optional[str]:
     recorded = hc.registered_worktree(stage)
     if recorded is not None:
         return str(recorded)
+    project = hc.stage_project(stage)  # a hub registered before worktrees were recorded: the project is on file anyway
+    if project is not None:
+        return str(project)
     if hint and hc.project_cwd_problem(stage, hint) is None:
         return hint
     return None
@@ -1283,6 +1286,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         for note in effort_notes:
             print(f"[plan] {note}")
         return 0
+    loud = None
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
     elif headless:
@@ -1299,11 +1303,13 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             return 0
         except Start as e:
             why = str(e)
-    loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
-            "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
-            f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
-    hc.journal_append(stage, tag, loud)
-    print(loud + "\n")
+            loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
+                    "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
+                    f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
+    # a headless successor is the designed outcome for codex / --headless: no warning, and no advice to replace it
+    line = loud or f"auto-handoff: headless successor by design: {why}"
+    hc.journal_append(stage, tag, line)
+    print(line + "\n")
     phase = {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
              "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
              "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}

@@ -37,6 +37,7 @@ reset(){ rm -f $FAKE_BG_LOG $R/stage-a/auto-handoff.json; }
 J(){ cat "$(journal stage-a)" 2>/dev/null; }
 succeed_in(){ local dir=$1; shift; ( cd "$dir" && $B/hub succeed --stage stage-a --handoff $H --model opus "$@" ); }
 
+cp $R/stage-a/roles.json $G/roles.json.hub
 # ---- 1. takeover records the hub's worktree
 python3 -c 'import json,sys,os; d=json.load(open(sys.argv[1]))["roles"]["hub"]; assert os.path.realpath(d["worktree"])==os.path.realpath(sys.argv[2]), d' $R/stage-a/roles.json $WT
 check $? 0 "takeover: roles.json records the hub's worktree"
@@ -59,18 +60,24 @@ grep -q "not in a worktree of the project of stage stage-a" $G/other.out; check 
 succeed_in $G/nogit --cwd $G/nogit --replace > $G/replace.out 2>&1; check "$?:$(bg count)" "2:0" "--replace with --cwd outside git: refused too"
 succeed_in $G/nogit --cwd $WT --dry-run > $G/ok.out 2>&1; check "$?:$(bg count)" "0:0" "positive control: --cwd in the project's worktree passes (dry run)"
 
-# ---- 4. no registered worktree (a hub registered before this release), shell outside git: refused, not started there
+# ---- 4. no registered worktree (a hub registered before this release), shell outside git: the stage's recorded project
+# decides (stage.json repo); only a stage whose project is unknown is refused
 reset
 python3 - $R/stage-a/roles.json <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["roles"]["hub"].pop("worktree"); json.dump(d, open(sys.argv[1], "w"))
 PY
-succeed_in $G/nogit > $G/legacy.out 2>&1; check "$?:$(bg count)" "2:0" "no registered worktree, shell outside git: refused"
-succeed_in $WT --dry-run > /dev/null 2>&1; check $? 0 "…the shell inside the project's worktree still works"
-python3 - $R/stage-a/roles.json $WT <<'PY'
+succeed_in $G/nogit > $G/legacy.out 2>&1; check "$?:$(bg cwd)" "0:$G/proj" "legacy hub (no worktree), drifted shell: the successor starts in the stage's project"
+J | grep -qF "stage's project $G/proj"; check $? 0 "legacy hub: the journal line says the stage's project was used"
+cp $R/stage-a/stage.json $G/stage.json.bak
+python3 - $R/stage-a/stage.json <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1])); d["roles"]["hub"]["worktree"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))
+d = json.load(open(sys.argv[1])); d.pop("repo"); json.dump(d, open(sys.argv[1], "w"))
 PY
+reset
+succeed_in $G/nogit > $G/legacy2.out 2>&1; check "$?:$(bg count)" "2:0" "legacy hub, project unknown, shell outside git: refused, nothing started"
+succeed_in $WT --dry-run > /dev/null 2>&1; check $? 0 "…the shell inside the project's worktree still works"
+cp $G/stage.json.bak $R/stage-a/stage.json; cp $G/roles.json.hub $R/stage-a/roles.json
 
 # ---- 5. the budget hook names the registered worktree, whatever directory the hook input carries
 TR=$R/tr.jsonl; python3 -c 'import json; print(json.dumps({"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":320000}}}))' > $TR
@@ -82,8 +89,34 @@ import json, sys
 d = json.load(open(sys.argv[1])); d["roles"]["hub"].pop("worktree"); json.dump(d, open(sys.argv[1], "w"))
 PY
 hook $G/nogit b > $G/hook2.out
-grep -q 'Autopilot is on' $G/hook2.out && ! grep -qF -- "--cwd" $G/hook2.out; check $? 0 "hook, nothing registered and the hook cwd outside git: no --cwd suggested"
-hook $WT c > $G/hook3.out; grep -qF -- "--cwd $WT" $G/hook3.out; check $? 0 "hook, nothing registered: a hook cwd that is a worktree of the project is kept"
+grep -q 'Autopilot is on' $G/hook2.out && grep -qF -- "--cwd $G/proj" $G/hook2.out && ! grep -qF "$G/nogit" $G/hook2.out; check $? 0 "hook, nothing registered, the hook cwd outside git: the stage's recorded project is suggested"
+hook $WT c > $G/hook3.out; grep -qF -- "--cwd $G/proj" $G/hook3.out && ! grep -qF "$WT" $G/hook3.out; check $? 0 "hook, nothing registered: the stage's recorded project, not the hook cwd"
+python3 - $R/stage-a/stage.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d.pop("repo"); json.dump(d, open(sys.argv[1], "w"))
+PY
+hook $G/nogit d > $G/hook4.out
+grep -q 'Autopilot is on' $G/hook4.out && ! grep -qF -- "--cwd" $G/hook4.out; check $? 0 "hook, nothing registered, no project on file, hook cwd outside git: no --cwd suggested"
+hook $WT e > $G/hook5.out; grep -qF -- "--cwd $WT" $G/hook5.out; check $? 0 "hook, no project on file: a hook cwd that is a worktree of the project is kept"
+cp $G/stage.json.bak $R/stage-a/stage.json
+# a registry problem inside predecessor_cwd must not lift the budget gate: the deny still fires (PreToolUse above the block
+# threshold). The failure is injected: roles_load itself raises only on a file the hook's own hub lookup already skips.
+HOOKPY=$G/hook_broken.py
+cat > $HOOKPY <<'PY'
+import io, json, sys
+sys.path.insert(0, sys.argv[1])
+import context_budget as cb
+hc = cb.hubcore(); ap = cb.autopilot()
+def boom(*a, **k): raise hc.Failure("roles.json is not valid JSON")
+ap.predecessor_cwd = boom
+sys.stdin = io.StringIO(json.dumps({"hook_event_name": "PreToolUse", "session_id": sys.argv[2], "transcript_path": sys.argv[3],
+    "cwd": sys.argv[4], "tool_name": "Bash", "tool_input": {"command": "ls"}, "permission_mode": "acceptEdits",
+    "effort": {"level": "high"}}))
+cb.main()
+PY
+TRB=$R/trb.jsonl; python3 -c 'import json; print(json.dumps({"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":520000}}}))' > $TRB
+AGENT_HUB_STATE_DIR=$R/statef python3 $HOOKPY $HOOKS $HUB1 $TRB $WT > $G/hook6.out 2>&1
+grep -q '"permissionDecision": *"deny"' $G/hook6.out && grep -q "hub succeed" $G/hook6.out; check $? 0 "predecessor_cwd raising: the budget deny still fires, without --cwd"
 
 # ---- 6. a stage without a project takes any directory
 mkdir -p $R/stage-b/coordinator
@@ -103,4 +136,32 @@ succeed_in $WT > $G/loud.out 2>&1; check "$?:$(state kind)" "0:headless" "untrus
 grep -q "^auto-handoff: WARNING background successor not started — $G/proj is not trusted.*falling back to a headless hub.*NOT listed in Claude Desktop.*hub succeed --stage stage-a --replace --force" $G/loud.out; check $? 0 "fallback: the command's output is a warning with the reason and the fix"
 J | grep -q "auto-handoff: WARNING background successor not started — $G/proj is not trusted.*NOT listed in Claude Desktop.*--replace --force"; check $? 0 "fallback: the journal line carries the same"
 unset FAKE_BG
+reset
+rm -rf $R/stage-a/agents; succeed_in $WT --headless > $G/hl.out 2>&1; check "$?:$(state kind)" "0:headless" "--headless: a headless successor"
+grep -q "headless successor by design: --headless was given" $G/hl.out && ! grep -q "WARNING\|--replace --force" $G/hl.out; check $? 0 "--headless: a neutral line, no warning and no advice to replace it"
+J | tail -20 | grep -q "headless successor by design" && ! J | grep -q "WARNING background successor not started — --headless"; check $? 0 "--headless: the journal carries no warning either"
+
+# ---- 8. git that did not answer is not "not inside a git repository"
+PYBIN=$(command -v python3); NOGITPATH=$(mktemp -d)
+MSG=$(PATH=$NOGITPATH $PYBIN - "$B" "$G/proj" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1]); import hubcore as hc
+print(hc.project_cwd_problem("stage-a", sys.argv[2]))
+PY
+)
+case "$MSG" in *"git did not answer"*) rc=0;; *) rc=1;; esac; check $rc 0 "no git on PATH: the message says git did not answer"
+case "$MSG" in *"not inside a git repository"*) rc=1;; *) rc=0;; esac; check $rc 0 "…and does not claim the directory is outside a repository"
+rm -rf $R/stage-a/agents  # the headless run above left its agent directory
+# ---- 9. --fallback starts nothing from the shell's directory: a refused directory must not block it (legacy hub, project
+# unknown, shell drifted outside git). Start the bg successor from the worktree first.
+reset; rm -rf $R/stage-a/agents; cp $G/roles.json.hub $R/stage-a/roles.json
+succeed_in $WT > $G/fb0.out 2>&1; check "$?:$(state kind)" "0:bg" "setup: a bg successor is pending"
+python3 - $R/stage-a/roles.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["roles"]["hub"].pop("worktree"); json.dump(d, open(sys.argv[1], "w"))
+PY
+( cd $G/nogit && $B/hub succeed --stage stage-a --fallback --why "no takeover" ) > $G/fb.out 2>&1; rc=$?
+check "$rc:$(state kind)" "0:headless" "--fallback from a drifted non-git shell, legacy hub: works (headless successor)"
+! grep -q "is not inside a git repository" $G/fb.out; check $? 0 "--fallback: no directory refusal"
+
 exit $fail

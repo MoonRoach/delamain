@@ -478,12 +478,25 @@ def project_cwd_problem(stage: str, cwd) -> Optional[str]:
         return None
     here = main_tree(cwd)
     if here is None:
+        if _git(cwd, "rev-parse", "--git-dir") is None:  # a timeout or no git at all says nothing about the directory
+            return f"git did not answer for {cwd} (not installed, or no reply in 5 s): cannot tell whether it is in a repository"
         return f"{cwd} is not inside a git repository"
     repo = stage_record(stage).get("repo")
     project = main_tree(Path(str(repo)).expanduser()) if repo else None
     if project is not None and not _same(here, project):
         return f"{cwd} is in {here}, not in a worktree of the project of stage {stage} ({project})"
     return None
+
+
+def stage_project(stage: str) -> Optional[Path]:
+    """The main checkout of the stage's recorded project (stage.json `repo`); None when the stage has none, or it is gone."""
+    repo = stage_record(stage).get("repo")
+    if not repo or stage_record(stage).get("no_project"):
+        return None
+    try:
+        return main_tree(Path(str(repo)).expanduser())
+    except (RuntimeError, OSError):  # `~user` that does not exist
+        return None
 
 
 def registered_worktree(stage: str) -> Optional[Path]:

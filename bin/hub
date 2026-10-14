@@ -1541,7 +1541,7 @@ def check_replace_caller(stage: str, pend: dict) -> None:
 
 def successor_cwd(stage: str, given) -> tuple:
     """(directory, note) the successor is started from: --cwd, else the worktree the registered hub recorded at takeover
-    (the hub's shell may have drifted anywhere since), else the shell's directory. A directory that is outside git or in
+    (the hub's shell may have drifted anywhere since), else the stage's recorded project, else the shell's directory. A directory that is outside git or in
     another project than the stage's is refused: a successor there would not be a session of the project."""
     note = ""
     if given:
@@ -1550,6 +1550,10 @@ def successor_cwd(stage: str, given) -> tuple:
         cwd = recorded.resolve()
         if cwd != Path.cwd().resolve():
             note = f"started from the hub's registered worktree {cwd}, not from the shell's directory {Path.cwd()}"
+    elif (project := hc.stage_project(stage)) is not None:  # a hub registered before worktrees were recorded
+        cwd = project.resolve()
+        if cwd != Path.cwd().resolve():
+            note = f"started from the stage's project {cwd}, not from the shell's directory {Path.cwd()}"
     else:
         cwd = Path(os.getcwd()).resolve()
     if cwd.is_dir() and (problem := hc.project_cwd_problem(stage, cwd)):
@@ -1580,8 +1584,8 @@ def cmd_succeed(a) -> int:
             raise hc.UsageError(f"--handoff {handoff}: no such file")
         if not a.replace:  # a replacement restarts the handoff the first successor was started from
             check_handoff_todos(handoff, a.allow_todo)
-    cwd, cwd_note = successor_cwd(stage, a.cwd)
     if a.replace:
+        cwd, cwd_note = successor_cwd(stage, a.cwd)
         # the registered hub is the successor by now: the numbers come from the record, not from the registry
         succ = pend.get("n")
         if not isinstance(succ, int) or not handoff:
@@ -1603,8 +1607,9 @@ def cmd_succeed(a) -> int:
         notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
         succ = n + 1
     check_caller(stage, n)
-    if a.fallback:
+    if a.fallback:  # starts from the root the bg session was started in (pending.cwd): the shell's directory is no matter
         return autopilot.fallback(stage, n, a.why, succ)
+    cwd, cwd_note = successor_cwd(stage, a.cwd)
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     if cwd_note:

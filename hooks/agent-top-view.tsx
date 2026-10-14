@@ -4,6 +4,8 @@
 //   dock (beside a fullscreen transcript): a rounded cyan frame; the card in its state's colour; Summary sections framed
 //   inline (above the prompt, the engine draws the frame) and narrow bodies: no frames, sections under `──` rules
 //
+// Summary's first section lists the idle stages, each with a `close` Button (two presses: the module arms it, then runs it).
+//
 // The agent list is a window around the cursor that always fits the pane's body: then the arrows walk the rows (the
 // engine scrolls only a drawing taller than the body), and `ui.focus` tells the module where the ring went.
 import type { Elements, RenderChildren, RenderElement } from 'claude-code'
@@ -15,6 +17,8 @@ import {
   barCells,
   claudeWindows,
   clip,
+  closedHiddenCount,
+  closedStages,
   codexWindows,
   colorOf,
   ctxPercent,
@@ -24,10 +28,12 @@ import {
   fmtCost,
   fmtK,
   fmtResetShort,
+  idleStages,
   journalColor,
   levelColor,
   modelLabel,
   nowText,
+  oneLine,
   padEnd,
   tagColor,
   taskText,
@@ -35,7 +41,7 @@ import {
   windowAround,
   wrapLines,
 } from './agent-top-model'
-import type { Agent, Card, Counts, FeedItem, LimitWindow, Snapshot, Target, View } from './agent-top-model'
+import type { Agent, Card, Counts, FeedItem, LimitWindow, Snapshot, StageRow, Target, View } from './agent-top-model'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
 
@@ -64,6 +70,8 @@ export type PaneModel = {
   /** The list row drawn `autoFocus`: the ring starts there when the pane takes the keyboard. */
   isAutoFocus: boolean
   nowMs: number
+  /** The Stages section's close flow: the stage armed by a first press, the one being closed, the last result. */
+  closing: { armed: string | null; running: string | null; note: { text: string; isError: boolean } | null }
 }
 
 export type PaneActions = {
@@ -74,6 +82,8 @@ export type PaneActions = {
   back: () => void
   /** Moves the cursor one agent past the window's edge (-1 up, 1 down): the `↑ more` / `↓ more` Buttons. */
   step: (dir: -1 | 1) => void
+  /** A press of a stage's `close` Button: arms it, or (armed) runs the close. */
+  close: (stage: string) => void
 }
 
 type Style = { color?: string; bg?: string; dim?: boolean; bold?: boolean; italic?: boolean; strike?: boolean }
@@ -83,6 +93,10 @@ type Style = { color?: string; bg?: string; dim?: boolean; bold?: boolean; itali
 const BRAND = { ice: '#77dce8', amber: '#eeb34e', navy: '#0b1422' } as const
 
 const len = (s: string): number => Array.from(s).length
+
+// Summary's Stages section shows this many rows of each kind and counts the rest
+const MAX_IDLE_ROWS = 8
+const MAX_CLOSED_ROWS = 5
 
 /** The feed's kind column: a tool's name, else what the event is. */
 function feedKind(it: FeedItem): string {
@@ -199,7 +213,8 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   const isActive = (v: View) => m.view === v || (v === 'list' && m.view === 'card')
   const tabW = (['list', 'journal', 'summary'] as const).reduce((n, v) => n + len(names[v]) + (isActive(v) ? 2 : 3), 2)
   const toggleLabel = m.isAll ? 'recent' : 'old'
-  const rightW = 3 + (isNarrow ? 1 : 7) + (m.view === 'list' ? 1 + 3 + len(toggleLabel) : 0)
+  const hasToggle = m.view === 'list' || m.view === 'summary' // `l`: closed stages and old agents are only in --all
+  const rightW = 3 + (isNarrow ? 1 : 7) + (hasToggle ? 1 + 3 + len(toggleLabel) : 0)
   const isTabsWrapped = tabW + 1 + rightW > w
   const tabs = (
     <Box key="tabs" flexDirection={isTabsWrapped ? 'column' : 'row'} justifyContent="space-between">
@@ -210,7 +225,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       </Box>
       <Box flexDirection="row" columnGap={1} justifyContent="flex-end">
         <Button key="refresh" label={isNarrow ? '↻' : 'refresh'} hotkey="r" plain dimColor onPress={act.refresh} />
-        {m.view === 'list' ? <Button key="toggle-all" label={toggleLabel} hotkey="l" plain dimColor onPress={act.toggleAll} /> : null}
+        {hasToggle ? <Button key="toggle-all" label={toggleLabel} hotkey="l" plain dimColor onPress={act.toggleAll} /> : null}
       </Box>
     </Box>
   )
@@ -577,7 +592,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     return out.slice(-budget)
   }
 
-  // ---------------------------------------------------------------- Summary: plan limits, owner questions, locks
+  // ---------------------------------------------------------------- Summary: stages, plan limits, owner questions, locks
   function summaryView(): RenderChildren[] {
     const s = m.shown
     if (!s) return [t('loading…', { dim: true })]
@@ -591,6 +606,75 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
             </Box>,
           ]
         : [rule(label, w), ...kids]
+
+    // ---- stages: the idle ones with a two-press `close` (the module arms, then runs it); under --all the closed ones, dim
+    const stageRows: RenderChildren[] = []
+    const idle = idleStages(s, m.stages)
+    const closed = closedStages(s, m.stages)
+    const shownIdle = idle.slice(0, MAX_IDLE_ROWS)
+    const shownClosed = closed.slice(0, MAX_CLOSED_ROWS)
+    const { armed, running, note } = m.closing
+    const stageW = Math.min(16, Math.max(6, ...shownIdle.map(r => len(r.stage)), ...shownClosed.map(r => len(r.stage))))
+    const buttonW = len('confirm close') + 4 // the widest label: the rest of the row does not move with the press
+    const isStacked = sw < 40 // the Button under the name when the row has no room beside it
+    const leftRoom = sw - buttonW - 1
+    const ageOf = (r: StageRow): string => (sw < 28 ? '' : 'idle ') + fmtAge(r.info.idle_s)
+    const ageW = Math.max(0, ...shownIdle.map(r => len(ageOf(r))))
+    const closeButton = (stage: string): RenderChildren => {
+      const label = running === stage ? 'closing…' : armed === stage ? 'confirm close' : 'close'
+      // armed: red and bold, the press that closes it; the Button's label still names it
+      return (
+        <Button key={`close:${stage}`} label={label} onPress={() => act.close(stage)}>
+          {label === 'confirm close' ? t(label, { color: 'red', bold: true }) : t(label, { dim: running === stage })}
+        </Button>
+      )
+    }
+    if (note) {
+      wrapLines(`${note.isError ? '✗' : '✓'} ${note.text}`, sw, 2).forEach((l, i) =>
+        stageRows.push(row(i === 0 ? 'close-note' : undefined, [t(l, { color: note.isError ? 'red' : 'green' })])),
+      )
+    }
+    for (const r of shownIdle) {
+      const age = ageOf(r)
+      // beside the Button: name, age, and the goal when 8 or more cells are left for it; stacked: name and age, then the Button
+      const nameW = Math.max(3, Math.min(stageW, (isStacked ? sw : leftRoom) - ageW - 2))
+      const goalW = isStacked ? 0 : leftRoom - nameW - 2 - ageW - 2
+      const left = (
+        <Box flexDirection="row">
+          {t(padEnd(clip(r.stage, nameW), nameW), { bold: true })}
+          {t('  ')}
+          {t(padEnd(age, ageW))}
+          {goalW >= 8 && r.info.goal ? t('  ' + clip(oneLine(r.info.goal), goalW), { dim: true }) : null}
+        </Box>
+      )
+      if (isStacked) {
+        stageRows.push(row(`stage:${r.stage}`, [left]), row(`act:${r.stage}`, [t('  '), closeButton(r.stage)]))
+      } else stageRows.push(row(`stage:${r.stage}`, [left, closeButton(r.stage)], true))
+      if (armed === r.stage) {
+        const hint = `press again to close ${r.stage}: its hub's locks are released, roles retired, a background hub stopped`
+        wrapLines(hint, sw, 3).forEach((l, i) => stageRows.push(row(i === 0 ? 'close-hint' : undefined, [t(l, { dim: true })])))
+      }
+    }
+    if (idle.length > shownIdle.length) stageRows.push(t(`+${idle.length - shownIdle.length} more idle stages`, { dim: true }))
+    if (idle.length === 0) {
+      const hidden = closedHiddenCount(s, m.stages)
+      const none = hidden ? `no idle stages · ${hidden} closed hidden (l shows them)` : 'no idle stages'
+      wrapLines(none, sw, 2).forEach(l => stageRows.push(t(l, { dim: true })))
+    }
+    for (const r of shownClosed) {
+      const room = sw - len(' closed ') - 1 // the pill and a gap
+      const nameW = Math.max(3, Math.min(stageW, room))
+      const whyW = room - nameW - 2
+      stageRows.push(
+        row(`closed:${r.stage}`, [
+          pill('closed', 'gray'),
+          t(' '),
+          t(whyW >= 6 ? padEnd(clip(r.stage, nameW), nameW) : clip(r.stage, nameW), { dim: true }),
+          whyW >= 6 && r.info.closed?.why ? t('  ' + clip(oneLine(r.info.closed.why), whyW), { dim: true }) : null,
+        ]),
+      )
+    }
+    if (closed.length > shownClosed.length) stageRows.push(t(`+${closed.length - shownClosed.length} more closed`, { dim: true }))
 
     // ---- plan limits: one bar per window
     const limitRows: RenderChildren[] = []
@@ -661,6 +745,6 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     })
     if (lockRows.length === 0) lockRows.push(t('no locks', { dim: true }))
 
-    return [...section('sum-limits', 'Plan limits', limitRows), ...section('sum-questions', 'Owner questions', qRows), ...section('sum-locks', 'Locks', lockRows)]
+    return [...section('sum-stages', 'Stages', stageRows), ...section('sum-limits', 'Plan limits', limitRows), ...section('sum-questions', 'Owner questions', qRows), ...section('sum-locks', 'Locks', lockRows)]
   }
 }

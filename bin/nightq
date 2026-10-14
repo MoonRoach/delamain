@@ -61,7 +61,7 @@ def stages() -> list[str]:
     if not ROOT.is_dir():
         return []
     return sorted(p.parent.name for p in ROOT.glob(f"*/{QUEUE}")
-                  if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", p.parent.name))
+                  if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", p.parent.name) and not hc.stage_closed(p.parent.name))
 
 
 def item_problems(body: str) -> list[str]:

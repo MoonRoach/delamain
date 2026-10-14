@@ -49,6 +49,19 @@ export type StageQuestions = { open: number; overdue: number; line: string; item
 
 export type JournalLine = { stage: string; time: string; tag: string; text: string }
 
+/**
+ * One stage's row of `agent-top --json` `stage_info`. `idle` is the CLI's word: not closed, no live agent and no activity
+ * for longer than `idle_after_s`. `closed` is set under --all (closed stages are left out of `stages` otherwise).
+ */
+export type StageInfo = {
+  goal: string
+  closed: { at: string; why: string; by: string } | null
+  last_activity_at: string | null
+  idle_s: number | null
+  idle: boolean
+  live: number
+}
+
 export type Snapshot = {
   generated_at: string
   stages: string[]
@@ -58,6 +71,12 @@ export type Snapshot = {
   questions: Record<string, StageQuestions>
   /** `ask summary` succeeded on this fetch: an empty `questions` then means no registers, not a failed `ask`. */
   questionsOk: boolean
+  /** Per stage of `stages`; {} from an older CLI. */
+  stage_info: Record<string, StageInfo>
+  /** The closed stages the default view leaves out of `stages` (--all shows them); [] from an older CLI. */
+  closed_hidden: string[]
+  /** The idle threshold in seconds; null from an older CLI. */
+  idle_after_s: number | null
   limits: { info: { unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number }> }; seen_at: number } | null
   codex_limits: Record<string, { info: unknown; seen_at: number }>
   journal_tail: JournalLine[]
@@ -173,6 +192,20 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
   const journal: JournalLine[] = Array.isArray(data.journal_tail)
     ? data.journal_tail.filter(isObject).map(j => ({ stage: str(j.stage), time: str(j.time), tag: str(j.tag), text: str(j.text) }))
     : []
+  const stageInfo: Record<string, StageInfo> = {}
+  if (isObject(data.stage_info)) {
+    for (const [stage, i] of Object.entries(data.stage_info)) {
+      if (!isObject(i)) continue
+      stageInfo[stage] = {
+        goal: str(i.goal),
+        closed: isObject(i.closed) ? { at: str(i.closed.at), why: str(i.closed.why), by: str(i.closed.by) } : null,
+        last_activity_at: typeof i.last_activity_at === 'string' ? i.last_activity_at : null,
+        idle_s: numOrNull(i.idle_s),
+        idle: i.idle === true,
+        live: numOr(i.live, 0),
+      }
+    }
+  }
   const limits = isObject(data.limits) && isObject(data.limits.info) ? (data.limits as Snapshot['limits']) : null
   const codex: Snapshot['codex_limits'] = {}
   if (isObject(data.codex_limits)) {
@@ -188,6 +221,9 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
     locks,
     questions,
     questionsOk: data.questions_ok === true,
+    stage_info: stageInfo,
+    closed_hidden: Array.isArray(data.closed_hidden) ? data.closed_hidden.filter((x): x is string => typeof x === 'string') : [],
+    idle_after_s: numOrNull(data.idle_after_s),
     limits,
     codex_limits: codex,
     journal_tail: journal,
@@ -292,6 +328,17 @@ export function statusText(s: Snapshot | null): string | undefined {
   return `agents ● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}`
 }
 
+/**
+ * Where the focus ring goes once a drawing changed the pane's Buttons: the element it was last on (an agent row follows the
+ * cursor), or null to leave it. A stage's `close` Button that is gone from the drawing (the stage was closed, or stopped being
+ * idle) sends the ring to the Summary tab, which every drawing has.
+ */
+export function ringTarget(ringKey: string | null, cursorKey: string | null, controls: readonly string[]): string | null {
+  let meant = ringKey?.startsWith('open:') && cursorKey !== null ? `open:${cursorKey}` : ringKey
+  if (meant?.startsWith('close:') && !controls.includes(meant)) meant = 'view-summary'
+  return meant !== null && controls.includes(meant) ? meant : null
+}
+
 /** The surfaces that draw the prompt footer (`SessionMode`), where the counts are a Button and not the status line. */
 const FOOTER_SURFACES: readonly string[] = ['terminal', 'desktop']
 
@@ -374,6 +421,38 @@ export function capToasts(texts: string[], max = 3): string[] {
 export function inStages<T extends { stage: string }>(rows: readonly T[], stages: readonly string[]): T[] {
   return stages.length === 0 ? [...rows] : rows.filter(r => stages.includes(r.stage))
 }
+
+/** A stage of the snapshot with its `stage_info` row. */
+export type StageRow = { stage: string; info: StageInfo }
+
+/** The snapshot's stages (in the pane's stage filter) that have a `stage_info` row, in the CLI's order. */
+function stageRows(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return inStages(s.stages.map(stage => ({ stage })), stages).flatMap(({ stage }) => {
+    const info = s.stage_info[stage]
+    return info ? [{ stage, info }] : []
+  })
+}
+
+/**
+ * The stages `close` is offered for: the CLI calls them idle, none of them is closed and none has a live agent. Longest
+ * idle first (an unknown idle time last), then by name.
+ */
+export function idleStages(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return stageRows(s, stages)
+    .filter(r => r.info.idle && r.info.closed === null && r.info.live === 0)
+    .sort((a, b) => (b.info.idle_s ?? -1) - (a.info.idle_s ?? -1) || (a.stage < b.stage ? -1 : 1))
+}
+
+/** The closed stages this view shows (--all): the latest closed first. */
+export function closedStages(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return stageRows(s, stages)
+    .filter(r => r.info.closed !== null)
+    .sort((a, b) => (b.info.closed?.at ?? '').localeCompare(a.info.closed?.at ?? '') || (a.stage < b.stage ? -1 : 1))
+}
+
+/** How many closed stages the default view leaves out (in the pane's stage filter). */
+export const closedHiddenCount = (s: Snapshot, stages: readonly string[]): number =>
+  inStages(s.closed_hidden.map(stage => ({ stage })), stages).length
 
 export function countsOf(agents: readonly Agent[]): Counts {
   const c: Counts = { live: 0, done: 0, error: 0, dead: 0 }

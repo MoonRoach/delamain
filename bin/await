@@ -149,10 +149,11 @@ def default_label(cmd: list) -> str:
 
 
 def main(argv: list) -> int:
-    if "--" not in argv:
-        raise hc.UsageError("no command: await [options] -- COMMAND [ARGS ...]")
-    cut = argv.index("--")
-    argv, cmd = argv[:cut], argv[cut + 1:]
+    if "--" in argv:
+        cut = argv.index("--")
+        argv, cmd = argv[:cut], argv[cut + 1:]
+    else:
+        cmd = []
     p = argparse.ArgumentParser(prog="await", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--stage", default=None)
     p.add_argument("--tag", default=None, help="line tag (default: the caller's signing tag + \"-await\")")
@@ -167,7 +168,7 @@ def main(argv: list) -> int:
     args = p.parse_args(argv)
 
     if not cmd:
-        raise hc.UsageError("no command after --")
+        raise hc.UsageError("no command: await [options] -- COMMAND [ARGS ...]")
     if not WORD_RE.fullmatch(args.ok):
         raise hc.UsageError(f"--ok {args.ok!r}: an upper-case word, e.g. MERGED")
     if not re.fullmatch(r"[\w.-]+", args.to):

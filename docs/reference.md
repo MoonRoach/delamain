@@ -592,7 +592,7 @@ worker subagents.
 
 Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call. Since Claude Code 2.1.299 a plugin hook that crashes, times out or prints half a document would block the call, so every
 hook installs `hooks/failsafe.py` first: its stdout is delivered only as one complete JSON document, its exit status is
-always 0 (also after an import error), and a timer answers "no decision" one second before the `timeout` of
+always 0 (also after an import error), and a timer answers "no decision" 1.5 s before the `timeout` of
 `hooks/hooks.json` (`AGENT_HUB_HOOK_DEADLINE_S` overrides the deadline, environment only; the tests use it).
 
 ### Autopilot: the hub hands over by itself

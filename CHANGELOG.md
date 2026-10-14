@@ -6,7 +6,8 @@
   runs past its `timeout`, prints half a JSON document) blocks the user's call instead of letting it through. All seven
   hook scripts now start with `hooks/failsafe.py`: stdout is delivered only if it is one complete JSON document, the
   exit status is always 0 (a missing or broken sibling module used to end in exit 1 for `context_budget`,
-  `handoff_size` and `delegation`), and a timer answers "no decision" one second before the configured `timeout`.
+  `handoff_size` and `delegation`), and a timer answers "no decision" 1.5 s before the configured `timeout` (all hooks now have 10 s; `board_locks` and
+  `polling_guard` had 5) and says so on stderr.
   `tests/t_hook_failsafe.sh` feeds every hook malformed input, breaks a module on purpose, stalls stdin, and checks the
   deadlines against `hooks.json` and `codex-hooks.json`.
 - **`jwait` waits 50 minutes by default (was 55).** Claude Code compacts a 200K+ conversation left idle about 54 minutes;

@@ -9,9 +9,10 @@ the result of a tool that already ran). Every hook of this plugin is a guard tha
     after a partial print, a stray traceback line) is dropped, which reads as "no decision";
   - the exit status is always 0, whatever ended the process: an uncaught exception, an import error at module level,
     `sys.exit(1)`;
-  - a timer answers "no decision" before the harness's own timeout (DEADLINES, seconds, one below the `timeout` of
+  - a timer answers "no decision" before the harness's own timeout (DEADLINES, seconds, 1.5 below the `timeout` of
     hooks/hooks.json and hooks/codex-hooks.json; tests/t_hook_failsafe.sh checks the two agree). A hook stuck on a
-    stalled filesystem or an stdin that never closes is cut there. $AGENT_HUB_HOOK_DEADLINE_S overrides it (the tests).
+    stalled filesystem or an stdin that never closes is cut there, with one line on stderr naming the hook: a guard that
+    gave up let the action through. $AGENT_HUB_HOOK_DEADLINE_S overrides it (the tests; a value outside (0, 60] is ignored).
 
 A deliberate decision is not affected: a hook that printed its deny and then failed still delivers the deny.
 """
@@ -24,10 +25,10 @@ import os
 import sys
 import threading
 
-DEFAULT_DEADLINE_S = 3.5  # the shortest `timeout` in the hook configs is 5 s
+DEFAULT_DEADLINE_S = 8.5  # every `timeout` in the hook configs is 10 s
 DEADLINES = {
-    "board_locks.py": 3.5,  # timeout 5
-    "polling_guard.py": 3.5,  # timeout 5
+    "board_locks.py": 8.5,  # timeout 10: a slow guard costs latency, never a skipped lock if it can be avoided
+    "polling_guard.py": 8.5,
     "questions.py": 8.5,  # timeout 10
     "delegation.py": 8.5,
     "path_shadow.py": 8.5,
@@ -39,10 +40,18 @@ _state: dict = {}
 
 
 def deadline_s() -> float:
+    default = DEADLINES.get(os.path.basename(sys.argv[0]), DEFAULT_DEADLINE_S)
+    raw = os.environ.get("AGENT_HUB_HOOK_DEADLINE_S")
+    if raw is None:
+        return default
     try:
-        return float(os.environ["AGENT_HUB_HOOK_DEADLINE_S"])
-    except (KeyError, ValueError):
-        return DEADLINES.get(os.path.basename(sys.argv[0]), DEFAULT_DEADLINE_S)
+        value = float(raw)
+        if 0 < value <= 60:
+            return value
+    except ValueError:
+        pass
+    print(f"delamain: AGENT_HUB_HOOK_DEADLINE_S={raw!r} is not a number of seconds in (0, 60]; using {default}", file=sys.stderr)
+    return default
 
 
 def _finish() -> None:
@@ -74,6 +83,10 @@ def _finish() -> None:
 
 
 def _give_up() -> None:
+    try:  # a guard that gave up lets the action through: leave a trace
+        print(f"delamain: {os.path.basename(sys.argv[0])} gave up after {deadline_s():g} s: no decision", file=sys.stderr, flush=True)
+    except BaseException:  # noqa: BLE001
+        pass
     os._exit(0)  # the buffered output is dropped with the process
 
 

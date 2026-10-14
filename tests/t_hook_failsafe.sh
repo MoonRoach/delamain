@@ -127,6 +127,7 @@ for install in (True, False):
     try:
         p.wait(timeout=6 if install else 3)
         took = time.time() - t0
+        err = p.stderr.read().decode()
         check(install and p.returncode == 0 and not p.stdout.read().strip() and took < 5,
               f"deadline: a hook stuck reading stdin answers exit 0, no output, at the deadline ({took:.1f} s)" if install
               else f"negative control: without the fail-safe the stalled hook should still be waiting ({took:.1f} s)")
@@ -134,8 +135,16 @@ for install in (True, False):
         p.kill(); p.wait()
         check(not install, "negative control, no fail-safe: the stalled hook runs until the harness kills it" if not install
               else "deadline: the stalled hook was not cut at its deadline")
+    if install:
+        check("board_locks.py gave up after 1 s: no decision" in err, f"deadline: the cut leaves one line on stderr naming the hook and the deadline ({err.strip()[:80]!r})")
     for f in (p.stdin, p.stdout, p.stderr):
         f.close()
+
+# an unusable deadline setting is ignored with a note, never a deadline of zero that skips every guard
+for bad_value in ("0", "-3", "inf", "nan", "soon", "61"):
+    env = env_for(ROOT); env["AGENT_HUB_HOOK_DEADLINE_S"] = bad_value
+    r = run(ROOT, "polling_guard.py", [], json.dumps({"tool_name": "Bash", "tool_input": {"command": "sleep 600"}}).encode(), env=env)
+    check(b"permissionDecision" in r.stdout and b"using 8.5" in r.stderr, f"AGENT_HUB_HOOK_DEADLINE_S={bad_value}: ignored with a note, the guard still answers its deny")
 
 # the deadlines stay below the timeouts the configs give the same hooks
 import re
@@ -152,9 +161,9 @@ for cfg in ("hooks.json", "codex-hooks.json"):
                     continue
                 seen.add(m.group(1))
                 d = failsafe.DEADLINES.get(m.group(1), failsafe.DEFAULT_DEADLINE_S)
-                if not d <= h["timeout"] - 1:
+                if abs(d - (h["timeout"] - 1.5)) > 1e-9:
                     bad.append(f"{cfg}: {m.group(1)} deadline {d} vs timeout {h['timeout']}")
-check(not bad and seen == set(failsafe.DEADLINES), f"every hook script has a deadline at least 1 s under its configured timeout ({sorted(seen)}) {bad}")
+check(not bad and seen == set(failsafe.DEADLINES), f"every hook script has a deadline exactly 1.5 s under its configured timeout ({sorted(seen)}) {bad}")
 sys.exit(fail)
 PY
 fail=$?

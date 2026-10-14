@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Hooks stay safe on Claude Code 2.1.299.** From 2.1.299 a plugin hook that cannot hand back its answer (it crashes,
+  runs past its `timeout`, prints half a JSON document) blocks the user's call instead of letting it through. All seven
+  hook scripts now start with `hooks/failsafe.py`: stdout is delivered only if it is one complete JSON document, the
+  exit status is always 0 (a missing or broken sibling module used to end in exit 1 for `context_budget`,
+  `handoff_size` and `delegation`), and a timer answers "no decision" one second before the configured `timeout`.
+  `tests/t_hook_failsafe.sh` feeds every hook malformed input, breaks a module on purpose, stalls stdin, and checks the
+  deadlines against `hooks.json` and `codex-hooks.json`.
+- **`jwait` waits 50 minutes by default (was 55).** Claude Code compacts a 200K+ conversation left idle about 54 minutes;
+  a 55-minute wait always ended after that point for a hub that did not set `"idleCompaction": false`. Hubs of
+  `hub start`/`takeover`/`succeed` already get the setting or the warning (1.0.5); `setup` now offers the setting too, and
+  detached `agent spawn`/`agent send` workers get `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000` unless the caller sets
+  it. `AGENT_HUB_JWAIT_FOR` still overrides the default.
+
 ## 1.0.5 — 2026-10-14
 
 - **Hubs are not compacted when idle.** Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle about

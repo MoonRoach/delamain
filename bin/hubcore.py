@@ -40,6 +40,10 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 # to older models. `haiku` is haiku-5-5 only from 2.1.296; the minimum is not raised for it, since both Haiku models take
 # `--effort`. The plugin pins no ids: the alias follows the CLI.
 MIN_CLI_VERSION = (2, 1, 287)
+# Managed settings files, which win over every other settings file (Claude Code's settings precedence): macOS, Linux.
+MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+                    Path("/etc/claude-code/managed-settings.json"))
+IDLE_CHECK_OFF_ENV = "AGENT_HUB_NO_IDLE_COMPACTION_CHECK"  # environment only, like NO_NAMING: scripted environments, tests
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -1165,6 +1169,46 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
     return (f"Claude Code {fmt_version(cli.version)} ({cli.path}) is older than {fmt_version(MIN_CLI_VERSION)}, the "
             "oldest version Delamain supports: update Claude Code; with an older CLI the aliases (opus, sonnet, haiku, "
             "fable) resolve to older models and the agent-top mod does not run")
+
+
+def idle_compaction_source(cwd: Optional[Path] = None) -> tuple:
+    """(value, file) of the settings file that decides `idleCompaction` for a session started in `cwd`, in Claude
+    Code's precedence: managed, the local project settings (.claude/settings.local.json, which a linked worktree reads
+    from its main checkout), the shared ones (`cwd`/.claude/settings.json), the user's ($CLAUDE_CONFIG_DIR, else
+    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Not visible from here:
+    command-line `--settings` (what `hub succeed` gives its background successors) and managed settings that do not
+    come from a file (MDM, server-delivered)."""
+    files = list(MANAGED_SETTINGS)
+    if cwd is not None:
+        local = [(main_tree(cwd) or cwd) / ".claude" / "settings.local.json", cwd / ".claude" / "settings.local.json"]
+        files += list(dict.fromkeys(local)) + [cwd / ".claude" / "settings.json"]
+    files.append(Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "idleCompaction" in data:
+            return data["idleCompaction"], f
+    return None, None
+
+
+def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
+    """One line unless the settings that decide it (idle_compaction_source) turn idle compaction off. Claude Code
+    2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
+    `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
+    handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
+    to a CLI without the feature. $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it (scripted environments, the tests)."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    value, where = idle_compaction_source(cwd)
+    if value is False:
+        return None
+    user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    state = f"{where} sets \"idleCompaction\": {json.dumps(value)}" if where else "no settings file sets \"idleCompaction\""
+    return (f"Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle ~54 min, and {state}: a hub waiting "
+            f"on a long jwait would go on from a summary instead of handing over — set \"idleCompaction\": false in "
+            f"{where or user} (the background successors of `hub succeed` get it on their command line)")
 
 
 def plugin_tools() -> list:

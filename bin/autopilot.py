@@ -86,6 +86,10 @@ STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "
 # handoff outside the project, with nobody there to answer (smoke test, CLI 2.1.285). Everything else still asks — the
 # owner answers over Remote Control.
 HUB_ALLOW = ("hub takeover", "hub handoff", "hub succeed", "jlog", "jwait", "ask", "roles", "lock list", "agent status")
+# Every background successor, bypass or not: Claude Code 2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by
+# default since 2.1.299), and a hub waiting on a long `jwait` is such a conversation. The context budget then reads the
+# smaller post-compaction size (hooks/context_budget.py), so the hub goes on from a summary instead of handing over.
+NO_IDLE_COMPACTION = {"idleCompaction": False}
 LINK_WAIT_S = 90
 BG_TIMEOUT_S = 60  # one `claude --bg` call
 # How long a reservation of `hub succeed` / `--fallback` blocks the shift: login (30 s), up to three `claude --bg` tries
@@ -581,8 +585,9 @@ class Successor:
             argv += ["--effort", self.effort]
         if flag:
             argv += ["--permission-mode", flag]
-        if flag != "bypassPermissions":
-            argv += ["--settings", json.dumps(successor_settings(), separators=(",", ":"))]
+        settings = successor_settings() if flag != "bypassPermissions" else {}
+        settings.update(NO_IDLE_COMPACTION)
+        argv += ["--settings", json.dumps(settings, separators=(",", ":"))]
         return argv + [self.prompt()]
 
     def started(self, bg_id: str, mode: str) -> dict:

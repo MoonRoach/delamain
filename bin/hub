@@ -1138,6 +1138,10 @@ def _cmd_takeover(a) -> int:
         warns.append(f"the handoff {handoff.name} still has {len(todos)} TODO line(s) in § 0–2 (its author did not finish "
                      f"it): rebuild that state from the journal, `ask list` and `lock list` before trusting it — first "
                      f"at line {todos[0][0]}: {todos[0][1][:90]}")
+    if engines.selected() != "codex":
+        idle = hc.idle_compaction_warning(Path.cwd())
+        if idle:
+            warns.append(idle)
     plan = Plan(a.dry_run)
     print(f"{name}: {session} (sid {cli[:8]}, {kind}) " + (f"starts stage {stage}" if first else
           (retake.replace("re-took", "re-takes", 1) if retake else f"takes over from \"{prev_label}\"")

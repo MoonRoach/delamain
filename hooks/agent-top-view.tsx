@@ -71,7 +71,7 @@ export type PaneModel = {
   isAutoFocus: boolean
   nowMs: number
   /** The Stages section's close flow: the stage armed by a first press, the one being closed, the last result. */
-  closing: { armed: string | null; running: string | null; note: { text: string; isError: boolean } | null }
+  closing: { armed: string | null; running: string | null; note: { text: string; isError: boolean; isWarn?: boolean } | null }
 }
 
 export type PaneActions = {
@@ -630,8 +630,10 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
       )
     }
     if (note) {
-      wrapLines(`${note.isError ? '✗' : '✓'} ${note.text}`, sw, 2).forEach((l, i) =>
-        stageRows.push(row(i === 0 ? 'close-note' : undefined, [t(l, { color: note.isError ? 'red' : 'green' })])),
+      // closed, but its hub session still runs (Desktop, terminal, busy): the whole ATTENTION, how to end it included
+      const color = note.isError ? 'red' : note.isWarn ? 'yellow' : 'green'
+      wrapLines(`${note.isError ? '✗' : note.isWarn ? '⚠' : '✓'} ${note.text}`, sw, note.isWarn ? 5 : 2).forEach((l, i) =>
+        stageRows.push(row(i === 0 ? 'close-note' : undefined, [t(l, { color })])),
       )
     }
     for (const r of shownIdle) {

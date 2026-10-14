@@ -62,7 +62,7 @@ type HubCalled = { ok: true; line: string } | { ok: false; error: string }
 const firstLine = (s: string): string => clip(oneLine(s.split('\n').find(l => l.trim() !== '') ?? ''), 140)
 
 let snap: Snapshot | null = null // the default view, every stage: feeds the status line and the toasts
-let allSnap: Snapshot | null = null // the same with --all, only while the pane shows it
+let allSnap: Snapshot | null = null // the pane's own list (--all, or the named stages), only while the pane shows it
 let card: Card | null = null // the card of `target` (an answer for another agent is dropped)
 let cardError: string | null = null // why the last card call failed; cleared by the next good one
 let view: View = 'list'
@@ -89,7 +89,7 @@ let edges: { prev: string | null; next: string | null } = { prev: null, next: nu
 let armed: string | null = null
 let armTimer: Timer | null = null
 let closing: string | null = null // the stage whose close is running
-let closeNote: { text: string; isError: boolean } | null = null // its result, drawn in the Stages section
+let closeNote: { text: string; isError: boolean; isWarn?: boolean } | null = null // its result, drawn in the Stages section
 
 // ---------------------------------------------------------------- data
 
@@ -117,7 +117,8 @@ async function callHub($: Api, args: string[]): Promise<HubCalled> {
     const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env: { PYTHONDONTWRITEBYTECODE: '1' } })
     if (r.exitCode === 127) return { ok: false, error: `hub cannot run (${bin})` }
     if (r.exitCode !== 0) return { ok: false, error: firstLine(r.stderr) || firstLine(r.stdout) || `hub exited with ${r.exitCode}` }
-    return { ok: true, line: firstLine(r.stdout) || 'closed' }
+    // the summary line; when the hub session still runs it carries the ATTENTION with how to end it, so it is kept long
+    return { ok: true, line: clip(oneLine(r.stdout.split('\n').find(l => l.trim() !== '') ?? ''), 600) || 'closed' }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (/ENOENT|no such file|not found|cannot start|spawn/i.test(msg)) return { ok: false, error: `hub is missing (${bin})` }
@@ -167,6 +168,9 @@ function giveUp($: Api, message: string): void {
   showCounts($)
 }
 
+/** What the pane shows: its own list (--all, or the named stages, which may include a closed one) once read, else the watch call's. */
+const paneSnap = (): Snapshot | null => ((isAll || stages.length > 0) && allSnap ? allSnap : snap)
+
 function applyWatch($: Api, s: Snapshot): void {
   snap = s
   lastWatchAt = s.fetchedAt
@@ -177,7 +181,7 @@ function applyWatch($: Api, s: Snapshot): void {
 
 async function runOnce($: Api, isForce: boolean): Promise<void> {
   const now = await $.clock.now()
-  const plan = planRun({ now, lastWatchAt, isOpen, view, isAll, hasTarget: target !== null, force: isForce })
+  const plan = planRun({ now, lastWatchAt, isOpen, view, isAll, hasStages: stages.length > 0, hasTarget: target !== null, force: isForce })
   if (!plan.watch && plan.extra === null) return
   const errors: string[] = []
   let isGone = false
@@ -203,7 +207,7 @@ async function runOnce($: Api, isForce: boolean): Promise<void> {
     }
     $.ui.invalidate('ui.render')
   } else if (plan.extra === 'all' && !isGone) {
-    const c = await callCli($, ['--json', '--all'])
+    const c = await callCli($, ['--json', ...(isAll ? ['--all'] : []), ...stages.flatMap(s => ['--stage', s])])
     if (c.ok) {
       try {
         allSnap = parseSnapshot(c.stdout, now)
@@ -350,7 +354,9 @@ async function closeStage($: Api, stage: string): Promise<void> {
   $.ui.invalidate('ui.render')
   try {
     const c = await callHub($, ['close', '--stage', stage, '--why', CLOSE_WHY])
-    closeNote = c.ok ? { text: c.line, isError: false } : { text: `${stage}: ${c.error}`, isError: true }
+    closeNote = c.ok
+      ? { text: c.line, isError: false, isWarn: c.line.includes('ATTENTION:') }
+      : { text: `${stage}: ${c.error}`, isError: true }
   } finally {
     closing = null
   }
@@ -408,7 +414,7 @@ async function openPane($: Api, args: CommandArgs): Promise<string> {
 
   let notFound = ''
   if (args.role !== null) {
-    const found = findByRole((isAll && allSnap ? allSnap : snap)?.agents ?? [], args.role, stages)
+    const found = findByRole(paneSnap()?.agents ?? [], args.role, stages)
     if (found) {
       await openCard($, found)
     } else if (snap || allSnap) notFound = `no agent "${args.role}"${stages.length ? ` in ${stages.join(', ')}` : ''}; `
@@ -529,7 +535,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     isOpen = true
-    const shown = isAll && allSnap ? allSnap : snap
+    const shown = paneSnap()
     const agents = shown ? inStages(shown.agents, stages) : []
     const model: PaneModel = {
       view,

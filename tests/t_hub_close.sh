@@ -26,6 +26,7 @@ old = time.time() - 3 * 86400
 os.utime(f"{root}/web/roles.json", (old, old))   # web: quiet for three days, no live agent -> idle
 rows = [{"kind": "stage", "repo": "shop", "owner_name": "Hub shop #3", "session_id": hub, "until": "2099-12-31T23:59:00+00:00", "why": "shop staging"},
         {"kind": "deploy", "repo": "shop", "owner_name": "worker", "session_id": wk, "until": "2099-12-31T23:59:00+00:00", "why": "web deploy"},
+        {"kind": "agent-lock", "repo": "shop", "owner_name": "w1", "session_id": ag, "until": "2099-12-31T23:59:00+00:00", "why": "w1 works"},
         {"kind": "stage", "repo": "other", "owner_name": "someone", "session_id": "99999999-9999-4999-8999-999999999999", "until": "2099-12-31T23:59:00+00:00", "why": "x"}]
 open(f"{root}/board.md", "w").write("# b\n\n```locks\n" + "\n".join(json.dumps(r) for r in rows) + "\n```\n")
 PY
@@ -68,8 +69,8 @@ head -1 $R/c2.out | grep -q "^closed stage shop: shipped"; check $? 0 "…summar
 sleep 0.5; kill -0 $SLEEPER 2>/dev/null; check $? 1 "…the live agent was stopped (agent stop)"
 grep -q "stopped the stage's hub \"Hub shop #3\" (hub-3, sid 11111111, pid 4242) (\`claude stop 11111111\`" $R/c2.out
 check $? 0 "…the idle background hub session was stopped"
-check "$(locks)" "deploy/shop stage/other" "…the hub's lock released; the worker's (live in web) and a stranger's kept"
-grep -q "kept lock deploy (shop): its holder worker is live in stage web" $R/c2.out; check $? 0 "…the kept lock is explained"
+check "$(locks)" "deploy/shop stage/other" "…the hub's and the stopped agent's locks released; the worker's (live in web) and a stranger's kept"
+grep -q "kept lock deploy (shop): its holder worker — it is live in stage web" $R/c2.out; check $? 0 "…the kept lock is explained"
 check "$(field $R/shop/roles.json 'sorted(d["roles"]), sorted(r["role"] for r in d["retired"])')" "([], ['hub', 'worker'])" "…every role retired"
 grep -q "\[owner\] close: stage shop closed — shipped" $(journal shop); check $? 0 "…journal line by the owner"
 check "$(field $R/shop/stage.json 'd["closed"]["why"], d["closed"]["hub"]')" "('shipped', 'hub-3')" "…stage.json closed record"
@@ -93,6 +94,8 @@ l = importlib.machinery.SourceFileLoader("wd", "$B/watchdog"); m = importlib.uti
 sys.exit(0 if m.stage_names() == ["web"] and m.stage_names("shop") == [] else 1)
 PY
 check $? 0 "the watchdog leaves the closed stage out"
+$B/agent spawn --stage shop --role late --cwd "$R" --model sonnet --brief /dev/null > $R/sp.out 2>&1; check $? 2 "agent spawn into a closed stage refused"
+grep -q "stage shop is closed" $R/sp.out; check $? 0 "…and says how to reopen it"
 $B/hub close --stage shop > $R/c3.out 2>&1; check $? 0 "closing again is exit 0"
 grep -q "already closed" $R/c3.out; check $? 0 "…and says when and why"
 
@@ -103,4 +106,35 @@ check "$(field $R/shop/stage.json '"closed" in d')" False "…the closed mark is
 grep -q "\[hub-4\] start: .*reopened the stage closed" $(journal shop); check $? 0 "…and the start line says so"
 $B/agent-top --json > $R/top4.json
 check "$(field $R/top4.json 'd["stages"]')" "['shop', 'web']" "agent-top lists it again"
+
+# 7. a hub session another open stage still holds is not stopped; a Desktop hub is named in the first line
+python3 - "$R" "$WK" "$HUB" <<'PY'
+import json, os, sys
+root, wk, hub = sys.argv[1:]
+def roles(stage, recs, retired=()):
+    os.makedirs(f"{root}/{stage}", exist_ok=True)
+    json.dump({"version": 1, "roles": recs, "retired": list(retired), "sends": []}, open(f"{root}/{stage}/roles.json", "w"))
+roles("twin", {"hub": {"session": wk, "kind": "cli", "tag": "hub-2", "title": "Hub twin #2"}})        # wk: also the hub of web
+roles("desk", {"hub": {"session": "local_" + hub, "cli_session_id": hub, "kind": "desktop", "tag": "hub-5", "title": "Hub desk #5"}})
+roles("retry", {}, [{"role": "hub", "session": "x", "tag": "hub-7", "retired_why": "stage closed: interrupted"}])  # a close that died mid-way
+PY
+$B/hub close --stage twin > $R/c4.out 2>&1; check $? 0 "close of a stage whose hub session is live in another stage"
+grep -q "left the hub session $WK running: it is live in stage web" $R/c4.out; check $? 0 "…that session is not stopped"
+$B/hub close --stage desk > $R/c5.out 2>&1; check $? 0 "close of a stage with a Desktop hub"
+head -1 $R/c5.out | grep -q "^closed stage desk: .* ATTENTION: the stage's hub .* archive it in Desktop (local_$HUB)"; check $? 0 "…the first line says to archive the Desktop hub"
+$B/hub close --stage retry > $R/c6.out 2>&1; check $? 0 "a re-run after a close that died after retiring the roles"
+check "$(field $R/retry/stage.json 'd["closed"]["hub"]')" "hub-7" "…keeps the hub's tag from the retired record"
+# 8. an unreadable registry of another stage keeps the lock (its holder may be live there)
+python3 - "$R" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+os.makedirs(f"{root}/solo", exist_ok=True); os.makedirs(f"{root}/broken", exist_ok=True)
+json.dump({"version": 1, "roles": {"hub": {"session": "77777777-7777-4777-8777-777777777777", "kind": "cli", "tag": "hub-1"}}, "retired": [], "sends": []}, open(f"{root}/solo/roles.json", "w"))
+open(f"{root}/broken/roles.json", "w").write("{not json")
+t = open(f"{root}/board.md").read().replace("\n```\n", '\n{"kind": "solo-lock", "repo": "solo", "owner_name": "solo", "session_id": "77777777-7777-4777-8777-777777777777", "until": "2099-12-31T23:59:00+00:00", "why": "solo"}\n```\n')
+open(f"{root}/board.md", "w").write(t)
+PY
+$B/hub close --stage solo > $R/c7.out 2>&1; check $? 0 "close with an unreadable registry elsewhere"
+grep -q "kept lock solo-lock (solo): its holder hub — a registry of another stage could not be read" $R/c7.out; check $? 0 "…keeps the lock and says why"
+check "$(locks)" "deploy/shop solo-lock/solo stage/other" "…the lock is still on the board"
 exit $fail

@@ -307,15 +307,16 @@ export function isOwnCommand(command: string, pluginName: string): boolean {
 export const TICK_MS = 3000
 export const IDLE_MS = 15000
 
-export type Plan = { watch: boolean; extra: 'card' | 'all' | null }
+export type Plan = { watch: boolean; extra: 'card' | 'all' | null } // 'all': the pane's own list (--all, or named stages)
 
 /**
  * What one refresh runs. The "watch" call (default view, every stage) feeds the status line and the toasts, so it
  * runs every tick while the pane shows it and every IDLE_MS otherwise. The "extra" call feeds only the pane: the
- * card (one agent, its feed) or the all-agents list.
+ * card (one agent, its feed) or the pane's own list: --all, or the stages it was opened on (--stage: a closed stage is
+ * left out of the watch call, and a named one is shown).
  */
-export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; view: View; isAll: boolean; hasTarget: boolean; force: boolean }): Plan {
-  const extra: Plan['extra'] = !i.isOpen ? null : i.view === 'card' ? (i.hasTarget ? 'card' : null) : i.isAll ? 'all' : null
+export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; view: View; isAll: boolean; hasStages?: boolean; hasTarget: boolean; force: boolean }): Plan {
+  const extra: Plan['extra'] = !i.isOpen ? null : i.view === 'card' ? (i.hasTarget ? 'card' : null) : i.isAll || i.hasStages ? 'all' : null
   const isIdleDue = i.now - i.lastWatchAt >= IDLE_MS - TICK_MS / 2
   const watch = (i.isOpen && extra === null) || isIdleDue || (i.force && extra === null)
   return { watch, extra }

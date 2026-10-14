@@ -281,6 +281,28 @@ test('/agent-top <role> --stage S opens that agent card; an unknown role says so
   expect(none.text).toBe('agent-top pane opened: no agent "ghost"; ● 2 ✓ 0 ✗ 0')
 })
 
+test('/agent-top --stage S reads that stage itself: a closed stage, left out of the default call, is still shown', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', ($, e) => {
+    calls.push([...e.argv])
+    if (e.argv.includes('--agent')) return ran(cardJson(agent({ stage: 'shop', dir_name: 'worker' }), []))
+    return ran(e.argv.includes('--stage')
+      ? snapshot([agent({ stage: 'shop', dir_name: 'worker' })], { stages: ['shop'] })
+      : snapshot([agent()], { stages: ['stage-a'], closed_hidden: ['shop'] }))
+  })
+  const ok = await run($, 'worker --stage shop', 'agent-top')
+  expect(ok.text).toMatch(/^agent-top pane opened: /)
+  expect(calls.some(c => c.slice(1).join(' ') === '--json --stage shop')).toBe(true)
+  expect(calls.some(c => c.join(' ').endsWith('--agent worker --stage shop --feed 30'))).toBe(true)
+})
+
 test('where no pane can be placed, /agent-top answers with the text picture', async ($, on) => {
   const calls: string[][] = []
   on('command.register', REGISTERED)
@@ -543,6 +565,8 @@ test('planRun: every tick while the pane shows the list, every 15 s otherwise, t
   expect(planRun({ ...base, lastWatchAt: 85000 })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true, isAll: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, isOpen: true, hasStages: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, hasStages: true })).toEqual({ watch: false, extra: null })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true })).toEqual({ watch: false, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true, lastWatchAt: 85000 })).toEqual({ watch: true, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'journal' })).toEqual({ watch: true, extra: null })
@@ -1365,6 +1389,24 @@ test('a refused close (exit 2) shows the first stderr line in red and keeps the 
 
   expect(hubCalls(calls)).toEqual(Array.from({ length: 6 }, () => CLOSE_ARGV('retro')))
   expect(calls.some(c => c.includes('--force'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a close whose hub session still runs shows the ATTENTION in yellow, whole, how to end it included', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  const attention =
+    'closed stage retro: done. ATTENTION: the stage\'s hub "Hub retro #4" (hub-4, sid 11111111) still runs: other hubs can still message it by name and it answers — archive it in Desktop (local_abc). Hidden from agent-top.'
+  stubStages(on, () => withStages({ retro: stageInfo() }), () => ran(`${attention}\nmore\n`), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro' })
+  await ui.press({ key: 'close:retro' })
+  const note = await ui.find({ key: 'close-note' })
+  expect(note?.text).toMatch(/^⚠ closed stage retro: done\. ATTENTION/)
+  expect((await ui.find({ type: 'Text', text: /^⚠ closed stage retro/ }))?.props).toMatchObject({ color: 'yellow' })
+  expect((await ui.findAll({ type: 'Text', text: /archive it in Desktop \(local_abc\)/ })).length).toBe(1)
   await ui.unmount()
 })
 

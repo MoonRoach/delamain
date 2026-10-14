@@ -2,12 +2,19 @@
 
 ## Unreleased
 
+## 1.0.5 — 2026-10-14
+
 - **Hubs are not compacted when idle.** Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle about
   54 minutes (on by default since 2.1.299). A hub waiting on a long `jwait` is such a conversation: compacted, the
   context budget reads the smaller size and the hub goes on from a summary instead of handing over. The background
   successor of `hub succeed` now starts with `"idleCompaction": false` in its `--settings`, in bypass mode too, and
   `hub start`/`hub takeover` of a Claude hub warn unless the settings file that decides it, in Claude Code's order
   (managed, the project's `settings.local.json`, its `settings.json`, the user's), turns it off.
+
+- **Portable Python selection.** `bin/run-python` chooses a compatible interpreter on `PATH`, or validates an
+  explicit `DELAMAIN_PYTHON` override. Native Codex hooks require 3.11+ through this launcher; terminal tools can
+  request 3.10+ or 3.11+ without editing installed files. Claude hooks and CLI shebangs are unchanged. Detached
+  agents write their exit journal with the interpreter that launched them, preserving their original exit code.
 
 ## 1.0.4 — 2026-10-14
 
@@ -18,11 +25,6 @@
   грилл ми, погриль, grill me, grilling; not «гриль», «грили», "grilled" or a skills/grilling/ path), and the hub
   skill says an owner-requested grilling runs as written until the topic's frontier is empty, open owner questions
   included; its questions wait for the owner's answers instead of taking the recommendation on silence.
-
-- **Portable Python selection.** `bin/run-python` chooses a compatible interpreter on `PATH`, or validates an
-  explicit `DELAMAIN_PYTHON` override. Native Codex hooks require 3.11+ through this launcher; terminal tools can
-  request 3.10+ or 3.11+ without editing installed files. Claude hooks and CLI shebangs are unchanged. Detached
-  agents write their exit journal with the interpreter that launched them, preserving their original exit code.
 
 ## 1.0.3 — 2026-10-14
 

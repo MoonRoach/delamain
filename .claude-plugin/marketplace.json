@@ -12,7 +12,7 @@
       "name": "delamain",
       "source": "./",
       "description": "Hub session + headless `claude -p` agents: briefs, journal, inboxes, owner questions, locks, handoffs, agent-top.",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": {
         "name": "Ilya Kozyrev"
       },

@@ -636,6 +636,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
     parts = [
         (f"DIGEST \"{name}\": " + "; ".join(steps), 300, ""),
         (hc.plugin_runtime_line(), 650, ""),
+        (hc.DESKTOP_CARDS_LINE if hc.host_engine() != "codex" else "", 200, ""),
         (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),

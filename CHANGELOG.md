@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A registered hub cannot turn executor work into Desktop session cards.** On 14.10 the Desktop hub of a stage
+  followed the host's rules for follow-up cards (`mcp__ccd_session__start_session`) and put three code tasks on cards
+  the owner had to click, invisible to `agent-top`, instead of `agent spawn`. Autopilot turns cannot start a Desktop
+  session (the app refuses it outside a turn the owner typed), so cards cannot carry the autopilot. The new hook
+  `session_cards.py` denies, in a session registered as a stage's `hub`, `start_session` with `initiation`
+  `own_initiative` or `offer` and `hand_off_to_session`, naming `agent spawn`, `ask add` and `hub handoff` in the
+  message; `user_asked` and a card accepted with `proposal_id` pass, and so does every session that is not a hub, or when
+  the registry cannot be read. `hub start`, `hub takeover` (Claude) and a resumed hub's SessionStart add one line saying
+  the host's card rules are superseded. Codex has no such tool, so nothing changes there.
+
 ## 1.0.4 — 2026-10-14
 
 - **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with

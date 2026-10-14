@@ -36,7 +36,7 @@ def codex(a):
     pts, resets = series(a)
     folder = Path(os.environ["CODEX_HOME"]) / "sessions" / "2026" / "10" / "14"
     folder.mkdir(parents=True, exist_ok=True)
-    lines = [{"type": "session_meta", "payload": {"id": "fx-limit-pace", "source": "cli"}}]
+    lines = [{"type": "session_meta", "payload": {"id": "fx-limit-pace" + ("-" + a.tag if a.tag else ""), "source": "cli"}}]
     for used, t in pts:
         stamp = dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         lines.append({"timestamp": stamp, "type": "event_msg", "payload": {"type": "token_count", "rate_limits": {

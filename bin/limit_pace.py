@@ -41,6 +41,8 @@ RECENT_S = 6 * 3600           # the burn rate is measured over the samples of th
 MIN_SPAN_S = 3600             # ... when they span at least this much; else the window's average alone
 MIN_ELAPSED_S = 3600          # the window's average is meaningless in the window's first hour
 SAME_WINDOW_S = 600           # samples whose resets_at differ by more belong to different window instances
+LATEST_S = 600                # samples this close to the newest one describe "now" together (a log's mtime is not the
+                              # event's time, so parallel logs disagree by a point or by a window instance)
 AHEAD_PP = 10                 # usage this many points ahead of the elapsed share is "ahead"
 REFUSE_FLOOR = 50             # a refusal needs at least this much of the week used: before it, advice is enough
 LOG_HOURS = 12                # logs and rollouts touched within this many hours are read
@@ -261,11 +263,25 @@ def _eta(last: Sample, rate: Optional[float]) -> Optional[float]:
     return last.seen_at + (100 - last.used) / rate * 3600
 
 
+def _latest(samples: list) -> Sample:
+    """The sample that stands for "now": among those within LATEST_S of the newest, the window instance with the latest
+    resets_at, and in it the highest used (within an instance utilisation only grows, so a lower one is an older
+    event under a newer mtime), observed at the newest of them."""
+    newest = max(s.seen_at for s in samples)
+    near = [s for s in samples if s.seen_at >= newest - LATEST_S]
+    resets = [s.resets_at for s in near if s.resets_at is not None]
+    if resets:
+        top = max(resets)
+        near = [s for s in near if s.resets_at is not None and abs(s.resets_at - top) <= SAME_WINDOW_S]
+    best = max(near, key=lambda s: (s.used, s.seen_at))
+    return Sample(best.used, max(s.seen_at for s in near), best.resets_at, best.length_s)
+
+
 def assess(engine: str, window: str, samples: list, now: float) -> Pace:
     p = Pace(engine, window)
     if not samples:
         return p
-    last = max(samples, key=lambda s: s.seen_at)
+    last = _latest(samples)
     p.used, p.seen_at, p.resets_at, p.age_s = last.used, last.seen_at, last.resets_at, max(0.0, now - last.seen_at)
     if last.resets_at is not None and last.resets_at <= now:
         p.level, p.why_stale = "stale", "the window has reset since the latest sample"
@@ -496,12 +512,18 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
                          f"not a weaker model){part}")
     else:
         adv.lines.append(f"2. move: no verified headroom elsewhere — {describe(q)}")
+        if not q.fresh:
+            adv.lines.append(f"   headroom on {ENGINE_NAME[q.engine]} is not verified: run a probe there, or pass "
+                             "--reason")
     # 3. sequence by value
     adv.lines.append(f"3. sequence: if this is not urgent (night queue, nice-to-have), start it after the reset "
                      f"{_when(p.resets_at)}; the hub decides what is urgent")
     # 4. the plain statement and the one hard stop
     if p.level == "exhaust" and not can_move:
-        stop = (p.confirmed and p.used >= REFUSE_FLOOR and cls != "mechanical")
+        # "no cheaper path" is known only from fresh data of the other engine (or a pinned stage); an engine that is
+        # unknown or stale is a path not checked, not a path closed
+        unverified = not locked and not q.fresh
+        stop = (p.confirmed and p.used >= REFUSE_FLOOR and cls != "mechanical" and not unverified)
         if not (locked and headroom(q)):
             adv.lines.append("4. none of this covers it: tell the owner — " + ask_command(stage, p, lock, q, cls))
         adv.stop = stop

@@ -660,8 +660,8 @@ def pace_digest(stage: str) -> str:
         paces = limit_pace.read_all()
         return "Limit pace (before spending; full advice: agent-top --once, agent spawn --dry-run):\n" + "\n".join(
             limit_pace.compact(e, paces, stage) for e in limit_pace.ENGINES)
-    except Exception:  # noqa: BLE001
-        return ""
+    except Exception as e:  # noqa: BLE001 — the line says it is missing and why, so a broken advisor is not silent
+        return f"Limit pace: unavailable ({type(e).__name__})"
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),

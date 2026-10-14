@@ -129,11 +129,48 @@ P = read()
 check(P["codex"]["7d"].level == "stale" and "reset" in P["codex"]["7d"].why_stale, "a window that reset since the sample is stale")
 check(lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P).refuse is None, "…not refused")
 
-# the other engine stale: no verified headroom, so no move is proposed
+# the other engine stale: no verified headroom, so no move is proposed, but no refusal either: the path is unchecked
 fx("clear"); fx("codex", "60,75"); fx("claude", "20,21", "--age-m", "240")
 P = read()
 a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(not any("run this as" in l for l in a.lines) and a.refuse is not None, "headroom unknown elsewhere: no move, refusal stands")
+check(not any("run this as" in l for l in a.lines) and a.refuse is None and not a.stop, "other engine stale: no move, advice, no refusal")
+check(any("headroom on Claude is not verified" in l and "--reason" in l for l in a.lines), "…says the headroom is not verified")
+check(any(l.startswith("4.") and "ask add" in l for l in a.lines), "…and gives the ready ask add")
+
+# the other engine unknown (no log in 12 h): advice, not refusal
+fx("clear"); fx("codex", "60,75")
+P = read()
+check(P["claude"]["7d"].level == "unknown", "no Claude log: unknown")
+a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
+check(a.refuse is None and not a.stop and any("headroom on Claude is not verified" in l for l in a.lines),
+      "other engine unknown → advice, not refusal")
+check(any(l.startswith("4.") and "ask add" in l for l in a.lines), "…with the ready ask add")
+os.environ["AGENT_HUB_STAGE_ENGINES"] = '{"stage-a": {"engine": "codex", "decision": "Q-T-1"}}'
+a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P, lock=lp.stage_lock("stage-a"))
+check(a.refuse is not None, "…a pinned stage is still refused: its cheaper path is the owner's to open")
+del os.environ["AGENT_HUB_STAGE_ENGINES"]
+
+# parallel Claude logs: the log's mtime is not its event's time, so the points of one instant disagree by a point
+for order in ("51,52", "52,51"):
+    fx("clear"); fx("claude", order, "--span-h", "0"); fx("codex", "10,12")
+    P = read()
+    check(P["claude"]["7d"].used == 52, f"two logs of one instant ({order}): the higher utilisation stands")
+# right after the weekly reset a long agent's last event still carries the old resetsAt, under the newest mtime
+fx("clear"); fx("claude", "60", "--elapsed-h", "170", "--age-m", "1", "--tag", "old")
+fx("claude", "3", "--elapsed-h", "0.1", "--age-m", "5", "--tag", "new"); fx("codex", "10,12")
+P = read()
+c = P["claude"]["7d"]
+check(c.level == "ok" and c.used == 3, "an event of the old window under a newer mtime: the new instance stands, not stale")
+
+# a window that restarted in the middle of the week (08.10): rates and the share come from the new instance only
+fx("clear"); fx("claude", "20,21")
+fx("codex", "90,98", "--span-h", "1", "--elapsed-h", "168", "--age-m", "125", "--tag", "old")
+fx("codex", "0,0.5", "--span-h", "1.5", "--elapsed-h", "2", "--age-m", "1", "--tag", "new")
+P = read()
+p = P["codex"]["7d"]
+check(p.used == 0.5 and abs(p.expected - 100 * 2 / 168) < 0.3, "restarted window: used and elapsed share of the new instance")
+check(p.burn_recent is not None and abs(p.burn_recent - 0.5 / 1.5) < 0.1, "…burn_recent over the new instance's points only")
+check(p.level == "ok", "…a fresh week on pace, not the old instance's 98%")
 
 # crossings: once per stage, engine, window instance and level
 fx("clear"); fx("codex", "60,75")
@@ -219,6 +256,17 @@ grep -q '^Codex week 75% used at 24% elapsed, runs out .* — over pace: routine
 check $? 0 "digest: Codex line with the action"
 grep -q '^Claude week 21% used at 24% elapsed — on pace$' $R/digest.out; check $? 0 "digest: Claude line on pace, no advice"
 [ "$(wc -c < $R/digest.out)" -lt 480 ]; check $? 0 "digest: the block fits its budget"
+python3 - "$B" > $R/digest-broken.out <<'PY'
+import importlib.machinery, importlib.util, sys
+sys.path.insert(0, sys.argv[1])
+import limit_pace
+def boom(*a, **k): raise RuntimeError("fixture")
+limit_pace.read_all = boom
+loader = importlib.machinery.SourceFileLoader("hubmod", sys.argv[1] + "/hub")
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", loader)); loader.exec_module(m)
+print(m.pace_digest("stage-a"))
+PY
+check "$(cat $R/digest-broken.out)" "Limit pace: unavailable (RuntimeError)"
 $B/agent-top --once --width 200 --stage stage-a > $R/top.out 2>&1; check $? 0 "agent-top --once"
 grep -q 'Limit pace' $R/top.out && grep -q 'Codex 7d 75% used .* over pace. Advice' $R/top.out; check $? 0 "agent-top --once: an advisor line per engine"
 $B/agent-top --json --stage stage-a | python3 -c "import json,sys; d=json.load(sys.stdin)['limit_pace']; assert d['codex']['level']=='exhaust' and d['claude']['level']=='ok', d"

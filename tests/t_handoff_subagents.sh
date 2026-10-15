@@ -56,7 +56,7 @@ CLAUDE_CODE_SESSION_ID=$HUB handoff; grep -q 'lost1' $R/h.err && grep -q 'alive1
 # a session registry that lists the hub's process: running parent -> live; one that does not -> its sub-agents died
 mkdir -p $CLAUDE_CONFIG_DIR/sessions
 python3 -c 'import time; time.sleep(600)' $HUB claude-stand-in & SLEEPER=$!
-trap 'kill $SLEEPER 2>/dev/null' EXIT
+trap 'kill $SLEEPER 2>/dev/null; test_cleanup' EXIT
 echo "{\"pid\": $SLEEPER, \"sessionId\": \"$HUB\"}" > $CLAUDE_CONFIG_DIR/sessions/$SLEEPER.json
 handoff; grep -q 'lost1' $R/h.err && grep -q 'alive1' $R/h.err; check $? 0 "<claude config>/sessions lists the hub's process: both live"
 rm $CLAUDE_CONFIG_DIR/sessions/$SLEEPER.json

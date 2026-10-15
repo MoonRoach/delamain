@@ -4,7 +4,7 @@
 new_home
 export CODEX_BIN=$T/fake_codex.py AGENT_HUB_ENGINE=codex HUB_STAGE=stage-a HUB_TAG=hub-test
 W=$AGENT_HUB_HOME/repo; mkdir -p "$W"; echo 'wait' > "$W/brief.md"
-trap '"$B/agent" stop --stage stage-a old-hub >/dev/null 2>&1' EXIT
+trap '"$B/agent" stop --stage stage-a old-hub >/dev/null 2>&1; test_cleanup' EXIT
 FAKE_CODEX_HOLD=60 "$B/agent" spawn --engine codex --role old-hub --cwd "$W" --brief "$W/brief.md" > "$W/spawn.out" 2>&1
 check $? 0 'spawn a fake detached Codex predecessor'
 SID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["session_id"])' "$AGENT_HUB_HOME/stage-a/agents/old-hub/meta.json")

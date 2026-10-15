@@ -9,6 +9,16 @@
   secret-name environment exclusions. The review brief directs Codex
   temporary copies into its cwd. Existing executors retain their pinned roots: respawn them to apply narrower grants.
 
+- **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
+  backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
+  Parser upgrades invalidate cached readings even for unchanged logs. Standalone tests and the suite harness own
+  and remove their temporary files and directories, including on failure.
+
+- **The kill guard catches redirected name lookups and shell kills through `xargs`.** Process substitutions feeding
+  `xargs kill` or a `while read` loop, and `pgrep | xargs … sh -c "kill …"`, now receive the same refusal as other
+  bulk kills. Desktop's session-card hook and the registry share one session identity matcher, including verified
+  Desktop CLI restarts.
+
 - **`hub grill open` can start from an untrusted hub home.** After Claude explicitly refuses workspace trust,
   it tries only the hub's registered worktree, then the project's main checkout. If all refuse trust, the error
   lists every attempted directory and recommends trusting the hub's worktree (or main checkout if none is registered).

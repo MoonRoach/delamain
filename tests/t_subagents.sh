@@ -11,7 +11,7 @@ HUB=33333333-cccc-4ccc-8ccc-333333333333; EXE=44444444-dddd-4ddd-8ddd-4444444444
 python3 $T/subagent_fixture.py $CLAUDE_CONFIG_DIR $HUB $EXE $STR > /dev/null; check $? 0 "fixture built"
 # a live process whose command line holds both parent session ids: the headless parent's pid and the hub's process
 python3 -c 'import time; time.sleep(600)' $EXE $HUB claude-stand-in & SLEEPER=$!
-trap 'kill $SLEEPER 2>/dev/null' EXIT
+trap 'kill $SLEEPER 2>/dev/null; test_cleanup' EXIT
 $B/roles set hub $HUB --kind cli --tag hub-7 > /dev/null; check $? 0 "registry: hub"
 $B/roles set exec $EXE --kind headless --tag hub-7-exec --pid $SLEEPER > /dev/null; check $? 0 "registry: headless exec"
 fp(){ python3 - "$R" <<'PY'

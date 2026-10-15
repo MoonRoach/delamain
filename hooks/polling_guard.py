@@ -261,7 +261,7 @@ def _substitutions(quoted: str) -> list:
     return bodies
 
 
-def _segment_views(seg: str, strings: list, runs_all: bool):
+def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = False):
     """(wait text, CI text) of a segment. Strings a shell runs are unwrapped into commands (recursively); any other
     string is data: `""` for the wait search, and for the CI rules too unless the segment's command word is `gh` /
     `glab` — their quoted arguments carry the API path. `$(…)` in a data string still runs."""
@@ -274,14 +274,14 @@ def _segment_views(seg: str, strings: list, runs_all: bool):
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
         if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
-            inner = views(_unquote(quoted))
+            inner = views(_unquote(quoted), keep_seps)
             wait.append(f";{inner[0]};")
             ci.append(f";{inner[2]};")
         else:
             wait.append('""')
             ci.append(quoted if keep_strings else '""')
             for body in _substitutions(quoted):
-                inner = views(body)
+                inner = views(body, keep_seps)
                 wait.append(f";{inner[0]};")
                 ci.append(f";{inner[2]};")
         pos = m.end()
@@ -290,7 +290,7 @@ def _segment_views(seg: str, strings: list, runs_all: bool):
     return "".join(wait), "".join(ci)
 
 
-def views(cmd: str):
+def views(cmd: str, keep_seps: bool = False):
     """Three projections of a command: (where to look for a wait, what the `pgrep -f` check reads, what the CI-status
     rules read).
 
@@ -308,7 +308,10 @@ def views(cmd: str):
 
     The `pgrep` projection keeps every string as it is (the pattern lives in one). The CI projection keeps a data
     string only in a `gh` / `glab` segment: the path of `glab api "…/pipelines/1"` lives in a string, a commit message
-    that mentions `gh run view` does not."""
+    that mentions `gh run view` does not.
+
+    `keep_seps` joins the segments of each projection with the separators the command had (`|`, `&&`, a newline …)
+    instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it)."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
     cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
     protected, strings = _protect(cmd)
@@ -332,22 +335,30 @@ def views(cmd: str):
                 if fed[i]:
                     fed[opened:i] = [True] * (i - opened)
     wait, quoted, ci = [], [], []
+    after = {}  # index of the last item of a segment -> the separator that followed it
     for i, seg in enumerate(segs):
         printing = bool(_PRINTING.match(seg))
+        before = len(wait)
         if printing and not fed[i]:
             # Printing is not running, but the shell does run `$(…)` in double quotes — for the wait search and for
             # the CI rules alike: `echo "$(gh run view 1)"`.
             for num in _TOKEN.findall(seg):
                 for body in _substitutions(strings[int(num)]):
-                    inner = views(body)
+                    inner = views(body, keep_seps)
                     wait.append(f";{inner[0]};")
                     quoted.append(body)
                     ci.append(f";{inner[2]};")
-            continue
-        wait_text, ci_text = _segment_views(seg, strings, runs_all=printing and fed[i])
-        wait.append(wait_text)
-        ci.append(ci_text)
-        quoted.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))
+        else:
+            wait_text, ci_text = _segment_views(seg, strings, printing and fed[i], keep_seps)
+            wait.append(wait_text)
+            ci.append(ci_text)
+            quoted.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))
+        if i < len(seps) and len(wait) > before:
+            after[len(wait) - 1] = seps[i]
+    if keep_seps:
+        def join(items):
+            return "".join(item + after.get(k, ";") for k, item in enumerate(items))
+        return join(wait), join(quoted), join(ci)
     return ";".join(wait), ";".join(quoted), ";".join(ci)
 
 

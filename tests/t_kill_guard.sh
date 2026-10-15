@@ -97,6 +97,31 @@ BLOCKED=(
   'kill `pgrep -f worker`'
   'pgrep -f worker | xargs kill'
   'pgrep -f worker | xargs -r kill -9'
+  # M1: pidof and grep on ps output are pid sources too, in $(…), backticks and pipes, at any stage of the pipeline
+  'kill $(pidof node)'
+  'kill `pidof node`'
+  'pidof node | xargs kill'
+  "kill -9 \$(ps aux | grep worker | awk '{print \$2}')"
+  "ps aux | grep worker | awk '{print \$2}' | xargs kill"
+  'pgrep -f worker | sort | xargs kill'
+  'kill $(echo $(pgrep -f worker))'
+  'bash -c "pgrep -f worker | xargs kill"'
+  # M2: the same kill split over statements of one command
+  'for p in $(pgrep -f worker); do kill $p; done'
+  'pgrep -f worker | while read p; do kill $p; done'
+  'P=$(pgrep -f worker); kill $P'
+  'export P=$(pidof node)
+kill $P'
+  'bash -c "for p in \$(pgrep -f w); do kill \$p; done"'
+  # M3: a single & separates statements
+  'pkill -x node &'
+  'sleep 1 & pkill -x node'
+  # L4, L5
+  'eval pkill -f x'
+  'eval "pkill -f x"'
+  'killall5 -15'
+  'echo $(date; pkill -f x)'
+  'ssh host "pkill node" ; pkill -x local'
 )
 for c in "${BLOCKED[@]}"; do denied "$c"; check $? 0 "denied: $c"; done
 ALLOWED=(
@@ -112,9 +137,29 @@ ALLOWED=(
 pkill -f x
 EOF"
   'ps aux | grep pkill'
+  'P=$(pgrep -lf worker); echo $P'
+  'pgrep -lf worker | sort'
+  'pgrep -f worker | xargs echo'
+  'kill $(cat /tmp/app.pid)'
+  'kill $(cat pids | grep 1)'
+  'ps aux | grep worker | wc -l; kill 4242'
+  'for f in a b; do echo $f; done; kill 4242'
+  'git commit -m "a; kill $(pgrep x)"'
+  'sleep 5 & echo $!'
+  'my-server > out.log 2>&1 &'
+  'kill 4242 &'
+  'cmd &> out.log; kill $!'
+  # L7: a command that runs on another machine reaches no local process, in both forms
+  'ssh host "pkill node"'
+  'ssh host pkill -f x'
 )
 for c in "${ALLOWED[@]}"; do denied "$c"; check $? 1 "allowed: $(printf '%s' "$c" | head -1)"; done
 denied 'pkill -x Foo  # kill-ok: restarting my own app'; check $? 1 "the escape comment passes a deliberate pattern kill"
+denied 'pkill -x Foo &  # kill-ok: restarting my own app'; check $? 1 "  a background pkill takes the escape too (M3)"
+kg 'pkill -x Foo &' | grep -q 'second pattern'; check $? 1 "  and a lone ampersand is not read as a second pattern"
+denied 'for p in $(pgrep -f w); do kill $p; done  # kill-ok: my workers'; check $? 1 "the escape passes a loop kill (M2)"
+denied 'kill $(pidof node)  # kill-ok: my node'; check $? 1 "the escape passes a pidof kill (M1)"
+kg 'pkill -f x -P 1' | grep -q 'procps'; check $? 0 "the trap reason is true on Linux too: procps reads the option, BSD does not (L6)"
 denied 'pkill -f "[s]leep 300" 2>/dev/null  # kill-ok: my test sleeps'; check $? 1 "  a redirection after the pattern is not read as a pattern"
 AGENT_HUB_KILL_GUARD=off kg "$INCIDENT" | grep -q deny; check $? 1 "AGENT_HUB_KILL_GUARD=off turns it off"
 echo '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/etc/hosts"}}' | python3 $HOOKS/kill_guard.py > $R/kg-read.out

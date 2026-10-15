@@ -11,6 +11,28 @@
   reused on resume. The private gitdir, commondir/config.worktree and packed-refs are not granted. The review docs, skill and brief
   template describe the same boundary; macOS sandbox probes cover report/journal writes and Git operations.
 
+- **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
+  replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
+  more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%
+  remaining allows a launch even with an exhaustion forecast. Below 3% refuses only with fresh verified data on the
+  other engine; both below 3% refuse unless `--reason` is supplied. Unknown/stale data never grounds refusal. Engine
+  locks get a permission question for this launch, defaulting to the locked engine; models are never swapped silently.
+  Below 3% with an unverified alternative, advice warns of practical exhaustion and offers a probe or `--reason`,
+  without creating a quota gate. Forecasts from the first 6 hours are displayed without journal alarms, owner
+  notifications or crossing-state records; five-hour windows remain context.
+  Advice no longer defers or sequences work until reset. See [Limit pace](docs/reference.md#limit-pace).
+
+- **A headless Claude executor starts without MCP servers by default.** `AGENT_HUB_SPAWN_MCP` now defaults to
+  `none` (it was `inherit`): an agent started by `agent spawn` no longer carries the tool lists, instructions and
+  authentication notes of every server in your config, plugins and claude.ai connectors in each turn (about 3.5k tokens
+  and a second of startup). The hub gives a launch servers only when the task needs them — a browser check, a docs
+  lookup, a GitLab or DB server: `--mcp inherit` or `--mcp FILE[,FILE]`; the hub skill, its launch reference and the
+  executor brief template (a "Tools" line) say so, and `setup` question 10 asks whether the project's agents need
+  servers. The journal's `started headless agent …` line and `--dry-run` name `MCP inherit` / `MCP only <files>` and
+  stay silent for `none`. **Behaviour change:** to get the old behaviour back, set `"AGENT_HUB_SPAWN_MCP": "inherit"`
+  in the hub home's `config.json` (or a repository's `.agent-hub/config.json`), or pass `--mcp inherit`. A resumed
+  agent keeps the choice of its launch, the headless hub successor still inherits, Codex has no equivalent switch.
+
 ## 1.0.10 — 2026-10-15
 
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over

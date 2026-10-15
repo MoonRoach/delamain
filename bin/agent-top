@@ -1680,7 +1680,7 @@ def pace_rows(snap: dict, width: int) -> list:
     got = pace_lines(snap)
     if not got:
         return []
-    rows = [R(("", "norm")), R(("Limit pace (week against its pace; advice before spending)", "bold_u"))]
+    rows = [R(("", "norm")), R(("Limit pace (choose engine/model/effort for this launch)", "bold_u"))]
     for _, p, text in got:
         rows += wrap_rows(text, width, "warn" if p is not None and p.level == "exhaust" else "norm", "  ", "    ")
     return rows

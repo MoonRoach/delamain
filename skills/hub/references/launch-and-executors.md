@@ -70,6 +70,11 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
 
 ## Executors, in full
 
+- **Per-launch quota choice.** Read [limit pace](../../../docs/reference.md#limit-pace) before choosing this launch's
+  engine, model and effort. Compare fresh remaining weekly percentages; propose an equivalent class when the other
+  engine has more room and the requested one is short. For an engine lock, ask whether to allow the other engine
+  for this launch; default to running the locked engine. Apply the reference's quota refusal rules, keep model
+  changes explicit and keep ready work moving; forecast and five-hour context do not schedule work after reset.
 - Work that commits, pushes or waits (a merge steward, a rehearsal, a CI wait — see "Choosing how to launch work") is
   a headless agent, not an in-session sub-agent:
   `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.
@@ -104,6 +109,14 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the headless default: Claude uses its bypass mode, Codex uses
   `--dangerously-bypass-approvals-and-sandbox`. For a Codex reviewer, use `--sandbox workspace-write` and cwd under the hub home, as in *Reviews* above.
   Codex hook trust is separate: see `docs/codex.md`; read the returned errors when a restricted operation fails.
+- **MCP servers.** A Claude executor loads no MCP server by default (`AGENT_HUB_SPAWN_MCP`, default `none`): every
+  server's tool list sits in each turn's context and adds startup time. Decide per task when writing the brief ("Tools"
+  line of the template): a task that needs a browser check, a docs lookup or another MCP server (a GitLab or DB server)
+  is launched with `--mcp inherit` (the user's servers, plugins and connectors) or `--mcp FILE[,FILE]` (only the servers
+  of those MCP config files); any other task gets nothing. A repository whose agents always need them sets `inherit`
+  in its `.agent-hub/config.json`. The start line in the journal and `--dry-run` name `MCP inherit` / `MCP only <files>`
+  when the default was overridden and say nothing for `none`. A resume keeps the launch choice; the hub's own headless
+  successor (autopilot) always inherits. Codex has no equivalent switch.
 - A brief follows `<plugin-root>/templates/brief-executor-template.md` (short); the advanced one,
   `brief-executor-advanced.md`, adds production permissions, size limits and evidence rules for teams that need them.
   The hub fills "Owner decisions — do not reopen" from `ask search <topic words>`. When an executor's result disagrees

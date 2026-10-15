@@ -682,7 +682,7 @@ def pace_digest(stage: str) -> str:
         if limit_pace.mode() == "off":
             return ""
         paces = limit_pace.read_all()
-        return "Limit pace (before spending; full advice: agent-top --once, agent spawn --dry-run):\n" + "\n".join(
+        return "Limit pace (choose this launch: agent spawn --dry-run):\n" + "\n".join(
             limit_pace.compact(e, paces, stage) for e in limit_pace.ENGINES)
     except Exception as e:  # noqa: BLE001 — the line says it is missing and why, so a broken advisor is not silent
         return f"Limit pace: unavailable ({type(e).__name__})"

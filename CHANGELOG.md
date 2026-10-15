@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
+  the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
+  the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner
+  questions (other stages only when the owner names them) and launches a separate interactive session: in Claude
+  Desktop it prints `start_session` arguments with `initiation: "user_asked"` for the hub to call in the owner's turn
+  (the `session_cards` hook lets that through in a hub, and still refuses cards); in the Codex app `create_thread`
+  arguments for the app agent; in a terminal or background Claude hub it starts `claude --bg --remote-control
+  <S>-grill` itself and prints the link; in a terminal Codex hub the command for the owner. The session registers as
+  role `grill` (`hub grill join`; visible in agent-top, reachable with `tell S --role grill`; one per stage), grills
+  with the companion skill, records every answer in `ask` and ends with `hub grill done`: one journal line `@hub
+  GRILLED <answered, withdrawn, open, new> — <summary>` counted from the register, then the role is retired. `GRILLED`
+  is a wake word of `jwait --hub-events`; the hub acts on `ask list --pending`. A grilling about a new topic the owner
+  raises in the hub still runs in the hub. The hub skill, its references and the grilling note of the prompt hook say so.
+  Generated commands always carry the absolute hub home. All launches, including manual sessions confirmed by the owner, bind to the joining session's full
+  identity (in either order); bg handles resolve to full sessionIds. Administrative registration needs a journaled
+  reason; pending cancellation needs its launch id and a reason. Delegation clears the hub's grilling marker so its
+  automatic handoff can proceed. Recovery of an uncertain bg launch clears only that launch's original grilling
+  marker once it activates, preserving a newer grilling or successor.
+
 ## 1.0.9 — 2026-10-15
 
 - **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling

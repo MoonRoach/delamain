@@ -102,9 +102,12 @@ with its `--since HH:MM`, handle what it shows, keep one waiter. Going quiet on 
   B: …" — and the default you take if no answer comes.
 - Grilling on request (грилинг, погриль, grill me): load the `grilling` skill and run it as written until the topic's
   frontier is empty; the planning limit below and the A/B format do not shorten it. A question recorded with `ask add`
-  keeps the recommendation as a recommendation: it waits for the owner, never acts on silence. Declare it: `hub grilling
-  start` before the first round, `hub grilling end` once the frontier is empty or the owner stops it — meanwhile nothing
-  hands you over automatically.
+  keeps the recommendation as a recommendation: it waits for the owner, never acts on silence. Over the stage's open
+  questions it runs in a session of its own, not in yours: `hub grill --stage <S>` and do what it prints (Desktop:
+  `start_session` in the owner's turn; Codex app: `create_thread`; else hand the owner the link); on `@hub GRILLED` act
+  on `ask list --pending`. A new topic the owner raises here is grilled here, unless they say otherwise
+  (`references/owner-and-planning.md`): `hub grilling start` before the first round, `hub grilling end` when it ends;
+  meanwhile automatic handoffs wait.
 
 ## Planning a stage: agree the business result before autonomous work
 

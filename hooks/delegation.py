@@ -225,8 +225,10 @@ def grilling_context(prompt) -> str | None:
             "business result is clear\" limit do not apply to a grilling the owner asked for, and its decisions wait "
             "for the owner's answers: a recommendation is not a default taken on silence. If the prompt only mentions "
             "grilling, ignore this note. If the skill is not installed, say so once and follow the same method. In a "
-            "stage hub, run `hub grilling start` before the first round and `hub grilling end` once the frontier is "
-            "empty or the owner stops it: until then nothing hands the hub over automatically.")
+            "stage hub, a grilling over the stage's open questions runs in a session of its own instead: run `hub grill "
+            "--stage <S>` and do what it prints, without loading the skill here; a new topic the owner raises in the "
+            "hub is grilled here, unless the owner says otherwise: run `hub grilling start` before the first round and "
+            "`hub grilling end` once the frontier is empty or the owner stops it; until then automatic handoffs wait.")
 
 
 def emit(event: str, **fields) -> None:

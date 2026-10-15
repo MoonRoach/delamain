@@ -66,8 +66,8 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending. EXIT, ENDED and
 # REVIEWED are the words `agent` itself writes when a run ends (EXIT: abnormally or killed; ENDED: normally, with a
 # result but no status word of the agent's own; REVIEWED: the same for a review role), so they never count as the
-# agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
-STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
+# agent's own status. GRILLED is the report of a grilling session (`hub grill done`). $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
+STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED|GRILLED)\b|AWAITING ANSWER"
 AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
 # How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 50m or 1h30m).
 # The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it. Claude

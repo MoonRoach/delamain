@@ -17,9 +17,13 @@
   hub close    --stage stage-a [--why TEXT] [--force] [--dry-run]
   hub effort   [--session ID] [--json]
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
+  hub grill    [open] --stage stage-a [--questions ID,…] [--also-stage S] [--topic T] [--owner-words T]
+               [--host auto|desktop|codex-app|bg|manual] [--model M] [--effort E] [--again] [--dry-run]
+  hub grill    bind --stage stage-a --launch ID --session FULL_ID
+  hub grill    join --stage stage-a --launch ID --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
-Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename and close need a stage, `reviewer`
+Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename, close and grill need a stage, `reviewer`
 puts it into the `agent spawn` line it prints, `home` and `effort` ignore it, `grilling` finds it from the session.
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
@@ -166,6 +170,11 @@ the hub home's config.json (off by default); agent flags, environment and reposi
 Terminal/detached CLI selection starts a detached Codex hub in its own worktree from the main checkout, preserving
 model, effort and supported sandbox restrictions. It uses agent send and the captured result instead of Remote
 Control. Full access maps to bypassing approvals and sandbox; native guards remain enabled (docs/codex.md).
+grill launches a separate interactive session that grills the owner over the stage's open questions, records the answers
+in the `ask` register and reports to the hub with one line "@hub GRILLED …" (bin/grill_session.py has the details):
+open (default) writes the brief and launches by host — Claude Desktop: start_session arguments with initiation user_asked
+for the hub to call; Codex app: create_thread arguments; another Claude host: `claude --bg --remote-control` and its link;
+another Codex host: the command for the owner. bind records the full native launch result; join registers the new session as role `grill`; done reports and retires it.
 grilling marks that the stage's hub is grilling the owner (bin/grilling.py): start, run by the hub before the first round
 (in Claude Code the budget hook also marks it when the grilling skill loads), end once the topic's frontier is empty or
 the owner stops it, status to show it. --session: the hub's session (default this one; the owner at a terminal: the
@@ -217,6 +226,7 @@ import autopilot  # noqa: E402
 import grilling  # noqa: E402
 import engines
 import hubcore as hc  # noqa: E402
+import grill_session  # noqa: E402
 import hubhome  # noqa: E402
 import reviewers  # noqa: E402
 import session_effort  # noqa: E402
@@ -2200,10 +2210,11 @@ def main(argv: list) -> int:
     hm.add_argument("--to", dest="dst", metavar="DIR", help="default: the resolved hub home (~/agent-hub when that is "
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
+    grill_session.add_parser(sub, stage_opt)
     a = p.parse_args(argv)
     a.argv = list(argv)  # a MOVE message repeats the command line
     explicit, a.stage = a.stage, a.stage or os.environ.get("HUB_STAGE") or None
-    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed", "rename", "close")
+    needs_stage = a.cmd in ("start", "takeover", "handoff", "succeed", "rename", "close", "grill")
     if needs_stage and not a.stage:
         p.error(f"{a.cmd}: --stage is required (or set HUB_STAGE)")
     if a.stage and not hc.STAGE_RE.fullmatch(a.stage):  # check_stage does the rest for the commands that use the stage
@@ -2212,7 +2223,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
-            "close": cmd_close, "grilling": cmd_grilling,
+            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling,
             "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),

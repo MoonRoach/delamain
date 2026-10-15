@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.13 — 2026-10-15
+
 - **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
   and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
   discovery ignores inherited `GIT_*` selectors. Spawn/resume restores pruned leaf parents outside the sandbox;

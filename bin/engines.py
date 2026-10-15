@@ -149,8 +149,8 @@ def hook_args(cwd=None):
 def worktree_git_roots(cwd):
     """Commit needs the linked worktree's index/HEAD plus shared objects and branch refs.
 
-    Keep common config, hooks and other worktrees outside the write grant. A normal
-    checkout already has its Git directory under cwd and needs no extra roots.
+    Keep common config, hooks and other worktrees outside the write grant. Only
+    linked worktrees get extra roots; ordinary checkout policy is unchanged.
     """
     try:
         result = subprocess.run(

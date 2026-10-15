@@ -61,10 +61,10 @@ journal. The Codex-only delivery rules are in [codex-hub.md](codex-hub.md#talkin
   - Claude in a terminal or a background session: it starts `claude --bg --remote-control <S>-grill` itself; give the
     owner the Remote Control link it prints.
   - Codex: `references/codex-hub.md` (*Grilling session on Codex*).
-  The new session registers as role `grill` (`hub grill join`), grills with the companion skill, records every answer
+  The new session registers as role `grill` (`hub grill join` with the launch id of its brief), grills with the companion skill, records every answer
   in the register (`ask close`, `ask withdraw`, `ask add --by grill`, `ask decided` only when the owner delegates)
   and ends with `hub grill done`, which writes one line `@hub GRILLED <answered, withdrawn, open, new> — <summary>` and
-  retires the role. That line wakes your `jwait`; act on the answers (`ask list --pending --stage <S>`, then `ask
+  retires the role. That line wakes your `jwait`; act on the answers (the `ask list --pending` it names, then `ask
   done`). One grilling session per stage: `hub grill` refuses while one is registered or a launch has not joined yet
   (30 min; `--again` replaces a launch that never joined; `hub grill done --stage <S> --why "…"` ends one that went
   away). A grilling about a new topic the owner raises in the hub stays in the hub, unless the owner says otherwise.

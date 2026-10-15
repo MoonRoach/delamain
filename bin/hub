@@ -18,7 +18,7 @@
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub grill    [open] --stage stage-a [--questions ID,…] [--also-stage S] [--topic T] [--owner-words T]
                [--host auto|desktop|codex-app|bg|manual] [--model M] [--effort E] [--again] [--dry-run]
-  hub grill    join --stage stage-a --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
+  hub grill    join --stage stage-a --launch ID --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
 Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename, close and grill need a stage, `reviewer`

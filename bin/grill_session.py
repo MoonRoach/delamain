@@ -320,9 +320,12 @@ def row_id(r: dict) -> str:
     return r.get("id") or r.get("sessionId") or ""
 
 
-def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int, before: set) -> Optional[str]:
+def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int, before: Optional[set]) -> Optional[str]:
     """The id of the session this start made: named so, started since `since_ms`, and not listed before the start (a
-    launch replaced a moment ago has the same name and may have started within the clock slack)."""
+    launch replaced a moment ago has the same name and may have started within the clock slack). None also when the
+    list before the start could not be read: then no listed session can be told apart from an earlier one."""
+    if before is None:
+        return None
     hits = sorted((r for r in bg_rows(cli, cwd, names) or [] if row_id(r) not in before
                    and isinstance(r.get("startedAt"), (int, float)) and r["startedAt"] >= since_ms),
                   key=lambda r: r["startedAt"])
@@ -332,7 +335,8 @@ def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int, before: set) -> 
 def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
     """(background session id, Remote Control link or "") of a `claude --bg` start. Failure when it surely did not
     start; Unsure when it hung or printed no id and `claude agents` does not list it either."""
-    before = {row_id(r) for r in bg_rows(cli, cwd, names) or []}
+    rows = bg_rows(cli, cwd, names)
+    before = None if rows is None else {row_id(r) for r in rows}
     since_ms = int(time.time() * 1000) - 2000  # a little slack for the daemon's clock
     res = run_cli(cli, argv, cwd, autopilot.BG_TIMEOUT_S)
     out = autopilot.clean(res.stdout + "\n" + res.stderr)

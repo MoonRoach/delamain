@@ -240,6 +240,10 @@ printf 'late\nlate\n' > $O/seq
 FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgp.out 2>&1; check $? 1 "bg: only a session listed before the start: not taken, exit 1"
 grep -q "bg-from-list" $O/bgp.out; check $? 1 "…its id is not recorded"
 HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+printf 'fail\nlate\n' > $O/seq
+FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgf.out 2>&1; check $? 1 "bg: the list before the start unreadable: no id recovered, exit 1"
+grep -q "bg-from-list" $O/bgf.out; check $? 1 "…no id is recorded"
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
 FAKE_BG=noid FAKE_AGENTS=none grill --stage stage-a --host bg > $O/bgu.out 2>&1; check $? 1 "bg printed no id and nothing is listed: exit 1"
 grep -q "may still come up" $O/bgu.out; check $? 0 "…says the session may still come up"
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["host"]=="bg" and not p.get("bg_id"), p' $R/stage-a/grill.json

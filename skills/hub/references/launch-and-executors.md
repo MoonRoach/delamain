@@ -101,6 +101,14 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the headless default: Claude uses its bypass mode, Codex uses
   `--dangerously-bypass-approvals-and-sandbox`. For Codex read-only review, pass `--sandbox read-only` instead.
   Codex hook trust is separate: see `docs/codex.md`; read the returned errors when a restricted operation fails.
+- **MCP servers.** A Claude executor loads no MCP server by default (`AGENT_HUB_SPAWN_MCP`, default `none`): every
+  server's tool list sits in each turn's context and adds startup time. Decide per task when writing the brief ("Tools"
+  line of the template): a task that needs a browser check, a docs lookup or another MCP server (a GitLab or DB server)
+  is launched with `--mcp inherit` (the user's servers, plugins and connectors) or `--mcp FILE[,FILE]` (only the servers
+  of those MCP config files); any other task gets nothing. A repository whose agents always need them sets `inherit`
+  in its `.agent-hub/config.json`. The start line in the journal and `--dry-run` name `MCP inherit` / `MCP only <files>`
+  when the default was overridden and say nothing for `none`. A resume keeps the launch choice; the hub's own headless
+  successor (autopilot) always inherits. Codex has no equivalent switch.
 - A brief follows `<plugin-root>/templates/brief-executor-template.md` (short); the advanced one,
   `brief-executor-advanced.md`, adds production permissions, size limits and evidence rules for teams that need them.
   The hub fills "Owner decisions — do not reopen" from `ask search <topic words>`. When an executor's result disagrees

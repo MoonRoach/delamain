@@ -371,18 +371,19 @@ def bg_wait_ceiling(cwd=None) -> str:
 
 
 MCP_CHOICES = ("inherit", "none")
+MCP_DEFAULT = "none"  # an executor loads no MCP server unless its task needs one; "inherit" brings them back
 
 
 def mcp_choice(given, cwd) -> object:
     """The MCP servers of a Claude agent's runs: "inherit" (the user's config, enabled plugins and claude.ai connectors,
     as an interactive session gets them), "none" (--strict-mcp-config: no server at all), or a list of absolute paths
     of MCP config files (--strict-mcp-config --mcp-config FILE…: only their servers). `given` is --mcp, else
-    AGENT_HUB_SPAWN_MCP; files are comma-separated, a relative one of --mcp is relative to the working directory. A
+    AGENT_HUB_SPAWN_MCP, else MCP_DEFAULT; files are comma-separated, a relative one of --mcp is relative to the working directory. A
     repository's config.json — its .agent-hub/config.json, or a hub home inside it (repository_home) — may choose
     inherit or none only: a file's servers are commands the CLI would start."""
     raw, origin = (given, "flag") if given else hc.setting_origin("AGENT_HUB_SPAWN_MCP", cwd=cwd)
     name = "--mcp" if origin == "flag" else "AGENT_HUB_SPAWN_MCP"
-    raw = (raw or "inherit").strip()
+    raw = (raw or MCP_DEFAULT).strip()
     if raw in MCP_CHOICES:
         return raw
     cfg = None
@@ -681,7 +682,7 @@ def cmd_spawn(a) -> int:
         hc.warn(held)
     if a.dry_run:
         print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}"
-              f"{', MCP ' + mcp_text(mcp) if mcp and mcp != 'inherit' else ''}; nothing was started or written")
+              f"{', MCP ' + mcp_text(mcp) if mcp and mcp != MCP_DEFAULT else ''}; nothing was started or written")
         return 0
     d = agent_dir(stage, a.role)
     if (d / "meta.json").exists():
@@ -740,7 +741,7 @@ def cmd_spawn(a) -> int:
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
-                               + (f", MCP {mcp_text(mcp)}" if mcp and mcp != "inherit" else "")
+                               + (f", MCP {mcp_text(mcp)}" if mcp and mcp != MCP_DEFAULT else "")
                                + (f", reason: {reason}" if reason else "")
                                + (f", {pace_note}" if pace_note else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
@@ -1274,7 +1275,7 @@ def main(argv: list) -> int:
     s.add_argument("--brief", required=True)
     s.add_argument("--mcp", metavar="inherit|none|FILE[,FILE]",
                    help="Claude: the MCP servers of the agent — inherit (the user's config, plugins and claude.ai "
-                        "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else inherit")
+                        "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else none")
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
                         "on a new branch from origin's default branch (--base)")

@@ -22,7 +22,10 @@ is for the selected runtime host. Native Windows Claude integration is not estab
 ## Install in Codex
 
 Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and
-configuration use the standard-library TOML parser. The Claude engine continues to support Python 3.10+.
+configuration use the standard-library TOML parser. Native hooks use `bin/run-python --min-version 3.11` to find
+a compatible runtime even when `python3` is older. Set `DELAMAIN_PYTHON` to an executable path or command name
+to select it explicitly. See [Python selection](install.md#selecting-python-for-terminal-tools) for lookup order
+and terminal CLI usage. The Claude engine continues to support Python 3.10+ with its existing hook commands.
 
 Clone the repository if you do not have a local checkout yet:
 

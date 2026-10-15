@@ -102,6 +102,13 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.
 
+Idle compaction (Claude only, whatever the answers): Claude Code 2.1.290+ compacts a conversation over 200K tokens
+left idle ~54 minutes (on by default since 2.1.299), and a hub waiting on `jwait` would go on from a summary instead of
+handing over. Read `idleCompaction` in the managed settings, the project's `.claude/settings.local.json` and
+`.claude/settings.json`, and `~/.claude/settings.json` (the first file that sets it decides). Unless it is `false`,
+OFFER to add `"idleCompaction": false` to `~/.claude/settings.json` (other keys kept): show the exact edit and ask first;
+with `--defaults` or headless, list it. `hub start` and `hub takeover` print the same warning from the same check.
+
 For question 9, on yes (the hub home's settings are hub-wide; a repository's `config.json` cannot set them):
 1. `watchdog install` — writes the job (`<hub home>/.state/watchdog/run.sh`, a launchd plist or one crontab line) and
    sets `"AGENT_HUB_WATCHDOG": true` in the hub home's `config.json`; `watchdog status` shows it.

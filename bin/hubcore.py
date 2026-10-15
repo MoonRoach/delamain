@@ -40,6 +40,10 @@ MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 # to older models. `haiku` is haiku-5-5 only from 2.1.296; the minimum is not raised for it, since both Haiku models take
 # `--effort`. The plugin pins no ids: the alias follows the CLI.
 MIN_CLI_VERSION = (2, 1, 287)
+# Managed settings files, which win over every other settings file (Claude Code's settings precedence): macOS, Linux.
+MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+                    Path("/etc/claude-code/managed-settings.json"))
+IDLE_CHECK_OFF_ENV = "AGENT_HUB_NO_IDLE_COMPACTION_CHECK"  # environment only, like NO_NAMING: scripted environments, tests
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -65,9 +69,17 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
 STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
 AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
-# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
-# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
-DEFAULT_JWAIT_FOR = "55m"
+# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 50m or 1h30m).
+# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it. Claude
+# Code 2.1.299 also compacts a 200K+ conversation left idle ~54 minutes (idle_compaction_warning), and the old 55m wait
+# always ended after that point; a hub that did not turn the compaction off would have woken up on a summary. 50m ends
+# before it, and costs about one extra wake an hour, a turn that reads a warm cache.
+DEFAULT_JWAIT_FOR = "50m"
+# Claude Code's idle compaction (2.1.290+) starts at 200K tokens unless this raises the minimum; a detached `claude -p` worker
+# (`agent spawn`/`agent send`) that waits on a `jwait` should never be compacted behind its hub's back (the owner forbids
+# compaction), so it gets a minimum above any context window. The caller's own value wins. Older CLIs ignore the variable.
+IDLE_COMPACT_ENV = "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"
+IDLE_COMPACT_NEVER = "100000000"
 MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
@@ -115,6 +127,10 @@ HUB_WIDE_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 JSON_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 # Silence after which the hub opens its reply with `ask inbox` (bin/ask; a duration like 3h): hub home only.
 HUB_WIDE_KEYS += ("AGENT_HUB_OWNER_DIGEST_AFTER",)
+# The limit-pace advisor (bin/limit_pace.py): on | warn | off, and the owner's engine decision per stage. Hub home only:
+# a repository must not unlock a stage the owner locked to an engine.
+HUB_WIDE_KEYS += ("AGENT_HUB_LIMIT_PACE", "AGENT_HUB_STAGE_ENGINES")
+JSON_KEYS += ("AGENT_HUB_STAGE_ENGINES",)
 
 
 # ---------------------------------------------------------------- the hub home
@@ -362,7 +378,8 @@ def project_warnings(cwd=None) -> list:
 # place is refreshed, a bad one gets a fresh worktree of origin's default branch and the order to move there (exit 4).
 
 NO_PROJECT_ENV = "AGENT_HUB_NO_PROJECT"  # environment only (a cloned repository must not switch the rule off)
-STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"}
+STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"},
+#                           {"closed": {"at", "why", "by", "hub"}} while the stage is closed (`hub close`)
 LOCATION_EXIT = 4
 FETCH_TIMEOUT_S = 30
 HUB_WORKTREES = ".claude/worktrees"  # <repo>/…/<stage>-hub-<n>, where Claude Code puts its own worktrees
@@ -449,6 +466,60 @@ def record_stage_project(stage: str, repo: Optional[Path]) -> None:
     else:  # the latest choice wins: a recorded repo would overrule it at the next folderless start
         want = dict(data, no_project=True)
         want.pop("repo", None)
+    if want != data:
+        atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
+
+
+def project_cwd_problem(stage: str, cwd) -> Optional[str]:
+    """Why `cwd` is no place to start the stage's successor hub from, None when it is: outside git, or in another
+    repository than the stage's recorded project. A stage with no project (`--no-project`, or AGENT_HUB_NO_PROJECT in the
+    environment) accepts any directory."""
+    if truthy(os.environ.get(NO_PROJECT_ENV)) or stage_record(stage).get("no_project"):
+        return None
+    here = main_tree(cwd)
+    if here is None:
+        if _git(cwd, "rev-parse", "--git-dir") is None:  # a timeout or no git at all says nothing about the directory
+            return f"git did not answer for {cwd} (not installed, or no reply in 5 s): cannot tell whether it is in a repository"
+        return f"{cwd} is not inside a git repository"
+    repo = stage_record(stage).get("repo")
+    project = main_tree(Path(str(repo)).expanduser()) if repo else None
+    if project is not None and not _same(here, project):
+        return f"{cwd} is in {here}, not in a worktree of the project of stage {stage} ({project})"
+    return None
+
+
+def stage_project(stage: str) -> Optional[Path]:
+    """The main checkout of the stage's recorded project (stage.json `repo`); None when the stage has none, or it is gone."""
+    repo = stage_record(stage).get("repo")
+    if not repo or stage_record(stage).get("no_project"):
+        return None
+    try:
+        return main_tree(Path(str(repo)).expanduser())
+    except (RuntimeError, OSError):  # `~user` that does not exist
+        return None
+
+
+def registered_worktree(stage: str) -> Optional[Path]:
+    """The worktree the stage's registered hub recorded at takeover (roles.json, hub.worktree) while it is still a good
+    place for a successor (project_cwd_problem); None when nothing was recorded or it is gone."""
+    path = (roles_load(stage)["roles"].get("hub") or {}).get("worktree")
+    if not path or not Path(str(path)).is_dir() or project_cwd_problem(stage, path):
+        return None
+    return Path(str(path))
+
+
+def stage_closed(stage: str) -> Optional[dict]:
+    """The stage's `closed` record ({"at", "why", "by", "hub"}) once `hub close` closed it, else None. A closed stage
+    is left out of agent-top's default view, the watchdog, the night queue and the questions summary; a takeover
+    (or `hub start`) reopens it."""
+    rec = stage_record(stage).get("closed")
+    return rec if isinstance(rec, dict) else None
+
+
+def record_stage_closed(stage: str, rec: Optional[dict]) -> None:
+    """Write the stage's `closed` record into stage.json; None removes it (the stage is open again)."""
+    data = stage_record(stage)
+    want = dict(data, closed=rec) if rec else {k: v for k, v in data.items() if k != "closed"}
     if want != data:
         atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
 
@@ -654,9 +725,13 @@ def check_location(stage: str, n: int, rerun: str, repo_arg: Optional[str] = Non
     else:
         print(f"{'[plan] would create' if dry_run else 'Created'} the worktree {path} on a new branch from {base} {sha[:7]}.")
     print("Move this session there before anything else:\n"
-          f"  Claude Code: EnterWorktree with path={path}; if it refuses (the session was launched outside the "
-          "repository, e.g. a Desktop session under \"No folder\"), mcp__ccd_directory__change_directory with that "
-          "path (it takes effect when the turn ends: use absolute paths until then).\n"
+          f"  Claude Code: EnterWorktree with path={path}. If it refuses (the session was launched outside the "
+          "repository, e.g. a Desktop session under \"No folder\"): mcp__ccd_directory__change_directory with "
+          f"path={R} — the main clone, not the worktree: Desktop files a session in the sidebar under the folder it "
+          "moved to, and the main clone is usually trusted already (a new worktree waits for the owner's trust prompt, "
+          "which expires in 5 minutes). It applies when the turn ends: start no background command, end the turn "
+          f"at once; next turn check `pwd` is {R}, call EnterWorktree with path={path}, make no edits in the main "
+          "clone.\n"
           f"  Codex: run every later command with the workdir {path}.\n"
           f"Then re-run: {rerun}")
     return Located(LOCATION_EXIT, R, "")
@@ -962,7 +1037,7 @@ def status_pattern(exit_word: bool = True) -> str:
 
 
 def jwait_for() -> str:
-    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 50m). A value that is not a duration between zero
     (exclusive) and 24h is reported on stderr and replaced by the default."""
     raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
     if not raw:
@@ -972,7 +1047,7 @@ def jwait_for() -> str:
             return raw
     except (UsageError, OverflowError):
         pass
-    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 50m or 1h30m between 1s and 24h ({raw!r}); "
           f"using {DEFAULT_JWAIT_FOR}")
     return DEFAULT_JWAIT_FOR
 
@@ -981,10 +1056,26 @@ def truthy(raw: Optional[str]) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def misleading_claude_config(value) -> bool:
+    """Whether CLAUDE_CONFIG_DIR names ~/.claude while ~/.claude.json exists. Not a neutral value: unset, the claude
+    CLI reads ~/.claude.json; set, <dir>/.claude.json — here a file without the owner's trusted folders and login, so
+    every `claude --bg --resume` failed "Workspace not trusted" (a watchdog job installed from a Codex shell, 08.10).
+    Without ~/.claude.json the directory may hold the real config, and it is kept."""
+    try:
+        home = Path.home()
+        return (bool(value) and Path(value).expanduser().resolve() == (home / ".claude").resolve()
+                and (home / ".claude.json").exists())
+    except (OSError, RuntimeError):
+        return False
+
+
 def child_env(extra: Optional[dict] = None) -> dict:
     """Environment for calling the sibling tools and the agents: the resolved home pinned in $AGENT_HUB_HOME (a child
-    in another directory must not resolve another one), this bin/ first on PATH and in $HUB_BIN."""
+    in another directory must not resolve another one), this bin/ first on PATH and in $HUB_BIN; a misleading
+    CLAUDE_CONFIG_DIR (misleading_claude_config) is dropped, so the claude CLI reads the owner's own config."""
     env = dict(os.environ)
+    if misleading_claude_config(env.get("CLAUDE_CONFIG_DIR")):
+        del env["CLAUDE_CONFIG_DIR"]
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
     env["HUB_BIN"] = str(BIN)  # for a brief written by an older run: rebuilt at every spawn and resume, so it follows updates
@@ -1130,6 +1221,67 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
             "fable) resolve to older models and the agent-top mod does not run")
 
 
+def idle_compaction_source(cwd: Optional[Path] = None) -> tuple:
+    """(value, file) of the settings file that decides `idleCompaction` for a session started in `cwd`, in Claude
+    Code's precedence: managed, the local project settings (.claude/settings.local.json, which a linked worktree reads
+    from its main checkout), the shared ones (`cwd`/.claude/settings.json), the user's ($CLAUDE_CONFIG_DIR, else
+    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Not visible from here:
+    command-line `--settings` (what `hub succeed` gives its background successors) and managed settings that do not
+    come from a file (MDM, server-delivered)."""
+    files = list(MANAGED_SETTINGS)
+    if cwd is not None:
+        local = [(main_tree(cwd) or cwd) / ".claude" / "settings.local.json", cwd / ".claude" / "settings.local.json"]
+        files += list(dict.fromkeys(local)) + [cwd / ".claude" / "settings.json"]
+    files.append(Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "idleCompaction" in data:
+            return data["idleCompaction"], f
+    return None, None
+
+
+def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
+    """One line unless the settings that decide it (idle_compaction_source) turn idle compaction off. Claude Code
+    2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
+    `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
+    handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
+    to a CLI without the feature. $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it (scripted environments, the tests)."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    value, where = idle_compaction_source(cwd)
+    if value is False:
+        return None
+    user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    state = f"{where} sets \"idleCompaction\": {json.dumps(value)}" if where else "no settings file sets \"idleCompaction\""
+    return (f"Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle ~54 min, and {state}: a hub waiting "
+            f"on a long jwait would go on from a summary instead of handing over — set \"idleCompaction\": false in "
+            f"{where or user} (the background successors of `hub succeed` get it on their command line)")
+
+
+def desktop_compaction_note() -> Optional[str]:
+    """One line for a hub that runs in Claude Desktop (`hub start`/`takeover` with a local_… session), unless
+    $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1. Desktop runs its own bundled CLI, which can be older than the terminal's
+    (2.1.295 against 2.1.299 on 14.10); neither the changelog nor the docs say whether that session reads
+    `idleCompaction` from settings.json, whether the setting reaches it at all, or whether Desktop compacts on a schedule
+    of its own, and nothing here can observe it. So the handoff threshold of the context budget is what has to come
+    first, and the line says where that threshold stands against the 200K minimum of idle compaction."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    cli = desktop_cli()
+    warn = int_setting("AGENT_HUB_CONTEXT_WARN", 300_000)
+    version = fmt_version(cli[0]) if cli else "version unknown"
+    where = (f"the context budget warns at {warn // 1000}k tokens, above the 200K at which idle compaction starts: set "
+             f"AGENT_HUB_CONTEXT_WARN to 150000 in the hub home's config.json (hub-wide) if the handoff must come first"
+             if warn >= 200_000 else f"the context budget warns at {warn // 1000}k tokens, below the 200K at which idle "
+             "compaction starts")
+    return (f"this hub runs in Claude Desktop, with Desktop's own Claude Code ({version} bundled here); whether it honours "
+            f"\"idleCompaction\": false from settings.json, or compacts on its own, is not verified and cannot be seen from "
+            f"here, so the handoff threshold has to fire before any compaction: {where}")
+
+
 def plugin_tools() -> list:
     """The plugin's commands: every executable file of this bin/ without an extension (the .py files are modules)."""
     try:
@@ -1173,6 +1325,11 @@ def host_engine() -> str:
     if os.environ.get("CODEX_THREAD_ID", "").strip():
         return "codex"
     return os.environ.get("AGENT_HUB_ENGINE", "").strip() or "claude"
+
+
+# One line for a hub's context (SessionStart hook hooks/session_cards.py; the digest of `hub start` / `hub takeover`).
+DESKTOP_CARDS_LINE = ("In this hub, Desktop's follow-up-card rules are superseded: follow-ups go to `agent spawn` or "
+                      "`ask add`; `wrap_up` is fine.")
 
 
 def plugin_runtime_line(engine=None) -> str:

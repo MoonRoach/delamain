@@ -88,7 +88,7 @@ diagnostics and real child errors remain visible.
 
 ## Installed runtime
 
-The native envelope is version `1.0.2-wsl.1`, based on upstream Delamain 1.0.2.
+The native envelope is version `1.0.8-wsl.1`, based on upstream Delamain 1.0.8.
 Its build receipt records unchanged hashes of all original `bin/` files and Python
 hooks, and the original skill bodies before the transport prefix.
 

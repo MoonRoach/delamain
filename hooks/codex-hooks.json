@@ -6,17 +6,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/questions.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/questions.py\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" session-start",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" session-start",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/path_shadow.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/path_shadow.py\"",
             "timeout": 10
           }
         ]
@@ -28,13 +28,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py\"",
-            "timeout": 5
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py\"",
-            "timeout": 5
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py\"",
+            "timeout": 10
           }
         ]
       },
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/handoff_size.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/handoff_size.py\"",
             "timeout": 10
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" pre-tool",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" pre-tool",
             "timeout": 10
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
             "timeout": 10
           }
         ]
@@ -74,12 +74,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" prompt",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/delegation.py\" prompt",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
             "timeout": 10
           }
         ]
@@ -91,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
             "timeout": 10
           }
         ]

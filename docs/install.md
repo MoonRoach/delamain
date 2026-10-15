@@ -38,6 +38,22 @@ After Claude installation, follow the activation instruction in the install summ
 Codex permission mappings, detached defaults and restricted reviewer settings. Full access and hook trust
 are separate controls.
 
+### Selecting Python for terminal tools
+
+The optional `bin/run-python` launcher runs a tool with Python 3.10+ without changing your system Python:
+
+```sh
+/absolute/path/to/delamain/bin/run-python /absolute/path/to/delamain/bin/agent-top --json
+```
+
+It tries `python3`, then versioned executables from `python3.15` down to `python3.10`, then `python`, on the
+caller's `PATH`, using the first compatible interpreter. Set `DELAMAIN_PYTHON` to an executable path or command
+name to choose one explicitly; an unavailable or incompatible override fails instead of falling back.
+Paths with spaces are supported. Nothing is downloaded or installed.
+Use `--min-version 3.11` before the script for Codex tools. Native Codex hooks use this minimum automatically;
+the Claude hook manifest and direct CLI shebangs remain unchanged and still use `python3` on `PATH`.
+An agent's exit journal uses the interpreter that launched `agent`, even if the child's `PATH` differs.
+
 ### What installing changes
 
 - **Tools on `PATH`.** While the plugin is enabled its `bin/` is on the Bash tool's `PATH`, so Claude can call `agent`,
@@ -65,6 +81,11 @@ are separate controls.
     only in the hub home, in repositories that have `.agent-hub/`, under the directories of the hub-wide setting
     `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
     project hears nothing from them.
+  - `session_cards` (before Claude Desktop's `start_session` / `hand_off_to_session`, and at session start) acts only in
+    a session registered as a stage's `hub`: it refuses cards (`initiation` `own_initiative` or `offer`) and forks, and
+    names `agent spawn`, `ask add` and `hub handoff` instead; a session the owner asked for (`user_asked`; a fork they
+    asked for: `user_asked` with `context` `fork`) and an accepted card (`proposal_id`) pass. `spawn_task` (the older
+    task-card tool) is refused the same way. Any other session, and any error of its own, is let through.
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
     `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
     time in the same places as `questions`, and once per distinct set of paths elsewhere.

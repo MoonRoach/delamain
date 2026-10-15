@@ -97,7 +97,7 @@ started PIDs/process groups and cleans up its helpers; do not use broad process-
 Detached/journal events use one canonical `jwait` through the host's yielded shell execution
 and continuation tools. Native children use native completion/wait tools. An unresolved
 native status is not death; actual completed events and results are evidence. For both
-sources, consume the report and apply [terminal follow-through](../skills/hub/SKILL.md#terminal-follow-through)
+sources, consume the report and apply [terminal follow-through](../skills/hub/references/codex-hub.md#terminal-follow-through)
 before waiting again. This workflow does not install polling, watchdogs or heartbeats.
 
 STOP, call budget and context checkpoints close an actor brief, not the approved stage.

@@ -42,6 +42,14 @@ Fail-open: any error of its own -> exit 0, no output.
 """
 from __future__ import annotations
 
+if __name__ == "__main__":  # fail-safe first, before anything that can fail: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 import json
 import os
 import re
@@ -340,7 +348,11 @@ def main() -> None:
     def plan(now_block: bool) -> str:
         model = ap.successor_model(None, path)
         mode = ap.configured_mode() or data.get("permission_mode") or None
-        return ap.instruction(hub_stage, model, mode, data.get("cwd") or None, now_block, fmt(block),
+        try:
+            cwd = ap.predecessor_cwd(hub_stage, data.get("cwd") or None)
+        except Exception:  # noqa: BLE001 — a broken registry must not lift the budget gate; `hub succeed` decides the directory
+            cwd = None
+        return ap.instruction(hub_stage, model, mode, cwd, now_block, fmt(block),
                               ap.hub_effort(data))
 
     if event == "PreToolUse":

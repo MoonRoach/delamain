@@ -256,8 +256,10 @@ class CodexHooks(unittest.TestCase):
             for handler in group['hooks']:
                 import shlex
                 argv = shlex.split(handler['command'])
-                name = Path(argv[1]).name
-                out.append((name, self.hook(name, tool, ti, args=argv[2:])))
+                assert Path(argv[0]).name == "run-python"
+                assert argv[1:3] == ["--min-version", "3.11"]
+                name = Path(argv[3]).name
+                out.append((name, self.hook(name, tool, ti, args=argv[4:])))
         return out
 
     def test_manifest_native_send_rules_and_level_zero_reactivation(self):

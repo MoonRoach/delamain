@@ -86,6 +86,10 @@ STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "
 # handoff outside the project, with nobody there to answer (smoke test, CLI 2.1.285). Everything else still asks — the
 # owner answers over Remote Control.
 HUB_ALLOW = ("hub takeover", "hub handoff", "hub succeed", "jlog", "jwait", "ask", "roles", "lock list", "agent status")
+# Every background successor, bypass or not: Claude Code 2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by
+# default since 2.1.299), and a hub waiting on a long `jwait` is such a conversation. The context budget then reads the
+# smaller post-compaction size (hooks/context_budget.py), so the hub goes on from a summary instead of handing over.
+NO_IDLE_COMPACTION = {"idleCompaction": False}
 LINK_WAIT_S = 90
 BG_TIMEOUT_S = 60  # one `claude --bg` call
 # How long a reservation of `hub succeed` / `--fallback` blocks the shift: login (30 s), up to three `claude --bg` tries
@@ -426,6 +430,21 @@ def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: 
     return " ".join(parts)
 
 
+def predecessor_cwd(stage: str, hint: Optional[str]) -> Optional[str]:
+    """The directory the budget hook's `hub succeed --cwd` names: the hub's registered worktree, else `hint` (the hook
+    input's directory, which drifts with the hub's shell) when it is a good place, else None (`hub succeed` then decides
+    and refuses a bad directory itself)."""
+    recorded = hc.registered_worktree(stage)
+    if recorded is not None:
+        return str(recorded)
+    project = hc.stage_project(stage)  # a hub registered before worktrees were recorded: the project is on file anyway
+    if project is not None:
+        return str(project)
+    if hint and hc.project_cwd_problem(stage, hint) is None:
+        return hint
+    return None
+
+
 def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], now_block: bool,
                 block_k: str, effort: Optional[str] = None) -> str:
     """The autopilot paragraph of the context budget's warning and deny reason. `effort`: what the hub runs at now (the
@@ -494,7 +513,7 @@ class Start(Exception):
 
 def followthrough_summary() -> str:
     """Point every successor surface at the hub skill's authoritative procedure."""
-    return """For Codex, apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
+    return """For Codex, apply the hub skill's Terminal follow-through (`references/codex-hub.md`): consume the report/result, verify resource ownership and
 remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
@@ -581,8 +600,9 @@ class Successor:
             argv += ["--effort", self.effort]
         if flag:
             argv += ["--permission-mode", flag]
-        if flag != "bypassPermissions":
-            argv += ["--settings", json.dumps(successor_settings(), separators=(",", ":"))]
+        settings = successor_settings() if flag != "bypassPermissions" else {}
+        settings.update(NO_IDLE_COMPACTION)
+        argv += ["--settings", json.dumps(settings, separators=(",", ":"))]
         return argv + [self.prompt()]
 
     def started(self, bg_id: str, mode: str) -> dict:
@@ -754,7 +774,8 @@ class CodexSuccessor(Successor):
 You are the next hub of stage `{self.stage}`. Your predecessor handed over automatically and stopped.
 The owner may be away; they reach you through `ask` and `agent send hub-{self.succ} "…"`.
 
-1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill), then run
+1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill) and its `references/codex-hub.md`
+   and `references/autopilot.md`, then run
    `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
 2. Run the digest's first `jwait` once unconditionally to replay handover events.
    {followthrough_summary()}
@@ -1265,6 +1286,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         for note in effort_notes:
             print(f"[plan] {note}")
         return 0
+    loud = None
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
     elif headless:
@@ -1281,8 +1303,13 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             return 0
         except Start as e:
             why = str(e)
-    hc.journal_append(stage, tag, f"auto-handoff: background successor not started — {why}; falling back to a "
-                                  "headless hub (agent spawn)")
+            loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
+                    "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
+                    f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
+    # a headless successor is the designed outcome for codex / --headless: no warning, and no advice to replace it
+    line = loud or f"auto-handoff: headless successor by design: {why}"
+    hc.journal_append(stage, tag, line)
+    print(line + "\n")
     phase = {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
              "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
              "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}
@@ -1384,7 +1411,8 @@ def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approva
 
 You are the automatic desktop successor for stage `{stage}`. Request `{req}`.
 Use the existing hub home `{hc.root()}` (pass AGENT_HUB_HOME explicitly to shell commands if not inherited).
-Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}` and the handoff `{handoff}`.
+Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}`, its `references/codex-hub.md` and `references/autopilot.md`,
+and the handoff `{handoff}`.
 Continue the unchanged Business DoD and human authority source/reference and scope recorded in that handoff.
 Consult these predecessor rule layers and the question register: {authority_sources}. Check standing explicit
 human instructions and revocation. Apply the hub skill's native authority check before any later context transfer;

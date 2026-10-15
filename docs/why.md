@@ -159,7 +159,7 @@ contexts, and what crosses from one hub to the next is a file you can read.
   to break: the journal is append-only, because rewriting it makes every watcher re-read it from the top.
 - **Waits are bounded.** A background Bash command gets 30 minutes by default and at most two hours unless you raise
   `BASH_MAX_TIMEOUT_MS`, and Claude Code stops background tasks, including processes they detached, when it exits
-  [9][10]. Give `jwait` a `--for` that fits that limit (the default is 55m, inside the one-hour prompt cache), and run `agent spawn` as an ordinary foreground call: it
+  [9][10]. Give `jwait` a `--for` that fits that limit (the default is 50m, inside the one-hour prompt cache and under the ~54 minutes after which Claude Code compacts an idle conversation), and run `agent spawn` as an ordinary foreground call: it
   returns as soon as the agent has written its first event.
 - **Small tasks do not need it.** A 30-minute change you watch from start to finish is one session, perhaps with a
   subagent for the search. Use Delamain when work outlives a session, runs in parallel or has to wait for something.

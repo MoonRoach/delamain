@@ -326,6 +326,15 @@ done
 echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/"}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a hook input with no prompt"
 echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":["/agent-hub:hub"]}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a prompt that is not a string"  # rename:keep
 fp "/agent-hub:hub take over" | python3 -c 'import json,sys; json.load(sys.stdin)'; check $? 0 "former name: the output is one JSON document"  # rename:keep
+# The owner asking for grilling: the hook names the companion skill, dial on or off (14.10: Russian free text did not load it)
+for pos in "давай сразу грилинг по открытым вопросам" "ещё не следуют грилл ми" "погриль меня по плану" "Grill me on this design" "грильни" "/mattpocock-skills:grill-me план" "do some grilling on the plan"; do
+  fp "$pos" > $R/gr.out
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "mattpocock-skills:grilling" in t and "until the frontier" in t and "not a default taken on silence" in t' $R/gr.out
+  check $? 0 "grilling: [$pos] names the grilling skill and its rounds"
+done
+for neg in "купил гриль на дачу" "гриль" "Сравни электрические грили" "Добавь grilled cheese в меню" "Проверь skills/grilling/SKILL.md" "how is it going?"; do
+  fp "$neg" > $R/gr2.out; check "$(wc -c < $R/gr2.out | tr -d ' ')" 0 "grilling, negative: nothing for [$neg]"
+done
 # the skill names and the plugin's name are read from the plugin, not listed in the hook
 FAKE=$R/fakeplug; mkdir -p $FAKE/skills/alpha $FAKE/.claude-plugin; ln -s "$T/../bin" $FAKE/bin; : > $FAKE/skills/alpha/SKILL.md
 echo '{"name": "fakeplug"}' > $FAKE/.claude-plugin/plugin.json

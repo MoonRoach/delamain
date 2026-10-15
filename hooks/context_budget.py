@@ -38,6 +38,12 @@ Settings (hub home config.json or environment; docs/reference.md "Agent discipli
   AGENT_HUB_CONTEXT_ESCAPE       regex, default HANDOFF-<name>.md or handoff-ok
   AGENT_HUB_CONTEXT_TODO         the "what to do" sentence of both messages
   AGENT_HUB_STATE_DIR            state directory (default <hub home>/.state); this hook uses <state>/context-budget/
+Grilling (bin/grilling.py): a Skill call, a SKILL.md read or an owner prompt that loads the skill matching
+AGENT_HUB_GRILLING_SKILL marks the hub's grilling; an owner prompt refreshes the mark. While it holds, the warning tells
+the hub to finish the grilling and run `hub grilling end` instead of handing over (said again at once when the grilling
+starts, ends or reaches the ceiling), and at the block threshold only the BLOCK_TOOLS stay closed (no autopilot gate on
+Bash/Write/Edit). At AGENT_HUB_GRILLING_CEILING the mark records the ceiling and the usual hand-over text returns, with
+what the handoff must carry for the successor to resume the grilling.
 Fail-open: any error of its own -> exit 0, no output.
 """
 from __future__ import annotations
@@ -92,8 +98,35 @@ def autopilot():
     return ap
 
 
+def grilling():
+    """bin/grilling.py, or None when it cannot load — then no grilling holds a handoff back (fail-open)."""
+    try:
+        import grilling as gr  # noqa: E402  (bin/ is on sys.path once hubcore() ran)
+    except Exception:  # noqa: BLE001
+        return None
+    return gr
+
+
+def observe_grilling(gr, ap, event: str, data: dict, sid: str) -> None:
+    """Mark a hub's grilling when its skill is loaded (bin/grilling.py), refresh the mark when the owner speaks."""
+    tool, tin = data.get("tool_name"), data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+    skill, source = None, ""
+    if event == "PostToolUse" and tool == "Skill":
+        skill, source = gr.skill_named(tin.get("skill")), "the Skill tool"
+    elif event == "PostToolUse" and tool == "Bash":
+        skill, source = gr.skill_read(tin.get("command")), "the skill's SKILL.md read"
+    elif event == "UserPromptSubmit":
+        skill, source = gr.prompt_invokes(data.get("prompt")), "the owner's prompt"
+        if not skill and ap and ap.owner_spoke(data.get("prompt")):
+            gr.touch(sid)
+    if skill:
+        stage = ap.hub_stage_of(sid) if ap else None
+        if stage:
+            gr.start(stage, sid, f"{skill}, {source}")
+
+
 def handover_command(command) -> bool:
-    """True when every command of the Bash line is `hub handoff`, `hub succeed`, `hub desktop-*`, `jlog` or `jwait` (a leading VAR=value
+    """True when every command of the Bash line is `hub handoff`, `hub succeed`, `hub grilling`, `hub desktop-*`, `jlog` or `jwait` (a leading VAR=value
     and redirections allowed). Anything the hook cannot read with certainty — a substitution, a subshell, unbalanced
     quotes — is not a handover command."""
     if not isinstance(command, str) or not command.strip() or "$(" in command or "`" in command:
@@ -129,7 +162,7 @@ def handover_command(command) -> bool:
             if not seg:
                 continue
             name = os.path.basename(seg[0])
-            if not (name in ("jlog", "jwait") or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed", "desktop-request", "desktop-bind", "desktop-fail", "desktop-status"))):
+            if not (name in ("jlog", "jwait") or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed", "grilling", "desktop-request", "desktop-bind", "desktop-fail", "desktop-status"))):
                 return False
     return True
 
@@ -287,6 +320,17 @@ def save_state(state_dir: Path, key: str, state: dict) -> None:
         pass
 
 
+def grilling_hold(gr, grill: dict, ceiling_k: str, auto: bool) -> str:
+    """What a hub grilling the owner is told instead of the handoff steps."""
+    stage = grill["stage"]
+    return (f"A grilling with the owner is in progress in this hub (since {str(grill.get('since'))[11:16] or '?'}, "
+            f"{grill.get('source')}): do not hand over until it ends — the owner finishes the conversation with this "
+            f"session{', and `hub succeed` / `hub handoff` refuse meanwhile' if auto else ''}. When the topic's frontier is empty or the "
+            f"owner stops the grilling, run `{gr.shell_tool('hub')} grilling end --stage {stage}`; the next budget note "
+            f"then gives the handoff steps. If it has already ended, run that now. At {ceiling_k}, the context ceiling, "
+            "the handoff becomes due all the same and carries the grilling.")
+
+
 def emit(event: str, **fields) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, **fields}}, ensure_ascii=False))
 
@@ -302,6 +346,12 @@ def main() -> None:
     hc.use_cwd(data.get("cwd"))  # the hub home of the session's directory, not of the hook process
     ap = autopilot()
     auto = bool(ap) and ap.enabled() and not data.get("agent_id")
+    gr = grilling() if not data.get("agent_id") else None
+    if gr:
+        try:
+            observe_grilling(gr, ap, event, data, str(data.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 — the mark is best effort; the budget below still runs
+            pass
     if auto and event == "UserPromptSubmit" and ap.owner_spoke(data.get("prompt")):
         stage = ap.hub_stage_of(str(data.get("session_id") or ""))
         if stage:
@@ -355,8 +405,29 @@ def main() -> None:
         return ap.instruction(hub_stage, model, mode, cwd, now_block, fmt(block),
                               ap.hub_effort(data))
 
+    grill, at_ceiling = None, False
+    if gr and tokens >= min(warn, block):
+        try:
+            grill = gr.active(sid)
+            at_ceiling = bool(grill) and tokens >= gr.ceiling(window)
+            if at_ceiling:
+                gr.mark_ceiling(sid, tokens)  # `hub succeed` / `hub handoff` pass from now on
+        except Exception:  # noqa: BLE001 — fail-open: as without a grilling
+            grill, at_ceiling = None, False
+    carry = f" {gr.carry_note(grill['stage'])}" if at_ceiling else ""
+    holding = bool(grill) and not at_ceiling  # the grilling holds the handoff back
+
     if event == "PreToolUse":
         if tokens < block:
+            return
+        if holding:
+            # the owner is in the conversation: no handover gate on Bash/Write/Edit (answers still go to `ask`),
+            # only the usual closed delegation tools
+            if tool not in (tools or []) and raw_tool not in (tools or []) or mentions(data.get("tool_input"), escape):
+                return
+            emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
+                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit: {gated} are closed, "
+                f"every turn here is expensive. {grilling_hold(gr, grill, ceiling_k=fmt(gr.ceiling(window)), auto=auto)}"))
             return
         if hub_stage:
             tin = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
@@ -372,14 +443,14 @@ def main() -> None:
             if passes:
                 return
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {plan(True)}"))
+                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {plan(True)}{carry}"))
             return
         if mentions(data.get("tool_input"), escape):
             return
         emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
             f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit: {gated} are closed, every "
             f"turn here is expensive. {todo} Only handing the work over passes: a tool input that names a "
-            f"HANDOFF-*.md file or carries the marker handoff-ok (pattern: {escape.pattern})."))
+            f"HANDOFF-*.md file or carries the marker handoff-ok (pattern: {escape.pattern}).{carry}"))
         return
 
     raw_state = hc.setting("AGENT_HUB_STATE_DIR")
@@ -390,18 +461,24 @@ def main() -> None:
             save_state(state_dir, key, {"bucket": -1, "tokens": tokens})
         return
     bucket = (tokens - warn) // step
-    if bucket <= state.get("bucket", -1):
+    # a grilling that starts, ends or reaches the ceiling changes what to do: say it at once, not one step later
+    phase = "ceiling" if at_ceiling else ("grilling" if holding else None)
+    if bucket <= state.get("bucket", -1) and phase == state.get("grilling"):
         return
-    save_state(state_dir, key, {"bucket": bucket, "tokens": tokens})
+    save_state(state_dir, key, {"bucket": bucket, "tokens": tokens, "grilling": phase})
+    head = f"Context budget: {fmt(tokens)} tokens now, handoff threshold {fmt(warn)}. "
+    if holding:
+        emit(event, additionalContext=head + grilling_hold(gr, grill, ceiling_k=fmt(gr.ceiling(window)), auto=auto))
+        return
+    if at_ceiling:
+        head += f"The context ceiling {fmt(gr.ceiling(window))} is reached mid-grilling: this session cannot go on. "
     extra = (f" The {fmt(block)} limit is already passed: {gated} pass only with a HANDOFF-*.md path or the "
              "marker handoff-ok." if tokens >= block
              else f" At {fmt(block)} new {gated} calls will be denied (except a handoff).")
     if hub_stage:
-        emit(event, additionalContext=f"Context budget: {fmt(tokens)} tokens now, handoff threshold {fmt(warn)}. "
-                                      f"{plan(tokens >= block)}")
+        emit(event, additionalContext=f"{head}{plan(tokens >= block or at_ceiling)}{carry}")
         return
-    emit(event, additionalContext=f"Context budget: {fmt(tokens)} tokens now, handoff threshold {fmt(warn)}. "
-                                  f"{todo}{extra}")
+    emit(event, additionalContext=f"{head}{todo}{extra}{carry}")
 
 
 if __name__ == "__main__":

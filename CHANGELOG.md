@@ -7,6 +7,11 @@
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by
   @Cartograf666 in #76.
 
+- **`run-python` usage errors no longer block hooks.** A bad `--min-version` value or a missing script exited 2,
+  which Claude and Codex hooks treat as "block", so a manifest typo would have blocked every tool call. Both now exit 1
+  and fail open. Docs note that a detached `agent` loses its exit journal line if its launch interpreter is removed
+  mid-run, while the worker's exit code is still propagated.
+
 ## 1.0.12 — 2026-10-15
 
 - **The lock hook no longer stalls on long heredoc-like input with no closing delimiter.** `board_locks` now uses

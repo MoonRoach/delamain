@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level
+  deeper, under `claude-code/<version>/<build hash>/claude.app`; the lookup read only `claude-code/<version>/claude.app`,
+  found nothing and started an older `claude` from PATH instead. A user's worker died on it: Homebrew's 2.1.231 answered
+  400 to Opus 5.5, and agent-top showed the error. Both layouts are searched now; the version still comes from the
+  directory under `claude-code`.
+
 - **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
   backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
   Parser upgrades invalidate cached readings even for unchanged logs. Standalone tests and the suite harness own

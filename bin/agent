@@ -379,17 +379,20 @@ def mcp_choice(given, cwd) -> object:
     as an interactive session gets them), "none" (--strict-mcp-config: no server at all), or a list of absolute paths
     of MCP config files (--strict-mcp-config --mcp-config FILE…: only their servers). `given` is --mcp, else
     AGENT_HUB_SPAWN_MCP; files are comma-separated, a relative one of --mcp is relative to the working directory. A
-    repository's config.json — its .agent-hub/config.json, or a hub home inside it (AGENT_HUB_HOME "project") — may
-    choose inherit or none only: a file's servers are commands the CLI would start."""
+    repository's config.json — its .agent-hub/config.json, or a hub home inside it (repository_home) — may choose
+    inherit or none only: a file's servers are commands the CLI would start."""
     raw, origin = (given, "flag") if given else hc.setting_origin("AGENT_HUB_SPAWN_MCP", cwd=cwd)
     name = "--mcp" if origin == "flag" else "AGENT_HUB_SPAWN_MCP"
     raw = (raw or "inherit").strip()
     if raw in MCP_CHOICES:
         return raw
-    # a hub home inside a repository (AGENT_HUB_HOME "project": <repo>/.agent-hub/local/) is the repository's, also in
-    # a child that got its path as $AGENT_HUB_HOME (hc.child_env), where its layer reads "env"
-    if origin == "project" or (origin == "home" and hc.CONFIG_DIRNAME in hc.root().resolve().parts):
-        raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in a repository's config.json: one of {MCP_CHOICES} — an MCP "
+    cfg = None
+    if origin == "project":
+        cfg = hc.project_dir(cwd) / hc.CONFIG_DIRNAME / "config.json"
+    elif origin == "home" and repository_home():
+        cfg = hc.root() / "config.json"
+    if cfg is not None:
+        raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in {cfg}, a repository's config.json: one of {MCP_CHOICES} — an MCP "
                             "config file goes in a hub home's config.json outside the repository, the environment or "
                             "--mcp")
     parts = [x.strip() for x in raw.split(",") if x.strip()]
@@ -401,10 +404,24 @@ def mcp_choice(given, cwd) -> object:
     return mcp_files([str(Path(x).expanduser().resolve()) for x in parts], name)
 
 
+def repository_home() -> bool:
+    """Whether the hub home is a repository's: AGENT_HUB_HOME "project" (<repo>/.agent-hub/local/), or a home under
+    <git top>/.agent-hub/ — what a child that got the project home as $AGENT_HUB_HOME (hc.child_env) sees, its layer
+    reading "env". A home the user named elsewhere is the user's, whatever its path contains."""
+    home = hc.home()
+    if home.layer == "project":
+        return True
+    path = home.path.resolve()
+    top = hc._git_top(path)
+    return top is not None and path.is_relative_to(top / hc.CONFIG_DIRNAME)
+
+
 def mcp_files(files: list, name: str) -> list:
     """`files` when each is an MCP config the CLI takes (a JSON object with "mcpServers"); else a usage error. Run
     again before a resume: the CLI would fail on a file deleted or broken since the spawn."""
     for f in files:
+        if Path(f).is_dir():
+            raise hc.UsageError(f"{name}: {f}: is a directory, not an MCP config file")
         try:
             data = json.loads(Path(f).read_text(encoding="utf-8"))
         except OSError:

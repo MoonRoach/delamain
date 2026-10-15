@@ -9,7 +9,8 @@
   starts an agent with no MCP server, `--mcp FILE[,FILE]` with only the servers of those MCP config files, and
   `AGENT_HUB_SPAWN_MCP` (environment, hub home, or a repository's `config.json` for `inherit`/`none`) sets the default.
   The default stays `inherit`: an agent that relies on a GitLab or database server keeps it; the setup skill offers
-  `none`. A resume keeps the spawn's choice, a headless autopilot successor inherits, and Codex, which has no switch
+  `none` (and keeps `inherit` under `--defaults`). `none` drops the project's own `.mcp.json` servers too: a repository
+  whose agents need them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice, a headless autopilot successor inherits, and Codex, which has no switch
   for its plugins' servers, refuses the flag.
 
 ## 1.0.8 — 2026-10-15

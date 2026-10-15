@@ -26,6 +26,11 @@ grep 'started headless agent none1' $(journal stage-a) | grep -q 'MCP none'; che
 wait_dead none1
 AGENT_HUB_SPAWN_MCP=inherit $B/agent-send none1 "again" > /dev/null; check $? 0 "resume none1"
 tail -1 $W/argv.log | grep -q -- "--resume .*--strict-mcp-config"; check $? 0 "resume: the run keeps --strict-mcp-config"
+wait_dead none1
+# 3b. an agent spawned before the choice existed (meta.json without "mcp") resumes as inherit, whatever the setting says
+python3 -c "import json,sys; p=sys.argv[1]; m=json.load(open(p)); m.pop('mcp'); json.dump(m, open(p, 'w'))" $R/stage-a/agents/none1/meta.json
+AGENT_HUB_SPAWN_MCP=none $B/agent-send none1 "old agent" > /dev/null; check $? 0 "resume an agent whose meta.json has no mcp key"
+tail -1 $W/argv.log | grep -q -- "--resume " && ! tail -1 $W/argv.log | grep -q -- '--strict-mcp-config'; check $? 0 "…it inherits: no --strict-mcp-config"
 wait_dead none1; $B/agent-stop none1 > /dev/null
 # 4. config files: only their servers; a relative --mcp path is the caller's working directory's
 (cd $W && spawn files --mcp one.json,$W/two.json > /dev/null); check $? 0 "spawn --mcp FILE,FILE"
@@ -65,18 +70,25 @@ echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" > $P/.agent-hub/config.json
 N=$(wc -l < $P/argv.log)
 $B/agent-spawn --role projf --cwd $P --model haiku --brief $P/b.md > $R/pf.out 2>&1; check $? 2 "negative: a repository's MCP config file is refused"
 grep -q "outside the repository, the environment or --mcp" $R/pf.out; check $? 0 "…naming where a file may go"
+RP=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' $P)
+grep -qF "AGENT_HUB_SPAWN_MCP in $RP/.agent-hub/config.json, a repository's config.json" $R/pf.out; check $? 0 "…and the file that set it"
 check "$(wc -l < $P/argv.log)" "$N" "…and no CLI was started"
 # a hub home inside the repository (AGENT_HUB_HOME "project") is the repository's too
 echo '{"AGENT_HUB_HOME": "project"}' > $P/.agent-hub/config.json
 mkdir -p $P/.agent-hub/local; echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" > $P/.agent-hub/local/config.json
 (unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph.out 2>&1
 check $? 2 "negative: an MCP config file in a project hub home's config.json is refused"
-grep -q "in a repository's config.json" $R/ph.out; check $? 0 "…as the repository's setting"
+grep -qF ".agent-hub/local/config.json, a repository's config.json" $R/ph.out; check $? 0 "…as the repository's setting, naming the file"
 AGENT_HUB_HOME=$P/.agent-hub/local $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run > $R/ph3.out 2>&1
 check $? 2 "negative: …also in a child that got that home as \$AGENT_HUB_HOME"
 echo '{"AGENT_HUB_SPAWN_MCP": "none"}' > $P/.agent-hub/local/config.json
 (unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph2.out 2>&1
 check $? 0 "…while none there is taken"; grep -q 'MCP none' $R/ph2.out; check $? 0 "…and shown"
+# a hub home the user named outside any repository is the user's, even when its path has a .agent-hub component
+U=$R/u/.agent-hub/home; mkdir -p $U; echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" > $U/config.json
+AGENT_HUB_HOME=$U $B/agent-spawn --role userh --cwd $W --model haiku --brief $W/b.md --dry-run > $R/uh.out 2>&1
+check $? 0 "a user's home whose path contains .agent-hub may name an MCP config file"
+grep -q "MCP only $RW/one.json" $R/uh.out; check $? 0 "…and the file is taken"
 # 7. bad values fail before anything starts
 N=$(wc -l < $W/argv.log)
 spawn bad1 --mcp $W/nope.json > $R/b1.out 2>&1; check $? 2 "negative: a missing file"
@@ -84,6 +96,8 @@ echo '{"servers": {}}' > $W/notmcp.json
 spawn bad2 --mcp $W/notmcp.json > $R/b2.out 2>&1; check $? 2 "negative: JSON without mcpServers"
 grep -q 'not an MCP config' $R/b2.out; check $? 0 "…named as not an MCP config"
 spawn bad3 --mcp , > /dev/null 2>&1; check $? 2 "negative: an empty list"
+spawn bad4 --mcp $W > $R/b4.out 2>&1; check $? 2 "negative: a directory as an MCP config"
+grep -q 'is a directory' $R/b4.out; check $? 0 "…named as a directory, not a missing file"
 check "$(wc -l < $W/argv.log)" "$N" "no CLI was started for a bad value"
 [ ! -e $R/stage-a/agents/bad1 ] && [ ! -e $R/stage-a/agents/bad2 ]; check $? 0 "…and no agent directory was created"
 spawn dry --mcp none --dry-run > $R/dry.out 2>&1; check $? 0 "dry run with --mcp none"

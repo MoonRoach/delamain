@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The lock hook no longer stalls on long heredoc-like input with no closing delimiter.** `board_locks` now uses
+  the shared `polling_guard.strip_heredocs` scanner instead of the regex that repeatedly scanned blank lines. It
+  still treats all closed heredoc bodies as data, including those fed to a shell; ordinary lock decisions are unchanged.
+
 ## 1.0.11 — 2026-10-15
 
 - **A walk of the home directory or `/` is refused: it raised the macOS "access data from other apps" prompt.** On 15.10

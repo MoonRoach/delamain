@@ -295,7 +295,7 @@ def _heredoc_lines(cmd: str) -> dict:
     return lines
 
 
-def _heredoc(cmd: str, start: int, after: int, nl: int, end: int, keep_line: bool) -> str:
+def _heredoc(cmd: str, start: int, after: int, nl: int, end: int, keep_line: bool, preserve_shell: bool) -> str:
     """What stands for the heredoc that opens at `start` (`after`: the end of its delimiter, `nl`: the end of its line,
     `end`: the end of its terminator). A body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`).
     `keep_line` keeps the rest of the opening line (`cat <<EOF && find ~`: a command too) and, for a body that is
@@ -305,14 +305,15 @@ def _heredoc(cmd: str, start: int, after: int, nl: int, end: int, keep_line: boo
     before = _SEGMENT_SEP.split(cmd[line_start:start])[-1]
     consumers = [c for c in [before, *_PIPE.split(cmd[start:nl])[1:]] if _SHELL_CONSUMER.match(c)]  # any stage of the pipe
     rest = cmd[after:nl] if keep_line else ""
-    if any(not (keep_line and _REMOTE.search(c)) for c in consumers):
+    if preserve_shell and any(not (keep_line and _REMOTE.search(c)) for c in consumers):
         return rest + "\n" + cmd[nl + 1:end]
     return _HEREDOC_MARK + rest if keep_line else " "
 
 
-def strip_heredocs(cmd: str, keep_line: bool = False) -> str:
+def strip_heredocs(cmd: str, keep_line: bool = False, *, preserve_shell: bool = True) -> str:
     """`cmd` with the bodies of its heredocs dropped (see `_heredoc`). Linear in the length of `cmd`: an opener with no
-    terminator, or any number of them, is left as it stands."""
+    terminator, or any number of them, is left as it stands. `preserve_shell=False` drops even shell-fed bodies,
+    for callers such as board_locks that historically treated every heredoc as data."""
     out, last, pos, nl, lines = [], 0, 0, -2, None
     while True:
         m = _HEREDOC_OPEN.search(cmd, pos)
@@ -331,7 +332,7 @@ def strip_heredocs(cmd: str, keep_line: bool = False) -> str:
             continue
         end = spans[k][1]
         out.append(cmd[last:m.start()])
-        out.append(_heredoc(cmd, m.start(), pos, nl, end, keep_line))
+        out.append(_heredoc(cmd, m.start(), pos, nl, end, keep_line, preserve_shell))
         last = pos = end
     out.append(cmd[last:])
     return "".join(out)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
+  and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
+  discovery ignores inherited `GIT_*` selectors. Spawn/resume restores pruned leaf parents outside the sandbox;
+  the child disables automatic Git maintenance using Git's quoted parameters, compatible with Codex's default
+  secret-name environment exclusions. The review brief directs Codex
+  temporary copies into its cwd. Existing executors retain their pinned roots: respawn them to apply narrower grants.
+
 - **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
   backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
   Parser upgrades invalidate cached readings even for unchanged logs. Standalone tests and the suite harness own

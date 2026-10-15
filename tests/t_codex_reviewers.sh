@@ -79,4 +79,11 @@ for extra in [
 print('PASS review-role cwd-only roots persist on resume; wider roots/cwd are refused')
 PY_SCOPE
 check $? 0 'M1 reviewer report/journal scope excludes home config and other inboxes'
+python3 - "$B/../templates/brief-review.md" <<'PY_TEMP'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text()
+assert 'temporary copies' in text and 'subdirectory of its cwd' in text and '`/tmp`' in text
+PY_TEMP
+check $? 0 'N2 reviewer template places temporary copies inside Codex cwd'
 exit $fail

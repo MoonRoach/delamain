@@ -18,6 +18,17 @@
   tree on the side. `polling_guard.views` gained an optional `data` list for hooks that read a command's arguments.
   `tests/t_scan_guard.sh` holds both lists, the Grep and Glob cases, the marker, the switch and fail-open.
 
+- **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
+  replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
+  more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%
+  remaining allows a launch even with an exhaustion forecast. Below 3% refuses only with fresh verified data on the
+  other engine; both below 3% refuse unless `--reason` is supplied. Unknown/stale data never grounds refusal. Engine
+  locks get a permission question for this launch, defaulting to the locked engine; models are never swapped silently.
+  Below 3% with an unverified alternative, advice warns of practical exhaustion and offers a probe or `--reason`,
+  without creating a quota gate. Forecasts from the first 6 hours are displayed without journal alarms, owner
+  notifications or crossing-state records; five-hour windows remain context.
+  Advice no longer defers or sequences work until reset. See [Limit pace](docs/reference.md#limit-pace).
+
 - **A headless Claude executor starts without MCP servers by default.** `AGENT_HUB_SPAWN_MCP` now defaults to
   `none` (it was `inherit`): an agent started by `agent spawn` no longer carries the tool lists, instructions and
   authentication notes of every server in your config, plugins and claude.ai connectors in each turn (about 3.5k tokens

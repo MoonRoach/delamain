@@ -39,12 +39,11 @@ and meta.json (bin/spawn_policy.py). The title registered for the agent is `<rol
 without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Load hold: while `bin/watchdog` holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD, off by default), spawn warns
 or, with AGENT_HUB_SPAWN_HOLD=refuse, refuses (exit 1); --ignore-hold passes. `send` is never held (bin/spawn_hold.py).
-Limit pace: when the engine's plan week runs ahead of its pace, spawn prints the reasoning and the advice before the
-launch (lower an effort above the --task-class default, move to the other engine at an equivalent class, defer
-non-urgent work, ask the owner) and journals one `@hub LIMIT …` line per crossing. It refuses (exit 1) only when the
-week is projected to run out before its reset, at least half of it is used, the work is not mechanical, and no engine
-with fresh data and headroom can take it (or the stage is locked to this engine by AGENT_HUB_STAGE_ENGINES); --reason
-passes and is journalled. Stale or unknown data is reported, never refused on. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
+Limit pace: spawn compares fresh remaining weekly room for this launch, suggesting an equivalent engine/model/effort
+below 20% remaining and respecting AGENT_HUB_STAGE_ENGINES. No model is swapped silently. Below 3% remaining it
+refuses (exit 1) only with fresh data on both engines; --reason passes and is journalled. Forecasts, including the
+low-confidence first six hours, are context only. Stale/unknown data never grounds refusal. Each crossing journals
+one `@hub LIMIT …` line. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
 --dry-run runs every check and prints the advice, then stops before anything is started or written.
 A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the

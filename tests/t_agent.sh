@@ -65,6 +65,8 @@ $B/ask plan --stage stage-a "Do the thing" >/dev/null
 $B/agent-spawn --role withplan --cwd $W --model haiku --brief $W/b.md > $R/np2.out 2> $R/np2.err; check $? 0 "plan on record: spawn succeeds"
 grep -q 'no owner-approved plan' $R/np2.err; check $? 1 "plan on record: no warning"
 wait_dead withplan; $B/agent-stop withplan >/dev/null
+# Keep minimal-mode checks in the throwaway home even when the laptop has a real default stage.
+mkdir -p "$R/default"
 HUB_STAGE=default $B/agent-spawn --role dflt --cwd $W --model haiku --brief $W/b.md > $R/np3.out 2> $R/np3.err; check $? 0 "default stage: spawn succeeds"
 grep -q 'no owner-approved plan' $R/np3.err; check $? 1 "default stage (minimal mode): no warning"
 sleep 1; $B/agent-stop dflt --stage default >/dev/null

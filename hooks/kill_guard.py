@@ -226,11 +226,12 @@ def _pipelines(stages):
     return out
 
 
-def _drop_ssh(command: str) -> str:
-    """The command without the segments whose command word is `ssh`: they run on another machine."""
+def _drop_ssh(command: str, keep_line: bool = False) -> str:
+    """The command without the segments whose command word is `ssh`: they run on another machine. `keep_line`: see
+    `polling_guard.strip_heredocs`."""
     if "ssh" not in command:
         return command
-    protected, strings = pg._protect(pg._HEREDOC.sub(pg._heredoc, command.replace("\x00", "").replace("\\\n", " ")))
+    protected, strings = pg._protect(pg.strip_heredocs(command.replace("\x00", "").replace("\\\n", " "), keep_line))
     parts = _SEGMENT_SPLIT.split(protected)
     return "".join("ssh" if i % 2 == 0 and _SSH.match(part) else pg._TOKEN.sub(lambda m: strings[int(m.group(1))], part)
                    for i, part in enumerate(parts))

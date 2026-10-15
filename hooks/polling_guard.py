@@ -46,6 +46,7 @@ if __name__ == "__main__":  # fail-safe first, before anything that can fail: se
     except Exception:  # noqa: BLE001 — without it the hook is as it was
         pass
 
+import bisect
 import json
 import os
 import re
@@ -89,6 +90,10 @@ _WRAPPER = (r"(?:(?:\S*/)?(?:sudo|env|nohup|exec|time|setsid|nice|ionice|stdbuf|
 _TIMEOUT = r"timeout(?:\s+(?:-[ks]\s+(?!-)\S+|-\S+))*\s+\S+"  # `timeout -k 5 600 bash`: flags, then the duration
 # What may stand before the command word: a group opener (`( bash …`, `{ bash …`), `VAR=x`, wrappers.
 _CMD_PREFIX = r"^\s*[({]?\s*(?:(?:\w+=\S+|" + _WRAPPER + r"|" + _TIMEOUT + r")\s+)*"
+# A command that runs its argument somewhere else — another machine, a container, a pod: the string after it is not a
+# command of this one (read only by callers that pass `data` to `views`).
+_REMOTE = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:ssh|mosh|telnet|tsh|docker|podman|nerdctl|ctr|kubectl|oc|lxc|incus|nsenter|chroot"
+                     r"|vagrant|multipass|limactl|colima|gcloud|aws|az|yc|doctl|fly|flyctl|heroku)(?![\w.-])")
 _SHELL_CONSUMER = re.compile(
     _CMD_PREFIX
     + rf"(?:{_SHELL}\b|eval\b|source\b|\.\s+/dev/stdin\b|xargs\b.*?\s{_SHELL}\s+-\w*c\b"
@@ -108,14 +113,100 @@ _TOKEN = re.compile(r"\x00(\d+)\x00")
 # value (`-o pipefail`) must not break the chain up to `-c`.
 _EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*[oO]\s+\w+|-\S+))*?\s+-\w*c(?:\s+--)?"
                        r"|eval)\s*$")
+# Who may run such a string, for a caller that reads `data`: the command a segment really runs — behind its keywords,
+# assignments and wrappers, each wrapper's options read with their values — is a shell, `eval`, or a command that runs the rest
+# of its line (`find -exec`, `watch` …). `echo bash -c '…'`, `jlog bash -c '…'` and `env printf '%s' bash -c '…'` only print
+# their arguments.
+# Wrappers: command words that run the rest of their line, and the options of each that take a value.
+WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir", "--prompt"),
+            "doas": ("-u", "-C"), "env": ("-u", "-C", "-S", "-P", "-a", "--chdir", "--unset", "--split-string", "--argv0"),
+            "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"), "time": ("-f", "-o"), "exec": ("-a",),
+            "stdbuf": ("-i", "-o", "-e"), "setsid": (), "nohup": (), "command": (), "builtin": (), "unbuffer": (), "noglob": (),
+            "nocorrect": ()}
+WRAPPER_CHDIR = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}  # the options that give the child another directory
+TIMEOUT_VALUED = ("-k", "-s", "--kill-after", "--signal")
+XARGS_VALUED = ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "-R", "-S")
+_RUNNERS = frozenset(("watch", "flock", "parallel", "entr", "find", "bfs", "gfind", "fd", "fdfind", "su", "runuser", "setpriv", "unshare",
+                      "arch", "xcrun", "taskset", "numactl", "script", "strace", "systemd-run", "tmux", "screen", "sandbox-exec"))
+_SHELL_NAMES = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
+_WALK_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "coproc"))
+_ASSIGNMENT = re.compile(r"\w+(?:\[[^\]]*\])?\+?=")
+_WORD = re.compile(r"\S+")
+_WALK_WORDS = 64  # a command's own prefix is a few words; a longer one is read as "may run"
+
+
+def skip_options(words, i: int, valued=(), grab=()):
+    """(the index after the option words that start at `i`, [(k, offset)] of the values of the options in `grab`). An option
+    in `valued` takes a value: the next word, or the rest of its own word (`--chdir=DIR`, `-C/tmp`, and in a cluster `-nu root`,
+    `-iC/tmp`); that value is never read as an option (`sudo -p -D/ cmd`: `-D/` is the prompt). The value is `words[k]` from
+    `offset` on (the whole word for `None`). `--` ends the options."""
+    n, hits = len(words), []
+    while i < n and words[i].startswith("-") and len(words[i]) > 1:
+        w = str(words[i])
+        if w == "--":
+            return i + 1, hits
+        takes, flag, off = False, None, None
+        if w in valued:
+            takes, flag = True, w
+        elif w.startswith("--"):
+            name, eq, _ = w.partition("=")
+            if eq and name in valued:
+                flag, off = name, len(name) + 1
+        else:
+            for p in range(1, len(w)):
+                if "-" + w[p] in valued:
+                    flag = "-" + w[p]
+                    takes, off = p + 1 == len(w), (p + 1 if p + 1 < len(w) else None)
+                    break
+        if flag in grab:
+            if not takes:
+                hits.append((i, off))
+            elif i + 1 < n:
+                hits.append((i + 1, None))
+        i += 2 if takes else 1
+    return i, hits
+
+
+def command_runs_string(seg: str, first: int):
+    """(may the command that starts at `first` in `seg` run a `-c` / `eval` string, [the directory words its `env -C` /
+    `sudo -D` wrappers give it, in order, as typed])."""
+    words = [m.group() for _, m in zip(range(_WALK_WORDS), _WORD.finditer(seg, first))]
+    n, i, dirs = len(words), 0, []
+    while i < n:
+        w = words[i].lstrip("({")
+        base = w.rsplit("/", 1)[-1]
+        if w in ("", *_WALK_KEYWORDS) or _ASSIGNMENT.match(w):
+            i += 1
+        elif base in _SHELL_NAMES or base == "eval":
+            return True, dirs
+        elif base == "command" and i + 1 < n and words[i + 1] in ("-v", "-V"):
+            return False, dirs  # only looks the name up
+        elif base in WRAPPERS:
+            i, hits = skip_options(words, i + 1, WRAPPERS[base], WRAPPER_CHDIR.get(base, ()))
+            dirs += [words[k] if off is None else words[k][off:] for k, off in hits]
+        elif base in ("timeout", "gtimeout"):
+            i = skip_options(words, i + 1, TIMEOUT_VALUED)[0] + 1  # then the duration
+        elif base == "xargs":
+            i = skip_options(words, i + 1, XARGS_VALUED)[0]
+        else:
+            return base in _RUNNERS, dirs
+    return n >= _WALK_WORDS, dirs
+
+
+_BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")  # a single `&` ends a command inside a segment too
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
 _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
 _BRACE_RANGE = re.compile(r"\{(\d+)\.\.(\d+)\}")
 _FOR_LIST = re.compile(r"\bfor\s+\w+\s+in\s+([^;$({\n]+?)(?:;|\s+do\b)")
 _PGREP_F = re.compile(r"pgrep\s+(?:-\w+\s+)*-\w*f\w*\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
-# A heredoc body is a file being written, not commands being run. `<<<` is a here-string, not a heredoc opener.
-_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.MULTILINE)
+# A heredoc body is a file being written, not commands being run. The opener is `<<` or `<<-` and the delimiter word: bare
+# (`EOF`, `END-NOTES`, `\EOF`), quoted (`'END.NOTES'`, `"EOF"`) or both (`E'O'F`); `<<<` is a here-string, not an opener.
+# The terminator is looked up in a table of the command's lines (`strip_heredocs`), not by a regex that scans for it: an
+# opener with no terminator made such a regex read every blank line after it again and again, for 12 s and more.
+_HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)-?[ \t]*((?:'[^'\n]*'|\"[^\"\n]*\"|\\.|[^\s;&|<>()'\"\\])+)")
+_DELIM_QUOTES = re.compile(r"'([^']*)'|\"([^\"]*)\"|\\(.)")
+_HEREDOC_MARK = "<<_HEREDOC_"  # stands for a heredoc whose body is dropped, where the caller reads the redirections
 # Segments that print rather than run: `echo 'until …; do sleep 20; done'` (also in a subshell: `(echo '…') | bash`).
 _PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
@@ -188,15 +279,62 @@ class Config:
         self.hint = f"  • {hint.strip()}\n" if hint else DEFAULT_HINT
 
 
-def _heredoc(m) -> str:
-    """A heredoc body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`)."""
-    whole = m.string
-    line_start = whole.rfind("\n", 0, m.start()) + 1
-    before = _SEGMENT_SEP.split(whole[line_start:m.start()])[-1]
-    opening = m.group(0).split("\n", 1)[0]
-    if any(_SHELL_CONSUMER.match(c) for c in [before, *_PIPE.split(opening)[1:]]):  # any stage of the pipe
-        return "\n" + m.group(0).split("\n", 1)[-1]
-    return " "
+def _delimiter(word: str) -> str:
+    """The delimiter a word names, quotes and backslashes removed: `'END-NOTES'` -> `END-NOTES`."""
+    return _DELIM_QUOTES.sub(lambda m: next(g for g in m.groups() if g is not None), word)
+
+
+def _heredoc_lines(cmd: str) -> dict:
+    """{a line without the blanks around it: [(start, end)] of every such line, in order}: where a terminator can stand."""
+    lines, pos = {}, 0
+    for line in cmd.split("\n"):
+        key = line.strip()
+        if key:
+            lines.setdefault(key, []).append((pos, pos + len(line)))
+        pos += len(line) + 1
+    return lines
+
+
+def _heredoc(cmd: str, start: int, after: int, nl: int, end: int, keep_line: bool) -> str:
+    """What stands for the heredoc that opens at `start` (`after`: the end of its delimiter, `nl`: the end of its line,
+    `end`: the end of its terminator). A body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`).
+    `keep_line` keeps the rest of the opening line (`cat <<EOF && find ~`: a command too) and, for a body that is
+    dropped, a `<<_HEREDOC_` mark: that command's stdin is a heredoc. A shell on another machine (`ssh host bash <<EOF`)
+    does not run the body here: with `keep_line` it is dropped like any other."""
+    line_start = cmd.rfind("\n", 0, start) + 1
+    before = _SEGMENT_SEP.split(cmd[line_start:start])[-1]
+    consumers = [c for c in [before, *_PIPE.split(cmd[start:nl])[1:]] if _SHELL_CONSUMER.match(c)]  # any stage of the pipe
+    rest = cmd[after:nl] if keep_line else ""
+    if any(not (keep_line and _REMOTE.search(c)) for c in consumers):
+        return rest + "\n" + cmd[nl + 1:end]
+    return _HEREDOC_MARK + rest if keep_line else " "
+
+
+def strip_heredocs(cmd: str, keep_line: bool = False) -> str:
+    """`cmd` with the bodies of its heredocs dropped (see `_heredoc`). Linear in the length of `cmd`: an opener with no
+    terminator, or any number of them, is left as it stands."""
+    out, last, pos, nl, lines = [], 0, 0, -2, None
+    while True:
+        m = _HEREDOC_OPEN.search(cmd, pos)
+        if not m:
+            break
+        pos, delim = m.end(), _delimiter(m.group(1))
+        if nl != -1 and nl < pos:
+            nl = cmd.find("\n", pos)  # the body starts on the next line
+        if nl == -1 or not delim:
+            continue
+        if lines is None:
+            lines = _heredoc_lines(cmd)
+        spans = lines.get(delim, ())
+        k = bisect.bisect_left(spans, (nl + 1,))
+        if k == len(spans):
+            continue
+        end = spans[k][1]
+        out.append(cmd[last:m.start()])
+        out.append(_heredoc(cmd, m.start(), pos, nl, end, keep_line))
+        last = pos = end
+    out.append(cmd[last:])
+    return "".join(out)
 
 
 def _protect(cmd: str):
@@ -221,16 +359,17 @@ def _word_start(seg: str, end: int) -> int:
     return low + gap + 1 if gap != -1 else low
 
 
-def _runs_argument(seg: str, start: int, shell_segment: bool) -> bool:
+def _runs_argument(seg: str, start: int, shell_segment: bool, exec_ok: bool = True) -> bool:
     """Does a shell run the word that starts at `start` in `seg`, or is it data? Only the tail before the word is
     read: `bash -lc` and `ssh -o … host` fit in it, and a search of the whole prefix per string is quadratic. A cheap
     check of the tail's end goes first: most strings are arguments of git or grep, not of a shell. `shell_segment` —
-    the whole segment is a shell consumer (`bash … <<< '…'`) — is computed once per segment."""
+    the whole segment is a shell consumer (`bash … <<< '…'`) — and `exec_ok` — its command word may run a `-c` string —
+    are computed once per segment."""
     head = seg[max(0, start - _LOOKBEHIND):start]
     tail = head.rstrip()
     if tail.endswith("<<<"):
         return shell_segment
-    if tail.endswith(("c", "--", "eval")) and _EXEC_ARG.search(head):
+    if tail.endswith(("c", "--", "eval")) and exec_ok and _EXEC_ARG.search(head):
         return True
     return "ssh" in head and bool(_SSH.search(head))
 
@@ -261,27 +400,51 @@ def _substitutions(quoted: str) -> list:
     return bodies
 
 
-def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = False):
+def _datum(data, quoted: str) -> str:
+    """What stands for a data string in the wait projection: `""`, or, when the caller collects them, a token
+    `\\x01N\\x01` whose string is `data[N]`."""
+    if data is None:
+        return '""'
+    data.append(quoted)
+    return f"\x01{len(data) - 1}\x01"
+
+
+def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = False, data: list = None):
     """(wait text, CI text) of a segment. Strings a shell runs are unwrapped into commands (recursively); any other
     string is data: `""` for the wait search, and for the CI rules too unless the segment's command word is `gh` /
     `glab` — their quoted arguments carry the API path. `$(…)` in a data string still runs."""
     wait, ci = [], []
     pos = 0
     shell_segment = "<<<" in seg and bool(_SHELL_CONSUMER.match(seg))
+    # a caller that collects `data` tells a command that runs a `-c` string from one that only carries it
+    starts = [0] + [b.end() for b in _BACKGROUND.finditer(seg)] if data is not None else []
+    runners: dict = {}
     keep_strings = bool(_CI_COMMAND.match(seg))
     for m in _TOKEN.finditer(seg):
         wait.append(seg[pos:m.start()])
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
-        if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
-            inner = views(_unquote(quoted), keep_seps)
-            wait.append(f";{inner[0]};")
+        runs = runs_all
+        if not runs:
+            word = _word_start(seg, m.start())
+            first = starts[bisect.bisect_right(starts, word) - 1] if starts else None
+            if first is not None and first not in runners:
+                runners[first] = command_runs_string(seg, first)
+            runs = _runs_argument(seg, word, shell_segment, first is None or runners[first][0])
+        if runs and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
+            inner = views(_unquote(quoted), keep_seps, data)
+            if data is None:
+                wait.append(f";{inner[0]};")
+            else:  # a caller that reads `cd` needs the subshell, and the directory `env -C` / `sudo -D` gave it
+                moved = "".join(f"cd {_TOKEN.sub(lambda t: _datum(data, strings[int(t.group(1))]), d)}; "
+                                for d in (runners[first][1] if not runs_all and first is not None else []))
+                wait.append(f";({moved}{inner[0]});")
             ci.append(f";{inner[2]};")
         else:
-            wait.append('""')
+            wait.append(_datum(data, quoted))
             ci.append(quoted if keep_strings else '""')
             for body in _substitutions(quoted):
-                inner = views(body, keep_seps)
+                inner = views(body, keep_seps, data)
                 # keep_seps: the substitution stays where it stood, `kill "$(pgrep x)"` is still one command
                 wait.append(f"$({inner[0]})" if keep_seps else f";{inner[0]};")
                 ci.append(f";{inner[2]};")
@@ -291,7 +454,7 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
     return "".join(wait), "".join(ci)
 
 
-def views(cmd: str, keep_seps: bool = False):
+def views(cmd: str, keep_seps: bool = False, data: list = None):
     """Three projections of a command: (where to look for a wait, what the `pgrep -f` check reads, what the CI-status
     rules read).
 
@@ -312,9 +475,14 @@ def views(cmd: str, keep_seps: bool = False):
     that mentions `gh run view` does not.
 
     `keep_seps` joins the segments of each projection with the separators the command had (`|`, `&&`, a newline …)
-    instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it)."""
+    instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it). `data`, a list the caller passes in,
+    makes the wait projection keep the data strings instead of `""`: each stands as a token `\\x01N\\x01` and is
+    appended, quotes included, to the list as item N; a printing stage that nothing feeds to a shell is kept like any
+    other stage, with its own `$(…)`; the string a shell runs stays in parentheses (its `cd` does not leave it), and
+    the string of a command that runs it elsewhere (`ssh`, `docker exec`, `kubectl exec` …) stays data (hooks/scan_guard.py
+    reads the arguments and the pipes of a command)."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
-    cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
+    cmd = strip_heredocs(cmd.replace("\x00", "").replace("\\\n", " "), data is not None)
     protected, strings = _protect(cmd)
     parts = _SEGMENT_SPLIT.split(protected)
     segs, seps = parts[0::2], parts[1::2]
@@ -340,17 +508,17 @@ def views(cmd: str, keep_seps: bool = False):
     for i, seg in enumerate(segs):
         printing = bool(_PRINTING.match(seg))
         before = len(wait)
-        if printing and not fed[i]:
+        if printing and not fed[i] and data is None:
             # Printing is not running, but the shell does run `$(…)` in double quotes — for the wait search and for
             # the CI rules alike: `echo "$(gh run view 1)"`.
             for num in _TOKEN.findall(seg):
                 for body in _substitutions(strings[int(num)]):
-                    inner = views(body, keep_seps)
+                    inner = views(body, keep_seps, data)
                     wait.append(f";{inner[0]};")
                     quoted.append(body)
                     ci.append(f";{inner[2]};")
         else:
-            wait_text, ci_text = _segment_views(seg, strings, printing and fed[i], keep_seps)
+            wait_text, ci_text = _segment_views(seg, strings, printing and fed[i], keep_seps, data)
             wait.append(wait_text)
             ci.append(ci_text)
             quoted.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))

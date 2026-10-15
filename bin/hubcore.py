@@ -104,7 +104,10 @@ PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
 # a file's servers are commands the CLI starts without the approval a project's .mcp.json needs (bin/agent mcp_choice).
 PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
 HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
-BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
+# The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
+# not switch it off, so it is the hub home's (and the environment's) to set.
+HUB_WIDE_KEYS += ("AGENT_HUB_SCAN_GUARD", "AGENT_HUB_SCAN_ESCAPE")
+BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION", "AGENT_HUB_SCAN_GUARD")
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
 # permission mode.
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",

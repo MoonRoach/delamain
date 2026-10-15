@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A walk of the home directory or `/` is refused: it raised the macOS "access data from other apps" prompt.** On 15.10
+  the owner got «"claude.app" would like to access data from other apps» five times between 10:00 and 11:03; one cause
+  was `find ~ -name hive1.py …` in a background session (Claude Code's shell shows `find` as `bfs`). A walk from `~`
+  enters `~/Library` (Mail, Messages, Safari, Containers), which App Data TCC protects, and the consent is not kept
+  across agent processes, so the prompt returns. Full Disk Access would end it, but would let every agent that runs
+  without questions read mail, messages and cookies. The new PreToolUse hook `scan_guard.py` (Claude and Codex, on for
+  all sessions) denies `find`, `bfs`, `fd`, `rg`, `grep -r`, `ag`, `ack`, `du`, `tree` and `ls -R` whose root is `~`,
+  `$HOME`, the absolute home path, `/`, `/Users`, `~/Library`, `~/Library/Containers`, `~/Library/Group Containers` or a
+  glob over them, and the same with no root while the working directory is the home (the session's, or after `cd ~`);
+  likewise the Grep and Glob tools with such a `path`. A named subdirectory, the hub home and a walk that stays on the
+  first level are not touched. The refusal says to search the project, `$AGENT_HUB_HOME` or a subdirectory, and names
+  `# scan-ok`, the marker for a walk the owner asked for. `AGENT_HUB_SCAN_GUARD=off` (environment or hub home) turns it
+  off; a hook error fails open. Not caught: scripts (`python3 -c`), `cp -r`, `rsync`, `tar` and other tools that walk a
+  tree on the side. `polling_guard.views` gained an optional `data` list for hooks that read a command's arguments.
+  `tests/t_scan_guard.sh` holds both lists, the Grep and Glob cases, the marker, the switch and fail-open.
+
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
   the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
   the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner

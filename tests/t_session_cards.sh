@@ -6,6 +6,8 @@
 . "$(dirname "$0")/lib.sh"
 new_home; R=$AGENT_HUB_HOME; export CLAUDE_SESSIONS_DIR=$R/sessions HUB_STAGE=stage-a
 HOOK=$HOOKS/session_cards.py
+# A detached runner inherits its installed plugin root; exercise this checkout's hook and hubcore together.
+export PLUGIN_ROOT="$(cd "$T/.." && pwd)"
 HUB=11111111-1111-4111-8111-111111111111          # a terminal hub (cli id)
 LOC=22222222-2222-4222-8222-222222222222          # a Desktop hub: local_ id …
 LOCCLI=aaaaaaaa-2222-4222-8222-222222222222       # … and its current CLI session
@@ -18,6 +20,34 @@ hook(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToo
   | CLAUDE_CODE_HOST_SESSION_ID="${4:-}" python3 $HOOK pre-tool; }
 denied(){ hook "$@" | grep -q '"permissionDecision": "deny"'; }
 S=mcp__ccd_session__start_session; H=mcp__ccd_session__hand_off_to_session; SP=mcp__ccd_session__spawn_task
+
+# Both registry lookup paths and the hook must delegate identity matching to hubcore.
+python3 - "$B" "$HOOKS" <<'PYTEST'; check $? 0 "hook and registry share the session matcher"
+import sys
+sys.path[:0] = sys.argv[1:]
+import hubcore as hc
+import session_cards as cards
+from unittest.mock import patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
+rec = {"session": "registered"}
+assert hc.session_matches(rec, "registered", "")
+assert not hc.session_matches(rec, "other", "")
+with TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    (home / "stage-a").mkdir()
+    (home / "stage-a" / "roles.json").write_text(json.dumps({"roles": {"hub": rec}}))
+    with patch.object(hc, "session_matches", return_value=True) as match, \
+         patch.object(hc, "root", return_value=home):
+        assert cards.is_hub("from-hook")
+        assert match.call_args.args[1] == "from-hook"
+        assert hc.role_for_session("stage-a", "from-registry")[0] == "hub"
+        assert match.call_args.args[1] == "from-registry"
+        with patch.object(hc, "session_id", return_value="from-caller"):
+            assert hc.role_for_caller("stage-a")[0] == "hub"
+        assert match.call_args.args[1] == "from-caller"
+PYTEST
 
 # ---- no registry at all: nobody is a hub, nothing is denied (and nothing is printed)
 denied $S '{"initiation":"own_initiative","title":"x","prompt":"y"}' $HUB; check $? 1 "no registry: own_initiative passes"

@@ -131,6 +131,83 @@ p = f.grill('join','--launch',launch,'--session',CHILD,'--why','owner repaired l
 check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD, 'admin join with reason',p.stderr)
 check('owner repaired launch identity' in f.journal(), 'admin join reason is journaled')
 
+# A manual command still needs a confirmed launcher result; an unrelated caller cannot consume it.
+f = Fixture(); launch,_ = f.open('manual')
+p = f.grill('join','--launch',launch,'--session','self',sid=OTHER)
+state_path = f.home/'stage-a/grill.json'
+state = json.loads(state_path.read_text()) if state_path.exists() else {}
+check(p.returncode == 0 and not f.role() and state.get('pending',{}).get('launch') == launch,
+      'manual: unbound unrelated self waits without consuming launch',p.stdout+p.stderr)
+p = f.grill('bind','--launch',launch,'--session',CHILD)
+check(p.returncode == 0 and not f.role(), 'manual: bind ignores unrelated early candidate',p.stderr)
+p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
+check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD,
+      'manual: confirmed child activates after unrelated candidate',p.stderr)
+
+# An uncertain background start retains the original hold until confirmed bind + child join.
+# The saved marker belongs to one round in one registered hub, never to its successor or a later round.
+for order in ('bind-first','join-first'):
+    for hold in ('original','new-round','successor'):
+        label = 'uncertain '+order+' '+hold
+        f = Fixture(); p = f.prompt()
+        check(p.returncode == 0 and f.mark().exists(), label+': actual skill prompt marks hub',p.stderr)
+        original = json.loads(f.mark().read_text())
+        fake = f.root/'fake claude'
+        fake.write_text('#!/usr/bin/env python3\nimport sys\na=sys.argv[1:]\n'
+                        'if a[0]=="agents": print("[]")\n'
+                        'elif a[0]=="--bg": print("launch accepted; identity unavailable")\n')
+        fake.chmod(0o755)
+        p = f.grill('--host','bg',env={'CLAUDE_BIN':str(fake)})
+        state = json.loads((f.home/'stage-a/grill.json').read_text())
+        pending = state.get('pending',{}); launch = pending.get('launch','')
+        check(p.returncode != 0 and 'printed no session id' in p.stderr and bool(launch) and not f.role(),
+              label+': Unsure keeps pending launch',p.stdout+p.stderr)
+        check(f.mark().exists() and json.loads(f.mark().read_text()) == original,
+              label+': Unsure preserves original marker')
+        saved = pending.get('grilling') or {}
+        check(all(saved.get(k) == original[k] for k in ('stage','session','since_ts')),
+              label+': pending snapshots exact original grilling',saved)
+        protected = None
+        protected_sid = HUB
+        if hold == 'new-round':
+            p = f.run('hub','grilling','end','--stage','stage-a','--why','original frontier closed')
+            check(p.returncode == 0 and not f.mark().exists(), label+': explicit end clears original',p.stderr)
+            p = f.run('hub','grilling','start','--stage','stage-a','--topic','a separate owner decision')
+            check(p.returncode == 0 and f.mark().exists(), label+': explicit start creates new round',p.stderr)
+            protected = json.loads(f.mark().read_text())
+            check(protected['since_ts'] != original['since_ts'], label+': new round has distinct since_ts')
+        elif hold == 'successor':
+            p = f.run('roles','--stage','stage-a','set','hub',OTHER,'--kind','cli','--tag','hub')
+            check(p.returncode == 0, label+': replace registered hub',p.stderr)
+            p = f.prompt(OTHER)
+            check(p.returncode == 0 and f.mark(OTHER).exists(), label+': skill prompt marks successor',p.stderr)
+            protected_sid = OTHER
+            protected = json.loads(f.mark(OTHER).read_text())
+        if order == 'join-first':
+            p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
+            state = json.loads((f.home/'stage-a/grill.json').read_text())
+            check(p.returncode == 0 and not f.role() and state.get('pending',{}).get('launch') == launch,
+                  label+': early join waits without consuming pending',p.stdout+p.stderr)
+            check(f.mark(protected_sid).exists(), label+': waiting join preserves hold')
+        p = f.grill('bind','--launch',launch,'--session',CHILD,'--why','owner confirmed recovered background identity')
+        check(p.returncode == 0, label+': confirmed administrative bind succeeds',p.stderr)
+        if order == 'bind-first':
+            check(not f.role() and f.mark(protected_sid).exists(), label+': bind alone preserves hold')
+            p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
+            check(p.returncode == 0, label+': child joins confirmed launch',p.stderr)
+        check((f.role() or {}).get('session') == CHILD, label+': correct child is active')
+        check('owner confirmed recovered background identity' in f.journal(), label+': recovery reason journaled')
+        if hold == 'original':
+            check(not f.mark().exists(), label+': activation clears original hub marker')
+        else:
+            check(f.mark(protected_sid).exists() and json.loads(f.mark(protected_sid).read_text()) == protected,
+                  label+': activation preserves protected marker')
+        p = f.grill('done','--launch',launch,sid=CHILD)
+        check(p.returncode == 0, label+': child reports done',p.stderr)
+        if hold == 'original':
+            p = f.run('hub','handoff','--stage','stage-a','--n','1','--out',str(f.root/'HANDOFF-recovered.md'))
+            check(p.returncode == 0, label+': handoff proceeds after recovery and done',p.stderr)
+
 # Background launch prints a short id; agents supplies the corresponding full sessionId.
 f = Fixture(); fake = f.root/'fake claude'; seen = f.root/'started'
 fake.write_text('#!/usr/bin/env python3\nimport json,pathlib,sys,time\na=sys.argv[1:]\n'

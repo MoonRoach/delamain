@@ -26,7 +26,7 @@ open     collects the questions: by default the stage's unresolved owner questio
          than AGENT_HUB_GRILL_JOIN_MIN minutes (default 30; --again drops it). Exit 1 when there is nothing to grill.
 join     the new session runs it first, with the launch id of its brief: it is registered as role `grill` (tag `grill`)
          under its full session id (a Codex thread by $CODEX_THREAD_ID, a Claude Desktop session by its local_ id), so
-         agent-top, `tell <stage> --role grill` and the hub see it, once the launcher binds the result with `bind` (bg binds its verified full sessionId itself). A native join
+         agent-top, `tell <stage> --role grill` and the hub see it, once the launcher binds the result with `bind` (bg binds its verified full sessionId itself). An unbound join
          before bind waits; bind activates a matching waiting join, otherwise join activates after bind. Refused (exit 2)
          while another session holds the role (one per stage) and for a launch that was replaced or dropped.
 done     the grilling session runs it when the frontier is empty or the owner stops: one journal line
@@ -449,6 +449,10 @@ def cmd_open(a) -> int:
             pend["launcher"] = {"session": sid, "cli_session_id": cli_id}
         except hc.UsageError:
             pend["launcher"] = {}
+        mark = grilling.active_stage(stage)
+        if mark and is_caller({"session": mark["session"]}):
+            # Keep the identity of this conversation, not just its hub: recovery must not end a later grilling.
+            pend["grilling"] = {k: mark[k] for k in ("stage", "session", "since_ts")}
         # recorded before the start: a start that hangs still holds the stage, and a replaced launch cannot join
         state["pending"] = pend
         save_state(stage, state)
@@ -465,10 +469,7 @@ def cmd_open(a) -> int:
             save_state(stage, state)
     # Prompt/Skill hooks may have marked the hub before routing was chosen. This conversation now belongs to the
     # interactive worker. It is not an autopilot hub and cannot be automatically succeeded, so needs no hub marker.
-    launcher = pend.get("launcher") or {}
-    for sid in dict.fromkeys((launcher.get("cli_session_id"), launcher.get("session"))):
-        if sid and sid in (grilling.hub_sessions(stage) or []):
-            grilling.end(grilling.canonical(stage, sid), f"delegated to grilling launch {launch_id}")
+    end_launch_grilling(stage, pend)
     hc.journal_append(stage, tag or autopilot.SERVICE_TAG,
                       f"grill: grilling session launched ({host}, launch {launch_id}) over {len(questions)} owner "
                       f"question(s), brief {brief}")
@@ -500,8 +501,8 @@ def cmd_open(a) -> int:
     else:
         cmd = f"codex {shlex.quote(prompt)}" if os.environ.get("CODEX_THREAD_ID") else f"claude {shlex.quote(prompt)}"
         print(f"The owner starts it in a terminal, in {cwd}:\n  cd {shlex.quote(str(cwd))} && {cmd}")
-    if host in ("desktop", "codex-app"):
-        print(f"Bind the native launch result's full session id (never a title or short id): "
+    if host in ("desktop", "codex-app", "manual"):
+        print(f"Bind the launched session's confirmed full id (native result or owner-confirmed terminal id; never a title or short id): "
               f"`{command('hub')} grill bind --stage {stage} --launch {launch_id} --session <full session id>`. "
               "Bind and the new session's join may arrive in either order; only their matching identities activate "
               "the role. If the result is unknown, keep this launch pending; verify it instead of guessing an id.")
@@ -547,6 +548,17 @@ def expected_session(pend: dict) -> dict:
     return pend.get("bound") or {"session": pend.get("bg_id")}
 
 
+def end_launch_grilling(stage: str, launch: dict) -> None:
+    """Release only the launcher's original conversation, including a recovered Unsure launch."""
+    mark = launch.get("grilling") or {}
+    sid = mark.get("session")
+    if mark.get("stage") != stage or sid not in (grilling.hub_sessions(stage) or []):
+        return  # a successor's grilling belongs to that successor
+    current = grilling.active(sid)
+    if current and all(current.get(k) == mark.get(k) for k in ("stage", "session", "since_ts")):
+        grilling.end(sid, f"delegated to grilling launch {launch['launch']}")
+
+
 def register_join(stage: str, state: dict, identity: dict) -> dict:
     """Activate only an authenticated join matching the launch result; caller holds state_lock."""
     pend = state["pending"]
@@ -563,6 +575,7 @@ def register_join(stage: str, state: dict, identity: dict) -> dict:
         hc.roles_save(stage, data)
     state.pop("pending")
     save_state(stage, state)
+    end_launch_grilling(stage, pend)
     hc.journal_append(stage, ROLE, f"grill join: grilling session {rec['session']} registered as role {ROLE} "
                                    f"({len(rec['questions'])} question(s), brief {rec['brief'] or '?'})")
     return rec
@@ -642,7 +655,7 @@ def cmd_join(a) -> int:
                 admin_event(stage, "registration", identity, why)
                 if not expected.get("session"):
                     pend["bound"] = identity
-            if not expected_session(pend).get("session") and pend.get("host") != "manual":
+            if not expected_session(pend).get("session"):
                 joins = pend.setdefault("joins", {})
                 if identity["session"] not in joins:
                     hc.journal_append(stage, ROLE, f"grill join: session {identity['session']} waiting for launch "

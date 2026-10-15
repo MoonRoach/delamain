@@ -61,12 +61,13 @@ journal. The Codex-only delivery rules are in [codex-hub.md](codex-hub.md#talkin
   - Claude in a terminal or a background session: it starts `claude --bg --remote-control <S>-grill` itself; give the
     owner the Remote Control link it prints.
   - Codex: `references/codex-hub.md` (*Grilling session on Codex*).
-  After a native launch returns, run `hub grill bind --stage <S> --launch <id> --session <full returned id>`.
+  After a native launch returns, or the owner confirms the full id of the manually started terminal session, run `hub grill bind --stage <S> --launch <id> --session <full returned id>`.
   The launcher result and the new session's own join must match; either may arrive first. A waiting join cannot grill
   until registered (repeat join after binding). An unknown result stays pending until verified; never guess an id.
   Background launches resolve their handle to a full sessionId themselves. Every generated command pins the hub's
   absolute `AGENT_HUB_HOME`, including in a fresh native session. A successful open clears the calling hub's grilling
-  marker; failed launches and dry runs preserve it. The interactive role is not an autopilot hub and has no automatic
+  marker; failed launches and dry runs preserve it. If an uncertain bg launch is recovered with bind/join, activation
+  clears only the saved original marker (same hub and grilling), preserving a newer grilling or successor. The interactive role is not an autopilot hub and has no automatic
   successor, so it does not need a hub grilling marker.
   The new session registers as role `grill` (`hub grill join` with the launch id of its brief), grills with the companion skill, records every answer
   in the register (`ask close`, `ask withdraw`, `ask add --by grill`, `ask decided` only when the owner delegates)

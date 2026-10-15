@@ -147,6 +147,74 @@ printf '#!/bin/bash\necho new https://new.example/2\n' > $O/newurl.sh; chmod +x 
 : > $J; $B/await --wait --log $O/reused.log -- $O/newurl.sh >/dev/null 2>&1
 check "$(grep -c 'https://new.example/2 (' $J)" 1 "reused log: the link is this run's URL"
 
+# 5f. killpg answered with EPERM. macOS says that, not ESRCH, while the group holds only zombies (the leader reaped, a
+# child still dying), and it used to cost the supervisor its line (rc 1, no TIMEOUT / FAILED). The race is ~1% a call and
+# cannot be forced, so the kernel's answer is injected. The same EPERM from a live leader of another uid means the signal
+# went nowhere: stop_group must neither hang nor claim the command was stopped. And a crash of run_wait still journals.
+cat > $O/stopgroup.py <<'PY'
+import argparse, importlib.machinery, importlib.util, os, signal, subprocess, sys, time
+path, work = sys.argv[1:3]
+sys.argv = [path]
+loader = importlib.machinery.SourceFileLoader("await_mod", path)
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("await_mod", loader)); loader.exec_module(mod)
+signal.alarm(60)  # a hang is a failed check, not a stuck suite
+real, seen = os.killpg, []
+def deliver_then_eperm(pgid, sig):
+    try:
+        real(pgid, sig)
+    finally:
+        raise PermissionError(1, "Operation not permitted")
+def refuse(pgid, sig):
+    seen.append(pgid)
+    raise PermissionError(1, "Operation not permitted")
+def leader():
+    return subprocess.Popen(["/bin/sleep", "300"], start_new_session=True)
+
+# a) the group is zombies / gone: EPERM after the signal did its work -> the command is stopped
+os.killpg = deliver_then_eperm
+p = subprocess.Popen(["/bin/bash", "-c", "sleep 300 & echo $! > \"$1\"; wait", "x", work + "/child.pid"], start_new_session=True)
+for _ in range(100):
+    if os.path.exists(work + "/child.pid") and os.path.getsize(work + "/child.pid"):
+        break
+    time.sleep(0.05)
+try:
+    print("zombies:", repr(mod.stop_group(p)))
+except Exception as e:
+    print("zombies: raised", type(e).__name__)
+
+# b) a live leader the signals cannot reach: bounded, and it says why
+os.killpg, mod.KILL_GRACE_S = refuse, 0.3
+p = leader(); t0 = time.monotonic()
+print("live:", repr(mod.stop_group(p)), "bounded" if time.monotonic() - t0 < 5 else "slow")
+real(p.pid, signal.SIGKILL); p.wait()
+
+# c) ...and the line's detail says so instead of "stopped"
+seen.clear()
+args = argparse.Namespace(timeout="1s", ok="DONE")
+word, detail = mod.run_wait(args, ["/bin/sleep", "300"], __import__("pathlib").Path(work + "/c.log"), {})
+print("detail:", word, detail)
+for pg in seen:
+    try:
+        real(pg, signal.SIGKILL)
+    except OSError:
+        pass
+
+# d) run_wait itself blows up: supervise still writes one FAILED line
+os.killpg = real
+def boom(*a):
+    raise RuntimeError("boom")
+mod.run_wait = boom
+args = argparse.Namespace(link=None, to="hub", label="crash", timeout="1s", ok="DONE")
+print("crash rc:", mod.supervise(args, ["true"], __import__("pathlib").Path(work + "/d.log"), "stage-a", "hub-1-await", {}))
+PY
+: > $J; mkdir -p $O/sg
+sg=$(python3 -I $O/stopgroup.py $B/await $O/sg 2>&1)
+check "$(echo "$sg" | grep '^zombies:')" "zombies: ''" "EPERM from a group of zombies (macOS) does not abort stop_group"
+check "$(echo "$sg" | grep '^live:')" "live: 'EPERM' bounded" "a live leader that EPERM keeps is reported, not waited on for ever"
+echo "$sg" | grep -q '^detail: TIMEOUT could not be stopped (EPERM) after 1s, no verdict yet$'; check $? 0 "…and the TIMEOUT line says it could not be stopped"
+check "$(grep -c '@hub FAILED crash .*await crashed: RuntimeError' $J)" 1 "a crash of run_wait still journals one FAILED line"
+check "$(echo "$sg" | grep '^crash rc:')" "crash rc: 0" "…and supervise exits 0"
+
 # 6. the hub's own jwait (digest filter) wakes once on the line, though the line is written under the hub's tag family
 : > $J; rm -f $G/*; export EXIT=0
 $B/jlog --tag old "old line" >/dev/null

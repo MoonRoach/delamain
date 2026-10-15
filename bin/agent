@@ -7,7 +7,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
               [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
-              [--permission-mode MODE] [--ignore-hold]
+              [--permission-mode MODE] [--mcp inherit|none|FILE[,FILE]] [--ignore-hold]
   agent status [R] [--stage S] [--all]
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
                                                       is the message, a word starting with `-` included)
@@ -371,6 +371,55 @@ def bg_wait_ceiling(cwd=None) -> str:
     return raw
 
 
+MCP_CHOICES = ("inherit", "none")
+
+
+def mcp_choice(given, cwd) -> object:
+    """The MCP servers of a Claude agent's runs: "inherit" (the user's config, enabled plugins and claude.ai connectors,
+    as an interactive session gets them), "none" (--strict-mcp-config: no server at all), or a list of absolute paths
+    of MCP config files (--strict-mcp-config --mcp-config FILE…: only their servers). `given` is --mcp, else
+    AGENT_HUB_SPAWN_MCP; files are comma-separated, a relative one of --mcp is relative to the working directory. A
+    repository's config.json may choose inherit or none only: a file's servers are commands the CLI would start."""
+    raw, origin = (given, "flag") if given else hc.setting_origin("AGENT_HUB_SPAWN_MCP", cwd=cwd)
+    name = "--mcp" if origin == "flag" else "AGENT_HUB_SPAWN_MCP"
+    raw = (raw or "inherit").strip()
+    if raw in MCP_CHOICES:
+        return raw
+    if origin == "project":
+        raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in the repository's .agent-hub/config.json: one of {MCP_CHOICES} — "
+                            "an MCP config file goes in the hub home's config.json, the environment or --mcp")
+    files = []
+    for part in filter(None, (x.strip() for x in raw.split(","))):
+        path = Path(part).expanduser()
+        if not path.is_absolute() and origin != "flag":
+            raise hc.UsageError(f"{name}: {part}: an MCP config file must be an absolute path (or ~/…)")
+        path = path.resolve()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except OSError:
+            raise hc.UsageError(f"{name}: {path}: no such file (inherit, none, or MCP config files)") from None
+        except ValueError as e:
+            raise hc.UsageError(f"{name}: {path}: not valid JSON ({e})") from None
+        if not (isinstance(data, dict) and isinstance(data.get("mcpServers"), dict)):
+            raise hc.UsageError(f'{name}: {path}: not an MCP config (a JSON object with "mcpServers")')
+        files.append(str(path))
+    if not files:
+        raise hc.UsageError(f"{name}: one of {MCP_CHOICES}, or MCP config files")
+    return files
+
+
+def mcp_text(mcp) -> str:
+    return mcp if isinstance(mcp, str) else "only " + ", ".join(mcp)
+
+
+def mcp_args(meta: dict) -> list:
+    """The CLI flags of an agent's MCP choice; an agent spawned before the choice existed inherits."""
+    mcp = meta.get("mcp") or "inherit"
+    if mcp == "inherit":
+        return []
+    return ["--strict-mcp-config"] + (["--mcp-config", *mcp] if isinstance(mcp, list) else [])
+
+
 def init_timeout(cwd=None) -> int:
     """Seconds to wait for a run's init event (it comes after MCP servers connect): AGENT_INIT_TIMEOUT or 120."""
     try:
@@ -476,6 +525,7 @@ def claude_argv(meta: dict, resume: bool) -> list:
         argv += ["--effort", meta["effort"]]
     argv += ["--output-format", "stream-json", "--verbose",
              "--permission-mode", meta.get("permission_mode") or DEFAULT_PERMISSION_MODE]
+    argv += mcp_args(meta)  # before --add-dir: --mcp-config takes several values too
     argv += hc.add_dir_args(meta["cwd"])  # before -n / -p: --add-dir takes several values
     if not resume:
         argv += ["-n", meta["title"]]
@@ -574,6 +624,10 @@ def cmd_spawn(a) -> int:
         raise hc.UsageError("--sandbox and --sandbox-policy are only supported by the Codex engine")
     else:
         bg_wait_ceiling(cwd)  # a bad value fails before any directory or process exists
+    if engine == "codex" and a.mcp and a.mcp != "inherit":
+        # `codex exec -c` cannot switch off the servers of Codex plugins; AGENT_HUB_SPAWN_MCP is for Claude agents
+        raise hc.UsageError("--mcp is only supported by the Claude engine")
+    mcp = mcp_choice(a.mcp, cwd) if engine == "claude" else None
     if not brief.is_file():
         raise hc.UsageError(f"--brief {brief}: no such file")
     if a.base and a.worktree is None:
@@ -602,8 +656,8 @@ def cmd_spawn(a) -> int:
     if held:
         hc.warn(held)
     if a.dry_run:
-        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}; nothing "
-              "was started or written")
+        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}"
+              f"{', MCP ' + mcp_text(mcp) if mcp and mcp != 'inherit' else ''}; nothing was started or written")
         return 0
     d = agent_dir(stage, a.role)
     if (d / "meta.json").exists():
@@ -630,6 +684,8 @@ def cmd_spawn(a) -> int:
             "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
     meta["engine"] = engine
+    if mcp:
+        meta["mcp"] = mcp
     if reason:
         meta["reason"] = reason
     if engine == "codex":
@@ -660,6 +716,7 @@ def cmd_spawn(a) -> int:
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
+                               + (f", MCP {mcp_text(mcp)}" if mcp and mcp != "inherit" else "")
                                + (f", reason: {reason}" if reason else "")
                                + (f", {pace_note}" if pace_note else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
@@ -1189,6 +1246,9 @@ def main(argv: list) -> int:
     s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
+    s.add_argument("--mcp", metavar="inherit|none|FILE[,FILE]",
+                   help="Claude: the MCP servers of the agent — inherit (the user's config, plugins and claude.ai "
+                        "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else inherit")
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
                         "on a new branch from origin's default branch (--base)")

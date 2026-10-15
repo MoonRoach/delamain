@@ -71,6 +71,8 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    or you leave stages running while you are away; off otherwise.
    Codex app wake requires a reachable CLI runtime or a separately configured app-native heartbeat; the native
    automation consumer may use model calls. `watchdog install` alone does not install that native consumer.
+10. MCP servers of headless agents — `AGENT_HUB_SPAWN_MCP` in `config.json`: `inherit` (the default) or `none`?
+   *Recommended:* `none` unless the project's agents use an MCP server (a GitLab or database one, say); the default stays `inherit`.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or

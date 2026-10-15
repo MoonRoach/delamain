@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
+  replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
+  more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%
+  remaining allows a launch even with an exhaustion forecast. Below 3% refuses only with fresh verified data on the
+  other engine; both below 3% refuse unless `--reason` is supplied. Unknown/stale data never grounds refusal. Engine
+  locks get a permission question for this launch, defaulting to the locked engine; models are never swapped silently.
+  Forecasts from the first 6 hours of a week are low-confidence display only, and five-hour windows are context.
+  Advice no longer defers or sequences work until reset. See [Limit pace](docs/reference.md#limit-pace).
+
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
   the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
   the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner

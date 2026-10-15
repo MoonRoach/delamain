@@ -218,8 +218,9 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
 
 ### Limit pace
 
-Before a hub spends, Delamain compares each engine's plan week with its pace and says what to do about it
-(`bin/limit_pace.py`). Nothing is queried online; it reads what the logs already hold:
+Before a launch, Delamain advises which engine, model class and effort to use for **this launch**
+(`bin/limit_pace.py`). It compares fresh remaining weekly percentages; forecasts provide context, not a work
+schedule. Nothing is queried online; it reads what the logs already hold:
 
 - **Codex**: the `token_count` rate-limit events of the rollouts under `$CODEX_HOME/sessions` written in the last
   12 hours (the account bucket, `limit_id` `codex`), each with its own timestamp.
@@ -228,45 +229,56 @@ Before a hub spends, Delamain compares each engine's plan week with its pace and
   the sample's. Interactive sessions do not log it: with no headless agent running, Claude's week is unknown or stale. Among samples within 10 minutes of the newest, the window instance with the latest
   reset stands, at its highest utilisation (inside an instance it only grows, and a log's mtime is not its event's time).
 
-The model, per window: the share of the window elapsed (from `resets_at` and the window's length), the usage against
-it, the burn rate over the last 6 hours of samples of the same window (when they span at least an hour), the window's
-average rate, and when each rate runs the window out. A window is **on pace**, **ahead** (more than 10 points ahead
-of the elapsed share, or only the last hours' burn would run it out before the reset: a burst), or **over pace**
-(every known rate runs it out before the reset). A sample older than 3 hours, or a window that reset since the latest
-sample, is **stale**: reported, never judged, never refused on.
+The display retains the elapsed share of each window, usage, recent burn over the last 6 hours of samples of the
+same window (when they span at least an hour), the window's average rate and projected exhaustion. A window is
+**on pace**, **ahead** (more than 10 points ahead of the elapsed share, or only recent burn projects exhaustion:
+a burst), or **over pace** (every known rate projects exhaustion before reset). During the first 6 hours of a weekly
+window the forecast is marked **low confidence**: it is display-only and alone never causes a move or refusal.
+Five-hour windows are contextual only. Neither forecast supplies advice to delay, sequence or hold work until reset.
+A sample older than 3 hours, or a window that reset since the latest sample, is **stale**. Unknown and stale data
+never justify refusal or count as verified room on the other engine.
 
-The advice follows one order, and a model is never swapped silently:
+The advice follows one order, and a model or effort is never changed silently:
 
 1. **Remove waste.** An effort above the task class's default for routine work (Sol high → medium, Sonnet xhigh →
-   high); briefs that will run past ~200k tokens of context split into stages; no parallel agents reading the same files.
-2. **Move to the engine with headroom at an equivalent class**: Opus/Fable ↔ Astra high (an executor that decides as
-   it goes: Sol high), Sonnet ↔ Sol medium, Haiku ↔ Luna. Headroom means fresh data and not over pace; an engine that
-   is itself ahead takes the urgent part only. A stage the owner locked to an engine (`AGENT_HUB_STAGE_ENGINES`) is
-   never moved: the advice is a ready `ask add` with the numbers and a default action.
-3. **Sequence by value.** Non-urgent work (the night queue, nice-to-haves) starts after the reset; the hub decides
-   what is urgent.
-4. **Say it plainly.** When the week runs out before its reset and nothing above covers it, the advice is an
-   `ask add` for the owner.
+   high). Keep the task class explicit when the work needs judgement.
+2. **Compare remaining weekly percentages.** Below 20% remaining is the advisory threshold for being short.
+   If the requested engine is short and the other has more fresh room, propose this launch there at an equivalent
+   class: Opus/Fable ↔ Astra high (an executor that decides as it goes: Sol high), Sonnet high ↔ Sol medium,
+   Haiku high ↔ Luna medium. Compare the percentages, even when the engine with more remaining has a worse pace forecast.
+   If both are short, recommend the one with more room and warn that it may run out before reset.
+3. **Preserve the owner's engine lock.** For `AGENT_HUB_STAGE_ENGINES`, a ready `ask add` asks whether to allow the
+   other engine for **this launch**, with the equivalent model/effort and both weekly figures. The default is to run
+   this launch on the locked engine. Permission for one launch leaves the stage's engine decision intact.
+4. **State uncertainty.** If either weekly reading is unknown or stale, report the missing comparison and suggest
+   a fresh probe. Continue under the requested engine choice; missing data does not create a gate.
 
-The one hard stop: `agent spawn` refuses (exit 1, nothing created) when the week is over pace by every rate, at least
-half of it is used, the work is not mechanical (Haiku, Luna), and no engine with headroom can take it: the other
-engine's fresh data shows it over pace too, or the stage is locked to this one. When the other engine is unknown or
-stale, the path is unchecked, not closed: the advice and the ready `ask add` come with "headroom on X is not verified:
-run a probe or pass --reason", and nothing is refused. `--reason "…"` passes; the journal's start line then says `over the limit-pace stop (<numbers>)
-by --reason`. `AGENT_HUB_LIMIT_PACE=warn` keeps the advice and drops the refusal; `off` drops both.
+The hard stop uses remaining quota, not projected pace:
+
+| Fresh weekly readings | `agent spawn` in `on` mode |
+|---|---|
+| Requested engine has at least 3% remaining | Launch allowed, even if every forecast projects exhaustion before reset. |
+| Requested engine has less than 3%, other engine has fresh verified data with at least 3% | Refuse the requested launch (exit 1, nothing created); propose the equivalent class on the other engine, or ask for this launch's engine permission when locked. |
+| Both engines have fresh readings below 3% | Refuse and report both as practically exhausted. |
+| Requested engine or alternative has unknown/stale data | No quota refusal based on the unverified comparison. |
+
+The rules cover every task class. `--reason "…"` passes a quota refusal; the journal's start line records
+`over the limit-pace stop (<numbers>) by --reason`. `AGENT_HUB_LIMIT_PACE=warn` keeps the advice and drops the
+refusal; `off` drops both.
 
 Where it shows:
 
 ```text
 agent spawn … [--task-class mechanical|bounded|judgement] [--dry-run]
-    the reasoning and the advice before the launch; --task-class (default: by the model) sets the class the effort and
+    the numbers and the advice for this launch; --task-class (default: by the model) sets the class the effort and
     the equivalent are judged by; --dry-run runs every check, prints the advice and starts or writes nothing
 hub start / hub takeover     one line per engine in the digest
 agent-top --once             "Limit pace" lines per engine; --json: limit_pace {engine: level, used, expected, eta, …}
 watchdog (R6)                one `[pace] @hub LIMIT …` journal line per crossing in each stage with a hub
 ```
 
-A crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; a level that falls
+A forecast crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; it is
+context for the next launch's quota comparison, not a scheduling instruction. A level that falls
 and rises again within the same window is not announced twice. The record is `<state dir>/limit-pace/crossings.json`.
 `agent spawn` and the watchdog write it; the digest and `agent-top` only read.
 
@@ -535,7 +547,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_SPAWN_HOLD_LOAD` | none (off) | R5: the 1-minute load average per core above which the watchdog holds spawns (`1.5`, `0.75`); the hold ends below 80 % of it. Empty or invalid (warned) = off. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD` | `warn` | What `agent spawn` does while a load hold is on: `warn` (a warning, the spawn goes on) or `refuse` (exit 1); `--ignore-hold` passes either. Invalid (warned) = `warn`. Resumes (`agent send`) are never held. Hub-wide. |
 | `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
-| `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. The limit-pace advice never proposes moving that stage's work; it proposes an `ask add`. Hub-wide: a repository cannot unlock a stage. |
+| `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. Limit-pace proposes an `ask add` for permission to use the other engine for this launch; the default runs the locked engine. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|GRILLED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |

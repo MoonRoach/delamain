@@ -160,6 +160,8 @@ lines, details in a file. `hub handoff` refuses while a sub-agent of your sessio
 
 ## Executors
 
+- Before each launch, use [limit-pace advice](../../docs/reference.md#limit-pace) for its engine, model and effort;
+  keep engine locks (ask about this launch only; default: run locked engine), and keep ready work moving.
 - Work that commits, pushes or waits is a headless agent:
   `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`;
   the role says what the work is (`mainmerge-fix`, never `wp23`). It survives the hub's handoff and any hub can talk to it. Its tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` is

@@ -10,11 +10,11 @@ the last RECENT_S of samples of the same window instance and the window's averag
 window out. Levels: ok, ahead (usage more than AHEAD_PP points ahead of the elapsed share), exhaust (a rate runs it out
 before the reset); unknown (no sample) and stale (the latest sample older than STALE_S, or the window reset since).
 
-The advice follows the owner's order of preference: remove waste (effort above the task class's default, context,
-fan-out), move to the other engine at an equivalent class, defer non-urgent work to after the reset; and only when none
-of that covers a confirmed exhaustion, say so and refuse expensive launches unless `--reason` says why. A model is
-never swapped silently, and a stage the owner locked to an engine (AGENT_HUB_STAGE_ENGINES) gets an `ask add` proposal
-instead of a move.
+Advice chooses an engine, equivalent model and effort for this launch from fresh remaining usage. Forecasts describe
+risk, not a work schedule. Below 20% remaining, suggest the engine with more room; below 3%, refuse unless --reason
+when both engines have fresh data. A model is never swapped silently. An owner-locked stage
+(AGENT_HUB_STAGE_ENGINES) gets an ask proposal whose default runs this launch on the locked engine.
+Forecasts in the first six hours are low-confidence and cannot by themselves move or refuse a launch.
 
 Settings (hub home config.json or the environment):
   AGENT_HUB_LIMIT_PACE     on (default) | warn (advise, never refuse) | off (no advice at all)
@@ -44,7 +44,9 @@ SAME_WINDOW_S = 600           # samples whose resets_at differ by more belong to
 LATEST_S = 600                # samples this close to the newest one describe "now" together (a log's mtime is not the
                               # event's time, so parallel logs disagree by a point or by a window instance)
 AHEAD_PP = 10                 # usage this many points ahead of the elapsed share is "ahead"
-REFUSE_FLOOR = 50             # a refusal needs at least this much of the week used: before it, advice is enough
+SHORT_REMAINING = 20         # compare engines for this launch below this remaining percentage
+EXHAUSTED_REMAINING = 3      # practically exhausted: a hard stop needs fresh observations of both engines
+EARLY_WINDOW_S = 6 * 3600    # early-window extrapolation is displayed with low confidence
 LOG_HOURS = 12                # logs and rollouts touched within this many hours are read
 LOG_MAX = 64                  # at most this many Claude logs ...
 ROLLOUT_MAX = 32              # ... and Codex rollouts, newest first
@@ -77,6 +79,7 @@ class Pace:
     burn_recent: Optional[float] = None    # percent per hour
     burn_avg: Optional[float] = None
     eta: Optional[float] = None            # when the shown rate (recent, else average) runs the window out
+    low_confidence: bool = False          # the first six hours of a window
     confirmed: bool = False                # every known rate runs it out before the reset
     burst: bool = False                    # only the recent rate runs it out; the window average holds
     why_stale: str = ""
@@ -294,6 +297,7 @@ def assess(engine: str, window: str, samples: list, now: float) -> Pace:
         return p
     elapsed = min(max(last.seen_at - (last.resets_at - last.length_s), 0.0), last.length_s)
     p.expected = 100 * elapsed / last.length_s
+    p.low_confidence = window == "7d" and elapsed < EARLY_WINDOW_S
     if elapsed >= MIN_ELAPSED_S:
         p.burn_avg = last.used / (elapsed / 3600)
     same = [s for s in samples if s.resets_at is not None and abs(s.resets_at - last.resets_at) <= SAME_WINDOW_S
@@ -339,7 +343,7 @@ def equivalent(engine: str, cls: str) -> str:
     """The other engine's equivalent of a class (the owner's table: Opus ↔ Astra or Sol high, Sonnet ↔ Sol medium,
     Haiku ↔ Luna)."""
     if engine == "claude":     # moving Claude work to Codex
-        return {"mechanical": "Codex Luna", "bounded": "Codex Sol medium",
+        return {"mechanical": "Codex Luna medium", "bounded": "Codex Sol medium",
                 "judgement": "Codex Astra high (an executor that decides as it goes: Sol high)"}[cls]
     return {"mechanical": "Claude Haiku high", "bounded": "Claude Sonnet high",
             "judgement": "Claude Opus high"}[cls]
@@ -421,6 +425,8 @@ def describe(p: Pace) -> str:
                  "the window average holds")
     else:
         text += " — " + ("ahead of pace" if p.level == "ahead" else "on pace")
+    if p.low_confidence:
+        text += "; early-window forecast: low-confidence"
     return text + f" (sample {_dur(p.age_s)} old)"
 
 
@@ -438,22 +444,28 @@ def short(p: Pace) -> str:
 
 
 def headroom(p: Pace) -> bool:
-    return p.fresh and p.level != "exhaust"
+    return p.fresh and 100 - p.used >= EXHAUSTED_REMAINING
+
+
+def preferred(p: Pace, q: Pace) -> Pace:
+    """Use fresh remaining percentages; forecasts alone never change a launch's engine."""
+    if p.fresh and q.fresh and 100 - p.used < SHORT_REMAINING and q.used < p.used:
+        return q
+    return p
 
 
 def ask_command(stage: str, p: Pace, lock: Optional[dict], q: Optional[Pace], cls: Optional[str]) -> str:
-    """A ready `ask add` for the owner with the numbers and a default action."""
-    reset = _when(p.resets_at) if p.resets_at else "the reset"
+    """A permission for this launch with an executable default, respecting the owner's engine lock."""
     nums = short(p) + ("; " + short(q) if q is not None else "")
-    if lock and lock["engine"] == p.engine and q is not None and headroom(q):
-        move = equivalent(p.engine, cls) if cls else f"{ENGINE_NAME[q.engine]} at the equivalent class"
+    if lock and lock["engine"] == p.engine:
+        move = equivalent(p.engine, cls) if cls else f"{ENGINE_NAME[other(p.engine)]} at the equivalent class"
         text = (f"{nums}. Stage {stage} runs on {ENGINE_NAME[p.engine]} only ({lock['decision']}). "
-                f"Allow {move} for this stage's urgent work until {reset}?")
-        default = f"keep {ENGINE_NAME[p.engine]} only; defer non-urgent work to after {reset}"
+                f"Allow {move} for this launch?")
+        default = f"run this launch on the locked engine {ENGINE_NAME[p.engine]}"
     else:
-        text = (f"{nums}. Lower effort and moving engines do not cover it. Defer non-urgent work to the reset, "
-                "or name the work that may run on a weaker class until then?")
-        default = f"defer non-urgent {ENGINE_NAME[p.engine]} work to after {reset}; urgent work runs with --reason"
+        chosen = preferred(p, q) if q else p
+        text = f"{nums}. Run this launch on {ENGINE_NAME[chosen.engine]} at the task's equivalent class?"
+        default = f"run this launch on {ENGINE_NAME[chosen.engine]}"
     return f"ask add --stage {shlex.quote(stage)} {shlex.quote(text)} --default {shlex.quote(default)}"
 
 
@@ -467,70 +479,52 @@ class Advice:
 
 def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: dict, task_class: Optional[str] = None,
            reason: str = "", lock: Optional[dict] = None) -> Advice:
-    """What a launch of `model` at `effort` on `engine` should consider, given {engine: {window: Pace}}. Empty lines
-    when the engine's week is on pace."""
+    """Compare engines for this launch, retaining the requested model until an explicit new launch."""
     adv = Advice()
     p = paces.get(engine, {}).get("7d") or Pace(engine, "7d")
     q = paces.get(other(engine), {}).get("7d") or Pace(other(engine), "7d")
     adv.pace = p
     cls = task_class or classify(model)
     five = paces.get(engine, {}).get("5h")
-    if five is not None and five.level == "exhaust" and five.eta is not None:
-        adv.lines.append(f"{describe(five)}: a pause of up to {_dur(five.resets_at - five.eta)}; work that can wait "
-                         f"starts after {_when(five.resets_at)}")
-    if p.level in ("unknown", "stale"):
+    if five is not None and five.level == "exhaust":
+        adv.lines.append(describe(five) + "; consider this window when choosing the engine for this launch")
+    if not p.fresh:
         if p.level == "stale":
             adv.lines.append(describe(p) + "; the advisor does not refuse on stale data")
         return adv
-    if p.level == "ok":
+    default = class_default_effort(engine, cls)
+    waste = (default and effort in EFFORT_ORDER and EFFORT_ORDER.index(effort) > EFFORT_ORDER.index(default)
+             and not reason)
+    if p.level == "ok" and 100 - p.used >= SHORT_REMAINING and not waste:
         return adv
     adv.lines.insert(0, describe(p))
-    # 1. remove waste
-    default = class_default_effort(engine, cls)
-    if default and effort in EFFORT_ORDER and EFFORT_ORDER.index(effort) > EFFORT_ORDER.index(default) and not reason:
-        adv.lines.append(f"1. waste: routine {cls} work runs at {default} (asked: {effort}); keep {effort} only for "
-                         f"work that needs judgement (then say so: --task-class judgement --reason \"…\")")
-    else:
-        adv.lines.append("1. waste: keep the effort at the class default where the task has no judgement in it")
-    adv.lines.append(f"   cap the context: a brief that will run past {CONTEXT_CAP} tokens is split into stages with a "
-                     "handoff; no parallel agents reading the same files")
-    # 2. move to the engine with headroom at an equivalent class
+    if waste:
+        adv.lines.append(f"1. waste: routine {cls} work runs at {default} (asked: {effort}); keep {effort} for "
+                         'work that needs judgement (--task-class judgement --reason "…")')
     locked = lock is not None and lock["engine"] == engine
-    can_move = not locked and headroom(q)
-    if locked:
-        if headroom(q):
-            adv.lines.append(f"2. move: stage {stage} is on {ENGINE_NAME[engine]} by {lock['decision']}: no switch. "
-                             f"{describe(q)}. Ask the owner:")
-            adv.lines.append("   " + ask_command(stage, p, lock, q, cls))
-        else:
-            adv.lines.append(f"2. move: stage {stage} is on {ENGINE_NAME[engine]} by {lock['decision']}; "
-                             f"{describe(q)}")
-    elif can_move:
-        part = ("" if q.level == "ok" else
-                f"; {ENGINE_NAME[q.engine]} is ahead of pace too: move the urgent part only, or it runs out next")
-        adv.lines.append(f"2. move: {describe(q)}; run this as {equivalent(engine, cls)} instead (same class, "
-                         f"not a weaker model){part}")
+    chosen = preferred(p, q)
+    if chosen.engine != engine and locked:
+        adv.lines.append(f"2. move: stage {stage} is on {ENGINE_NAME[engine]} by {lock['decision']}; "
+                         f"run this launch on the locked engine. {describe(q)}. Ask the owner:")
+        adv.lines.append("   " + ask_command(stage, p, lock, q, cls))
+    elif chosen.engine != engine:
+        adv.lines.append(f"2. move: {describe(q)}; run this as {equivalent(engine, cls)} instead "
+                         "(same class, more remaining room for this launch)")
     else:
-        adv.lines.append(f"2. move: no verified headroom elsewhere — {describe(q)}")
-        if not q.fresh:
-            adv.lines.append(f"   headroom on {ENGINE_NAME[q.engine]} is not verified: run a probe there, or pass "
-                             "--reason")
-    # 3. sequence by value
-    adv.lines.append(f"3. sequence: if this is not urgent (night queue, nice-to-have), start it after the reset "
-                     f"{_when(p.resets_at)}; the hub decides what is urgent")
-    # 4. the plain statement and the one hard stop
-    if p.level == "exhaust" and not can_move:
-        # "no cheaper path" is known only from fresh data of the other engine (or a pinned stage); an engine that is
-        # unknown or stale is a path not checked, not a path closed
-        unverified = not locked and not q.fresh
-        stop = (p.confirmed and p.used >= REFUSE_FLOOR and cls != "mechanical" and not unverified)
-        if not (locked and headroom(q)):
-            adv.lines.append("4. none of this covers it: tell the owner — " + ask_command(stage, p, lock, q, cls))
-        adv.stop = stop
-        if stop and not reason and mode() == "on":
-            adv.refuse = (f"limit pace: {describe(p)}, and no engine with headroom takes this {cls} work. "
-                          "Start it anyway with --reason \"…\" (journalled), defer it to the reset, or ask the owner "
-                          "(the command above)")
+        adv.lines.append(f"2. launch: run on {ENGINE_NAME[engine]} with the requested model and effort")
+    if not q.fresh and 100 - p.used < SHORT_REMAINING:
+        adv.lines.append(f"   headroom on {ENGINE_NAME[q.engine]} is not verified: run a probe there; "
+                         "keep this launch on the requested engine meanwhile")
+    if q.fresh and 100 - p.used < SHORT_REMAINING and 100 - q.used < SHORT_REMAINING:
+        adv.lines.append(f"Both engines have little room; {'the locked engine' if locked else ENGINE_NAME[chosen.engine]} "
+                         "may run out before the reset during this work")
+    adv.stop = 100 - p.used < EXHAUSTED_REMAINING and q.fresh
+    if adv.stop:
+        state = ("Both engines are practically exhausted" if not headroom(q) else
+                 f"{ENGINE_NAME[engine]} is practically exhausted; {ENGINE_NAME[q.engine]} has room")
+        adv.lines.append(state + '; run this launch with --reason "…" if keeping the requested engine')
+        if not reason and mode() == "on":
+            adv.refuse = f'limit pace: {describe(p)}. {state}. Start this launch with --reason "…" (journalled)'
     return adv
 
 
@@ -555,26 +549,32 @@ def summary(engine: str, paces: dict, stage: Optional[str] = None) -> str:
     five = paces.get(engine, {}).get("5h")
     if five is not None and five.level == "exhaust" and five.eta is not None:
         text += f"; 5h window {_pct(five.used)}, capped ~{_when(five.eta)} until {_when(five.resets_at)}"
-    if p.level not in ("ahead", "exhaust"):
+    if p.low_confidence:
+        text += "; early-window forecast: low-confidence"
+    if p.level not in ("ahead", "exhaust") and (not p.fresh or 100 - p.used >= SHORT_REMAINING):
         return text
+    return text + ". Advice: " + launch_action(p, q, stage)
+
+
+def launch_action(p: Pace, q: Pace, stage: Optional[str]) -> str:
+    """Task-independent surfaces point to per-launch selection; spawn supplies the actual task class."""
     lock = stage_lock(stage)
-    acts = [f"routine work at its class default ({'Sol medium' if engine == 'codex' else 'Sonnet high'}), "
-            f"briefs under {CONTEXT_CAP}"]
-    if lock and lock["engine"] == engine:
-        acts.append(f"stage {stage} stays on {ENGINE_NAME[engine]} ({lock['decision']}): `ask add` the owner, "
-                    "never switch")
-    elif headroom(q) and p.level == "exhaust":
-        acts.append(f"new work to {ENGINE_NAME[q.engine]} at the same class (Sonnet high ↔ Sol medium, Opus ↔ Astra, "
-                    "Haiku ↔ Luna)" + ("" if q.level == "ok" else f", urgent only: {ENGINE_NAME[q.engine]} is "
-                                                                    "ahead too"))
-    elif p.level == "exhaust":
-        acts.append(f"{ENGINE_NAME[q.engine]} has no verified headroom ({verdict(q)}): `ask add` the owner")
-    acts.append(f"non-urgent work after the reset {_when(p.resets_at)}")
-    return text + ". Advice: " + "; ".join(acts)
+    chosen = preferred(p, q)
+    if lock and lock["engine"] == p.engine and chosen.engine != p.engine:
+        action = f"this launch stays on {ENGINE_NAME[p.engine]} ({lock['decision']}); ask add to allow another engine"
+    elif chosen.engine != p.engine:
+        action = f"this launch: consider {ENGINE_NAME[q.engine]} at the equivalent class (agent spawn --dry-run)"
+    else:
+        action = f"this launch: keep {ENGINE_NAME[p.engine]} at the task's model/effort"
+    if p.fresh and q.fresh and 100 - p.used < SHORT_REMAINING and 100 - q.used < SHORT_REMAINING:
+        action += "; both short, may run out before the reset"
+    if p.fresh and q.fresh and 100 - p.used < EXHAUSTED_REMAINING:
+        action += "; practically exhausted: --reason required"
+    return action
 
 
 def compact(engine: str, paces: dict, stage: Optional[str] = None) -> str:
-    """The advisor line of an engine in about 200 bytes, for the hub digest (which has 3 KB for everything)."""
+    """Short per-launch context for the hub digest, not a stage work schedule."""
     p = paces.get(engine, {}).get("7d") or Pace(engine, "7d")
     q = paces.get(other(engine), {}).get("7d") or Pace(other(engine), "7d")
     name = f"{ENGINE_NAME[engine]} week"
@@ -584,20 +584,11 @@ def compact(engine: str, paces: dict, stage: Optional[str] = None) -> str:
     if p.level == "exhaust" and p.eta is not None:
         text += f", runs out ~{_when(p.eta)}"
     text += " — " + ("ahead (recent burn)" if p.burst else verdict(p))
-    if p.level == "ok":
+    if p.low_confidence:
+        text += " (low-confidence)"
+    if p.level == "ok" and 100 - p.used >= SHORT_REMAINING:
         return text
-    acts = [f"routine at {'Sol medium' if engine == 'codex' else 'Sonnet high'}"]
-    lock = stage_lock(stage)
-    if p.level == "exhaust":
-        if lock and lock["engine"] == engine:
-            acts.append(f"stage locked ({lock['decision']}): ask add, no switch")
-        elif headroom(q):
-            acts.append(f"new work to {ENGINE_NAME[q.engine]} at the same class" + ("" if q.level == "ok" else
-                                                                                   " (urgent only)"))
-        else:
-            acts.append("no headroom elsewhere: ask the owner")
-    acts.append(f"the rest after the reset {_when(p.resets_at)}")
-    return text + ": " + "; ".join(acts)
+    return text + ": " + launch_action(p, q, stage)
 
 
 # ---------------------------------------------------------------- crossings
@@ -627,7 +618,7 @@ def note_crossing(stage: str, p: Pace, write: bool = True, journal: bool = True)
         told = rec.get("level") if same and rec.get("level") in LEVELS else "ok"
         if p.rank <= LEVELS.index(told):
             return None
-        text = f"@hub LIMIT {describe(p)} — advice: agent-top --once; agent spawn prints it per launch"
+        text = f"@hub LIMIT {describe(p)} — choose engine/model/effort for this launch: agent spawn --dry-run; forecast is context"
         if write:
             data[key] = {"resets_at": p.resets_at, "level": p.level, "at": time.time()}
             hc.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n")

@@ -714,6 +714,9 @@ def cmd_spawn(a) -> int:
     if reason:
         meta["reason"] = reason
     if engine == "codex":
+        if sandbox == "read-only" and is_review_role(meta):
+            hc.warn("Codex read-only reviewer cannot write its report or journal; "
+                    "use workspace-write with --cwd in the hub home")
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
         if policy:
             meta["sandbox_policy"] = policy
@@ -932,7 +935,7 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
                 exit_marker(stage, fresh).unlink(missing_ok=True)  # not written: the next observer may try
                 raise
     except OSError:
-        # A read-only sandbox (a reviewer running `agent status`): no lock file, marker or journal line can be written. The
+        # A read-only sandbox (an agent running `agent status`): no lock file, marker or journal line can be written. The
         # observation is skipped; whatever the caller prints (a status line) is unaffected.
         return None
 
@@ -1188,7 +1191,7 @@ REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE
 
 def is_review_role(meta: dict) -> bool:
     """A review role by its name or tag: `review-pr34`, `desktop-review`, `reviewer2` (the plugin's own reviewers are
-    `review-<name>`), not `preview` or `reviewfix`. Such an agent often cannot journal at all (a read-only sandbox)."""
+    `review-<name>`), not `preview` or `reviewfix`. Legacy read-only reviewers cannot journal their verdict."""
     return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
 
 

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -145,6 +146,32 @@ def hook_args(cwd=None):
     return args
 
 
+def worktree_git_roots(cwd):
+    """Commit needs the linked worktree's index/HEAD plus shared objects and branch refs.
+
+    Keep common config, hooks and other worktrees outside the write grant. A normal
+    checkout already has its Git directory under cwd and needs no extra roots.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+            cwd=cwd, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode:
+        return []
+    paths = result.stdout.strip().splitlines()
+    if len(paths) != 2:
+        return []
+    gitdir, common = (Path(p).resolve() for p in paths)
+    if gitdir == common:
+        return []
+    # Reftable stores refs and reflogs together; the files backend keeps them apart.
+    refs = [common / "reftable"] if (common / "reftable").is_dir() else [
+        common / "refs" / "heads", common / "logs" / "refs" / "heads"]
+    return [str(p) for p in [gitdir, common / "objects", *refs]]
+
+
 def codex_argv(meta, prompt=None, resume=False):
     """The command line of a run. The prompt is not in it: the trailing `-` makes `codex exec` (and `exec resume`)
     read it from stdin, so it never shows in `ps`. `prompt` is accepted for callers that preview the command."""
@@ -164,7 +191,8 @@ def codex_argv(meta, prompt=None, resume=False):
         args += ["-c", "sandbox_mode=" + json.dumps(sandbox), "-c", 'approval_policy="never"']
         if sandbox == "workspace-write":
             policy = meta.get("sandbox_policy") or {}
-            roots = list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())]))
+            roots = list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())]
+                                       + worktree_git_roots(meta["cwd"])))
             args += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value(roots)]
             for key in ("network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"):
                 if key in policy:

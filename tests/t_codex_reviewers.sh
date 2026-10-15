@@ -5,11 +5,12 @@ AGENT_HUB_ENGINE=codex "$B/hub" reviewer --json > "$AGENT_HUB_HOME/default.json"
 python3 - "$AGENT_HUB_HOME/default.json" <<'PY'
 import json,sys
 r=json.load(open(sys.argv[1]));s=r['start']
-assert '--engine codex' in s and '--sandbox read-only' in s,s
+assert '--engine codex' in s and '--sandbox workspace-write' in s,s
 assert '--model opus' not in s and '--model None' not in s,s
 assert '--model gpt-6-astra' in s,s
+assert '--cwd <HUB_WORK>' in s and '<REPO>' not in s,s
 PY
-check $? 0 'Codex reviewer defaults to Astra high read-only'
+check $? 0 'Codex reviewer defaults to Astra high workspace-write'
 AGENT_HUB_ENGINE=codex AGENT_HUB_CODEX_DEFAULT_MODEL=gpt-6.1-sol "$B/hub" reviewer --json > "$AGENT_HUB_HOME/sol-author.json"
 python3 - "$AGENT_HUB_HOME/sol-author.json" <<'PY'
 import json,sys
@@ -19,7 +20,7 @@ check $? 0 'Sol implementation default does not downgrade reviewer'
 AGENT_HUB_REVIEWERS='[{"name":"codex","kind":"agent","engine":"codex","model":"gpt-fixture","effort":"high"}]' "$B/hub" reviewer --json > "$AGENT_HUB_HOME/explicit.json"; check $? 0 'mixed engine reviewer config'
 python3 - "$AGENT_HUB_HOME/explicit.json" <<'PY'
 import json,sys
-r=json.load(open(sys.argv[1]));assert r['chosen']=='codex';assert '--engine codex --sandbox read-only --model gpt-fixture' in r['start']
+r=json.load(open(sys.argv[1]));assert r['chosen']=='codex';assert '--engine codex --sandbox workspace-write --model gpt-fixture' in r['start']
 PY
 check $? 0 'Codex reviewer selection and start line'
 AGENT_HUB_ENGINE=codex AGENT_HUB_REVIEWERS='[{"name":"claude","kind":"agent","engine":"claude","model":"opus","effort":"high"}]' "$B/hub" reviewer --json > "$AGENT_HUB_HOME/mixed.json"; check $? 0 'Claude reviewer from Codex coordinator'
@@ -28,4 +29,13 @@ import json,sys
 r=json.load(open(sys.argv[1]));assert '--engine claude' in r['start'];assert '--sandbox' not in r['start']
 PY
 check $? 0 'explicit Claude engine preserved'
+AGENT_HUB_ENGINE=codex "$B/hub" reviewer --stage stage-a --json > "$AGENT_HUB_HOME/stage.json"
+python3 - "$AGENT_HUB_HOME/stage.json" "$AGENT_HUB_HOME" <<'PY_STAGE'
+import json,shlex,sys
+from pathlib import Path
+s=shlex.split(json.load(open(sys.argv[1]))['start'])
+assert s[s.index('--cwd')+1] == str(Path(sys.argv[2])/'stage-a/coordinator/work'),s
+assert '--worktree' not in s,s
+PY_STAGE
+check $? 0 'Codex reviewer uses the stage work directory under the hub home'
 exit $fail

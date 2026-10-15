@@ -179,17 +179,24 @@ including user and project hooks, not only Delamain's hooks.** Use it with hook 
 Set `AGENT_HUB_CODEX_HOOK_TRUST=reviewed` to require Codex's persisted trust instead; review/trust the definitions
 before starting a detached run. Changed hook definitions require renewed review in that mode.
 
-For a restricted reviewer, choose the sandbox explicitly:
+For a restricted reviewer, use `hub reviewer --for code --stage S` or the equivalent launch:
 
 ```sh
-agent spawn --engine codex --role reviewer --cwd /absolute/path/to/project \
-  --brief /absolute/path/to/review-brief.md --sandbox read-only
+agent spawn --engine codex --role reviewer --cwd /absolute/hub-home/S/coordinator/work \
+  --brief /absolute/path/to/review-brief.md --sandbox workspace-write
 ```
 
-The sandbox selection replaces full access for that worker. A read-only worker cannot append a journal or report
-on disk: use its captured result/status or explicitly permit the output location through the appropriate sandbox
-configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
-`--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
+Create the cwd first and put the absolute repository path in the brief for reading. Keep that repository outside the
+hub home and reviewer cwd, and do not add it to writable roots. The sandbox selection replaces full access for that
+worker: it can write the report and journal under the hub home while repository writes are denied. A `read-only`
+worker cannot write either; a review role/tag with that policy gets one warning at spawn.
+
+Workspace-write agents automatically receive the hub home as a writable root. When cwd is in a linked Git worktree,
+spawn and resume also grant its own Git directory (index, HEAD and locks), common objects, `refs/heads` and
+`logs/refs/heads` (or `reftable` for that backend). These shared metadata roots allow commits and branch updates;
+the common config, hooks and sibling worktree directories are not granted. The entire common Git directory is
+never added. A sandboxed interactive coordinator may need `--add-dir <hub-home>` to write to the shared home.
+Full access needs no directory grant.
 
 See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
 

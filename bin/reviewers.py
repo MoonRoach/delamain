@@ -318,10 +318,13 @@ def start_line(entry: Entry, stage: str | None = None) -> str:
                 "(the skill reviewer contract: docs/reviewers.md)")
     effort = f" --effort {shlex.quote(entry.effort)}"
     engine = f" --engine {entry.engine}" if entry.explicit_engine or entry.engine == "codex" else ""
-    sandbox = " --sandbox read-only" if entry.engine == "codex" else ""
+    sandbox = " --sandbox workspace-write" if entry.engine == "codex" else ""
+    cwd = "<REPO>"
+    if entry.engine == "codex":
+        cwd = shlex.quote(str(hc.work_dir(stage))) if stage else "<HUB_WORK>"
     model = f" --model {shlex.quote(entry.model)}" if entry.model else ""
     in_stage = f" --stage {shlex.quote(stage)}" if stage else ""
-    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd <REPO>{engine}{sandbox}{model}"
+    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd {cwd}{engine}{sandbox}{model}"
             f"{effort}{in_stage} --brief <BRIEF>")
 
 

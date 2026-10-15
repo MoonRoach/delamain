@@ -723,12 +723,16 @@ def cmd_spawn(a) -> int:
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
         if sandbox == "workspace-write" and not is_review_role(meta):
             meta["sandbox_git_roots"] = engines.worktree_git_roots(cwd)
+            if meta["sandbox_git_roots"]:
+                hc.warn(engines.WORKTREE_SANDBOX_NOTE)
         if policy:
             meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
+    if meta.get("sandbox_git_roots"):
+        prompt += "\n" + engines.WORKTREE_SANDBOX_NOTE + "\n"
     save_meta(stage, a.role, meta)
     try:
         pid = launch(meta, prompt, resume=False)

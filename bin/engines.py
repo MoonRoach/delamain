@@ -157,11 +157,13 @@ def is_review_role(meta):
 WORKTREE_STATE_FILES = (
     "HEAD", "HEAD.lock", "ORIG_HEAD", "ORIG_HEAD.lock", "index", "index.lock", "COMMIT_EDITMSG",
     "MERGE_HEAD", "MERGE_HEAD.lock", "MERGE_MSG", "MERGE_MSG.lock", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH",
-    "AUTO_MERGE", "AUTO_MERGE.lock", "REBASE_HEAD", "REBASE_HEAD.lock",
+    "AUTO_MERGE", "AUTO_MERGE.lock",
     "CHERRY_PICK_HEAD", "CHERRY_PICK_HEAD.lock", "REVERT_HEAD", "REVERT_HEAD.lock", "SQUASH_MSG",
     "FETCH_HEAD", "FETCH_HEAD.lock",
 )
-WORKTREE_STATE_DIRS = ("logs", "rebase-merge", "rebase-apply", "sequencer", "refs/rewritten", "refs/worktree")
+WORKTREE_STATE_DIRS = ("logs",)
+WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported; commit and merge are supported. "
+                         "Update the branch with a merge commit (for example from origin/main).")
 
 
 def worktree_git_roots(cwd):

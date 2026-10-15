@@ -197,7 +197,7 @@ that home are refused. Its report, journal and `.journal.lock` fit within the st
 configuration and other agents' inboxes stay read-only. Keep that cwd outside any repository.
 
 For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
-commit/merge messages and pseudorefs), their own logs and rebase/sequencer state directories, plus common objects.
+commit/merge messages and pseudorefs), their own logs and common objects.
 `commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
 refs/reflogs are limited to the worktree's initial branch and its lock files. For nested branch names, their first
 namespace directory is granted so Git can recreate it after pack-refs; sibling refs in that namespace are also
@@ -206,13 +206,15 @@ A detached HEAD gets no shared branch roots. Reftable uses a shared store, so th
 `reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
 
 These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
-Rebase can update the branch but exit 1 when deleting the empty `rebase-merge` state directory: sandbox writable
-roots cannot themselves be removed without write access to their parent. This policy does not grant that parent,
-so a successful rebase cleanup is not currently supported. Git may also emit a nonfatal `packed-refs.lock` denial;
-commits with loose and packed refs were checked.
+In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
+sequencer or rewritten-ref roots are granted. Spawn prints the limitation and includes it in the worker's brief.
+Update the branch with a merge commit from the prepared base ref (for example `git merge origin/main`).
+The sandbox refuses creation of rebase state; the manual probe checks that HEAD and branch refs remain unchanged.
+Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
+writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
+Git may emit a nonfatal `packed-refs.lock` denial; commits with loose and packed refs were checked.
 Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
-access; they fail closed rather than receiving the whole Git directory. Continue agent-created rebase/sequencer
-state inside the sandbox, since that operation state can contain commands.
+access; they fail closed rather than receiving the whole Git directory.
 The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.
 A sandboxed interactive coordinator may need `--add-dir <hub-home>`; full access needs no directory grant.
 

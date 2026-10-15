@@ -6,10 +6,12 @@
   `workspace-write` with cwd in the stage's `coordinator/work` under the hub home, and the repository path in the
   brief outside writable roots. Reviewers receive only their cwd, not home config or other agents' inboxes; wider
   roots are refused. A read-only review role/tag warns that it cannot write its report or journal.
-  Linked worktree executors receive individual Git operation-state files/directories, shared objects and their own
+  Linked worktree executors receive individual Git commit/merge state files, their logs, shared objects and their own
   branch refs/reflogs (a namespace directory for nested branches, or the shared reftable store), pinned on spawn and
   reused on resume. The private gitdir, commondir/config.worktree and packed-refs are not granted. The review docs, skill and brief
   template describe the same boundary; macOS sandbox probes cover report/journal writes and Git operations.
+  Rebase state roots are excluded: sandboxed worktree rebase is unsupported, announced at spawn and in the worker
+  brief; use a merge commit from the prepared base ref to update the branch.
 
 - **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
   replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with

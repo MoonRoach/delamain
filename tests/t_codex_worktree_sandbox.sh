@@ -64,10 +64,10 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
                  str(common/'logs/refs/heads'), str(common/'packed-refs'), str(common/'packed-refs.lock')}
     state_files = {'HEAD', 'HEAD.lock', 'ORIG_HEAD', 'ORIG_HEAD.lock', 'index', 'index.lock', 'COMMIT_EDITMSG',
                    'MERGE_HEAD', 'MERGE_HEAD.lock', 'MERGE_MSG', 'MERGE_MSG.lock', 'MERGE_MODE', 'MERGE_RR', 'MERGE_AUTOSTASH',
-                   'AUTO_MERGE', 'AUTO_MERGE.lock', 'REBASE_HEAD', 'REBASE_HEAD.lock',
+                   'AUTO_MERGE', 'AUTO_MERGE.lock',
                    'CHERRY_PICK_HEAD', 'CHERRY_PICK_HEAD.lock', 'REVERT_HEAD', 'REVERT_HEAD.lock', 'SQUASH_MSG',
                    'FETCH_HEAD', 'FETCH_HEAD.lock'}
-    state_dirs = {'logs', 'rebase-merge', 'rebase-apply', 'sequencer', 'refs/rewritten', 'refs/worktree'}
+    state_dirs = {'logs'}
     def safe_gitdir(rs):
         assert {str(gitdir/p) for p in ('HEAD','index.lock','MERGE_MSG.lock')}<=rs,rs
         for root in rs:
@@ -78,7 +78,10 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,
                          'writable_roots': [str(base/'extra')]})
-    spawn('executor', wt, '--sandbox-policy', policy)
+    executor = spawn('executor', wt, '--sandbox-policy', policy)
+    verify('variant A warns about unsupported rebase',lambda: require(
+        executor.stderr.count('rebase is unsupported') == 1,executor.stderr))
+    assert 'rebase is unsupported' in (wt/'codex-prompts.log').read_text()
     git('symbolic-ref', 'HEAD', 'refs/heads/other-branch', cwd=wt)
     run(bins/'agent', 'send', 'executor', 'continue with the same sandbox')
     wait('executor')
@@ -134,6 +137,8 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
         r = spawn(role, reviewer_work if role=='review-writable' else home, *args)
         assert ('cannot write its report or journal' in r.stderr) == (role == 'tagged'), r.stderr
     print('PASS review tags and effective permission mode warn; unrelated roles/writable review stay quiet')
+    verify('variant A documents unsupported rebase',lambda: require(
+        'rebase is unsupported' in (bins.parent/'docs/codex.md').read_text(), 'missing rebase policy'))
     verify('L1 alternates trust boundary is documented',lambda: require(
         'objects/info/alternates' in (bins.parent/'docs/codex.md').read_text(), 'missing alternates boundary'))
     assert not failures,failures

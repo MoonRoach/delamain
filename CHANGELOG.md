@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.10 — 2026-10-15
+
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
   the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
   the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner

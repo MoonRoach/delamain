@@ -8,8 +8,12 @@
   remaining allows a launch even with an exhaustion forecast. Below 3% refuses only with fresh verified data on the
   other engine; both below 3% refuse unless `--reason` is supplied. Unknown/stale data never grounds refusal. Engine
   locks get a permission question for this launch, defaulting to the locked engine; models are never swapped silently.
-  Forecasts from the first 6 hours of a week are low-confidence display only, and five-hour windows are context.
+  Below 3% with an unverified alternative, advice warns of practical exhaustion and offers a probe or `--reason`,
+  without creating a quota gate. Forecasts from the first 6 hours are displayed without journal alarms, owner
+  notifications or crossing-state records; five-hour windows remain context.
   Advice no longer defers or sequences work until reset. See [Limit pace](docs/reference.md#limit-pace).
+
+## 1.0.10 — 2026-10-15
 
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
   the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed

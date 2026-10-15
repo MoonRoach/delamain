@@ -35,6 +35,15 @@ check "$(cat $W/which.log)" "path" "negative: an unreadable version keeps PATH"
 rm -f $W/which.log
 (unset CLAUDE_BIN; HOME=$FH PATH=$P/pathbin:$PATH FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-pin CLAUDE_BIN=$P/pathbin/claude $B/agent spawn --role pin --cwd $W --model haiku --brief $W/b.md) > $P/pin.out 2>&1; wait_dead pin
 check "$(cat $W/which.log)" "path" "negative: an explicit CLAUDE_BIN is never replaced by a newer CLI"
+# Desktop since 2.1.29x keeps a build-hash level: claude-code/<version>/<hash>/claude.app. Seen in the field: the lookup
+# missed it and fell back to an old Homebrew claude that rejected the model with a 400.
+mkdir -p "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS"
+printf '#!/bin/sh\n[ "$1" = "--version" ] || echo nested > "$PWD/which.log"\nexec python3 %s "$@"\n' $T/fake_claude.py > "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS/claude"
+chmod +x "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS/claude"
+spawn_with nest 2.1.310; check $? 0 "a bundle under a build-hash directory, newer than PATH"
+check "$(cat $W/which.log)" "nested" "the bundle under <version>/<hash>/claude.app is found and started"
+grep -q "CLI .*2.1.320/9d6405864fdc/claude.app.*2.1.320" $P/nest.out; check $? 0 "…with the version from the directory above the hash"
+rm -rf "$BD/2.1.320"
 export CLAUDE_BIN=$T/fake_claude.py
 
 # ---- the version is read from the "<version> (Claude Code)" line, not from the first number a shim prints

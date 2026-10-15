@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A kill by name or pattern is refused: it, not the host, killed four agents on 14.10.** Four headless agents and
+  Claude Desktop got SIGTERM at 22:56 from one `pkill` run by a fifth agent: `pkill -f "[s]leep 300" -P 1`. macOS (BSD)
+  `pkill` reads options only before the first pattern, so `-P` and `1` became two more patterns, and `1` matched
+  nearly every process of the user (the unified log shows `sent by pkill[74672]` for widgets and iCloud Drive too); the
+  agent that ran it survived because `pkill` skips its own ancestors. Spawning was already detached (own session and
+  process group, stdio in files) and no detachment protects a pid from a signal sent to it. The new PreToolUse hook
+  `kill_guard.py` (Claude and Codex) denies `pkill`, `killall`, `kill $(pgrep …)` and `pgrep … | xargs kill` and points
+  at `kill <pid>`, `kill -- -<pgid>` and `agent stop`; `# kill-ok: <reason>` passes a deliberate one, but never a
+  `pkill` with an option or a second pattern after the first. `AGENT_HUB_KILL_GUARD=off` turns it off.
+  `tests/t_kill_guard.sh` also pins the detachment: an agent of either engine outlives SIGTERM and SIGHUP to its host's
+  process group, the host alone, and the host's group killed while `agent spawn` still waits for the init event.
+  The guard reads `pidof` and a `grep` of `ps` output as pid sources like `pgrep` (at any stage of a pipeline), the loop
+  and variable forms in one command (`for p in $(pgrep …); do kill $p`, `pgrep … | while read p; do kill $p`,
+  `P=$(pgrep …); kill $P`), `eval` and `killall5`; a single `&` separates statements (`pkill -x node &` is an ordinary
+  overridable deny); a segment whose command word is `ssh` is not read.
+
 ## 1.0.8 — 2026-10-15
 
 - **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's

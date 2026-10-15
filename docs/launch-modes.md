@@ -116,6 +116,11 @@ with `setsid` stop too. In the experiment (E16) a spawned agent survived both it
 killing of the background task that launched it, because it had already been reparented; nothing is gained by
 running it in the background, so do not rely on that.
 
+Once started, the agent is out of reach of its host: its own session and process group, stdio in files, no
+controlling terminal. A SIGTERM or SIGHUP to the host's process group, or the host app quitting, does not stop it
+(`tests/t_kill_guard.sh`, both engines). Only a signal to the agent's own pid does: `agent stop`, or a kill by pattern —
+which is why the `kill_guard.py` hook refuses `pkill`, `killall` and `kill $(pgrep …)` ([reference](reference.md#agent-discipline)).
+
 ## Journal lines from sub-agents
 
 A sub-agent's shell inherits the parent's environment, `HUB_TAG` and `CLAUDE_CODE_SESSION_ID` included (E2), so a

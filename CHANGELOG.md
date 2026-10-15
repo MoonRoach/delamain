@@ -146,6 +146,37 @@
   `P=$(pgrep …); kill $P`), `eval` and `killall5`; a single `&` separates statements (`pkill -x node &` is an ordinary
   overridable deny); a segment whose command word is `ssh` is not read.
 
+- **Trusted WSL launch and bounded foreground cancellation.** Windows transport resolves
+  the system WSL executable, including Sysnative for 32-bit PowerShell. A broken output
+  pipeline cancels the owned Linux foreground group and bounds Windows-client cleanup;
+  workers that detach into their own session survive.
+- **Isolated, owner-bound foreground guardians.** Python ignores repository modules and
+  inherited Python settings. Windows-owned temporary-file handles cancel foreground work
+  when PowerShell dies, including after the command leader exits. Separate acknowledgement
+  files prevent early startup failures from being reported as cleanup timeouts.
+- **Configured Windows hub-home fallback.** A fresh repository uses the hub home selected
+  during installation, preserving the shared lock board. Explicit environment, project
+  and legacy selections retain priority.
+- **Windows transport through WSL2.** Native Windows Codex uses a conditional plugin envelope;
+  a terminal launcher remains a separate Linux coordinator mode. Argument/environment payloads
+  travel in per-call files rather than the Windows command line, preserving large prompts,
+  Unicode, stdin, streaming output and child exit status. Payloads may contain sensitive inputs;
+  normal completion removes them, while forced termination can bypass cleanup.
+- **One Windows proxy helper per Linux worker.** An explicit multiplex mode compiles the helper once,
+  bounds connections and flow control, and preserves worker PID/stdin and exact-owned cleanup.
+  The legacy raw helper interface remains compatible with existing workers. No global daemon,
+  Windows listener or network configuration change is introduced.
+  An owned WSL client now keeps the relay's interop stdio alive after the initiating Desktop
+  bridge returns; a private Linux descriptor handoff preserves worker stdin/PID and cleanup.
+- **Native pipeline guard parity.** Kill-guard escape scope retains actual Bash comments
+  without promoting multiline data to comments, and executable stdin retains producer
+  context across bridge stages. Native tests also verify the child receives normalized
+  Windows system environment paths; owner-loss cleanup latency is documented as best effort.
+- **Native Windows hook compatibility.** Recognized literal bridge calls retain independent cwd and
+  native Windows role-profile paths. Variable/dynamic paths and other unsupported PowerShell forms
+  remain outside exact-source coverage; the hooks are advisory rather than a general security boundary.
+  Linux/macOS role-path defaults and shared skill/template/context policies remain unchanged.
+
 ## 1.0.8 — 2026-10-15
 
 - **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's

@@ -205,8 +205,11 @@ writable. `packed-refs` and its lock are not granted. These roots are pinned at 
 A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
 `reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
 
-These file-root commit/merge/rebase checks were verified on macOS seatbelt. Git may emit a nonfatal
-`packed-refs.lock` denial even though the operation succeeds; commits with loose and packed refs were checked.
+These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
+Rebase can update the branch but exit 1 when deleting the empty `rebase-merge` state directory: sandbox writable
+roots cannot themselves be removed without write access to their parent. This policy does not grant that parent,
+so a successful rebase cleanup is not currently supported. Git may also emit a nonfatal `packed-refs.lock` denial;
+commits with loose and packed refs were checked.
 Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
 access; they fail closed rather than receiving the whole Git directory. Continue agent-created rebase/sequencer
 state inside the sandbox, since that operation state can contain commands.

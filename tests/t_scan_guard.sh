@@ -82,7 +82,7 @@ REFUSED = [
     "bfs ~ -name x", "find ~/Library -name x", "find ~/Library/Containers -name x",
     "find \"$HOME/Library/Group Containers\" -name x", "find ~/Library/Group\\ Containers -name x",
     "find ~/\"Library\" -name x", "find ~/./Library -name x", "find @H@/repos/.. -name x", "find ~/Library/.. -name x",
-    "find ~/* -name x", "find ~/L* -name x", "find /* -name x", "find /Users/* -name x", "find ~/Library/* -name x",
+    "find ~/* -name x", "find ~/L* -name x", "find /* -name x", "find /Users/* -name x", "find /Users/*/Library -name x", "du -sh /Users/*/Library/Containers", "find ~/Library/* -name x",
     "rg -g '*.py' foo $HOME", "rg --files ~", "rg -e foo ~", "rg -t py -i foo ~", "rg --glob '*.md' foo / ",
     "grep -rn foo ~", "grep -R foo $HOME", "grep --recursive foo ~", "grep -e foo -r ~", "grep foo -rl ~", "egrep -ri 'a|b' ~",
     "grep -d recurse foo ~", "grep --directories=recurse foo ~", "grep -rn -A 3 foo ~",

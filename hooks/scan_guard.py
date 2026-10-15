@@ -97,6 +97,10 @@ class _Ctx:
             for sub in ("Library", "Library/Containers", "Library/Group Containers"):
                 self.targets[(h + "/" + sub).casefold()] = f"~/{sub}, where other apps keep their data"
         self.segments = [(k.split("/"), why) for k, why in self.targets.items()]
+        # a glob in /Users reaches the home of every user, this machine's or not: a stand-in name that any glob matches
+        for sub in ("", "Library", "Library/Containers", "Library/Group Containers"):
+            self.segments.append((["", "users", "user"] + (sub.casefold().split("/") if sub else []),
+                                  f"~/{sub} of every user" if sub else "every user's home"))
 
     def text(self, token: str) -> str:
         """A token's string with its quotes, or "" for a token that is not one of ours."""

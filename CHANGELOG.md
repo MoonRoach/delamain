@@ -51,6 +51,10 @@
   Windows listener or network configuration change is introduced.
   An owned WSL client now keeps the relay's interop stdio alive after the initiating Desktop
   bridge returns; a private Linux descriptor handoff preserves worker stdin/PID and cleanup.
+- **Native pipeline guard parity.** Kill-guard escape scope retains actual Bash comments
+  without promoting multiline data to comments, and executable stdin retains producer
+  context across bridge stages. Native tests also verify the child receives normalized
+  Windows system environment paths; owner-loss cleanup latency is documented as best effort.
 - **Native Windows hook compatibility.** Recognized literal bridge calls retain independent cwd and
   native Windows role-profile paths. Variable/dynamic paths and other unsupported PowerShell forms
   remain outside exact-source coverage; the hooks are advisory rather than a general security boundary.

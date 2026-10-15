@@ -122,7 +122,7 @@ class HubHomeFallbackTests(unittest.TestCase):
     def test_configured_home_and_resolution_priority_in_isolated_repository(self):
         for selection in ("default", "user", "project", "env", "legacy", "standard"):
             with self.subTest(selection=selection), tempfile.TemporaryDirectory(prefix="desktop-home-") as directory:
-                scratch = Path(directory)
+                scratch = Path(directory).resolve()
                 home, repo, package = scratch / "home", scratch / "repo", scratch / "package"
                 home.mkdir()
                 (repo / ".git").mkdir(parents=True)
@@ -186,7 +186,7 @@ class PolicyBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="desktop-policy-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.a, self.b = self.root / "repo-A", self.root / "repo-B"
         for repo in (self.a, self.b):
             (repo / ".git").mkdir(parents=True)
@@ -336,6 +336,48 @@ class PolicyBoundaryTests(unittest.TestCase):
                 payload["command_replacements"]=[{"kind":"shell","script":body,"start":at,"end":at+len(slot)}
                     for (slot,at),body in zip(slots,(first,other,sink))]
                 self.assertEqual(self.denied(payload),denied)
+
+    def pipeline_payload(self, *bodies):
+        slots = ["stage" + str(index) for index in range(len(bodies))]
+        command = " | ".join(slots)
+        stages = [{"script": slot, "start": command.index(slot),
+                   "end": command.index(slot) + len(slot)} for slot in slots]
+        payload = self.payload([{"kind": "pipeline", "stages": stages},
+                                *map(self.shell, bodies)], hook="kill_guard")
+        payload["event"]["tool_input"]["command"] = command
+        payload["command_replacements"] = [dict(stage, kind="shell", script=body)
+                                            for stage, body in zip(stages, bodies)]
+        return payload
+
+    def test_kill_pipeline_multiline_data_cannot_create_escape_comment(self):
+        import kill_guard
+        sink = "printf '%s\\n' 'fixture data\nkill-ok: this is data'; xargs kill"
+        original = "pgrep sleep | { " + sink + "; }"
+        self.assertIsNotNone(kill_guard.check(original))
+        self.assertNotRegex(original, r"#\s*kill-ok\b")
+        self.assertTrue(self.denied(self.pipeline_payload("pgrep sleep", sink)))
+        self.assertFalse(self.denied(self.pipeline_payload("pgrep sleep", sink + " # kill-ok: sink owns it")))
+        payload = self.pipeline_payload("pgrep sleep", sink)
+        payload["command_projection"].append({"kind": "comment", "script": "# kill-ok: native outer"})
+        self.assertFalse(self.denied(payload))
+        self.assertTrue(self.denied(self.pipeline_payload("pgrep sleep # kill-ok: producer only", sink)))
+
+    def test_kill_pipeline_executable_stdin_uses_shared_parser(self):
+        import kill_guard
+        producer = "printf '%s\\n' 'pkill -f sleep'"
+        for sink in ("bash", "sh", "env -i bash", "true; bash"):
+            with self.subTest(sink=sink):
+                if ";" not in sink:
+                    self.assertIsNotNone(kill_guard.check(producer + " | " + sink))
+                self.assertTrue(self.denied(self.pipeline_payload(producer, sink)))
+        self.assertTrue(self.denied(self.pipeline_payload(producer, "cat", "bash")))
+        self.assertTrue(self.denied(self.pipeline_payload(producer + " # kill-ok: producer only", "bash")))
+        self.assertTrue(self.denied(self.pipeline_payload("printf '%s\\n' 'pkill -f sleep # kill-ok: printed data'", "bash")))
+        self.assertFalse(self.denied(self.pipeline_payload(producer, "bash # kill-ok: sink owns it")))
+        for bodies in ((producer, "cat"), ("pgrep sleep", "sort -n"),
+                       ("printf '%s\\n' 'echo harmless'", "bash"), ("printf 12345", "xargs kill")):
+            with self.subTest(bodies=bodies):
+                self.assertFalse(self.denied(self.pipeline_payload(*bodies)))
 
     def test_explicit_native_comments_preserve_escape_without_cross_bridge_escape(self):
         action = self.shell("git push origin HEAD:main")
@@ -829,6 +871,33 @@ class NativeBridgeTests(unittest.TestCase):
                                      env={**self.env,"AGENT_HUB_KILL_GUARD":"off"})
                 self.assertEqual(disabled.returncode,0,disabled.stderr)
                 self.assertFalse(disabled.stdout.strip())
+
+    def test_native_kill_pipeline_multiline_data_and_executable_stdin(self):
+        # Only hook probes: none of these kill strings is executed.
+        sink = "printf '%s\\n' 'fixture data\nkill-ok: this is data'; xargs kill"
+        producer = "printf '%s\\n' 'pkill -f sleep'"
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                for command in (self.bridge("pgrep sleep") + " | " + self.bridge(sink),
+                                self.bridge("pgrep sleep # kill-ok: producer only") + " | " + self.bridge(sink),
+                                self.bridge(producer) + " | " + self.bridge("bash"),
+                                self.bridge(producer) + " | " + self.bridge("true; sh"),
+                                self.bridge(producer) + " | " + self.bridge("env -i bash"),
+                                self.bridge(producer) + " | " + self.bridge("cat") + " | " + self.bridge("bash"),
+                                self.bridge(producer + " # kill-ok: producer only") + " | " + self.bridge("bash"),
+                                self.bridge("printf '%s\\n' 'pkill -f sleep # kill-ok: printed data'") + " | " + self.bridge("bash")):
+                    with self.subTest(command=command):
+                        self.assertEqual(self.hook(shell, "kill_guard", command)["hookSpecificOutput"]["permissionDecision"], "deny")
+                for command in (self.bridge("pgrep sleep") + " | " + self.bridge(sink + " # kill-ok: sink owns it"),
+                                self.bridge("pgrep sleep") + " | " + self.bridge(sink) + " # kill-ok: native outer",
+                                self.bridge(producer) + " | " + self.bridge("bash # kill-ok: sink owns it"),
+                                self.bridge(producer) + " | " + self.bridge("cat"),
+                                self.bridge("printf '%s\\n' 'echo harmless'") + " | " + self.bridge("bash"),
+                                self.bridge("printf 12345") + " | " + self.bridge("xargs kill"),
+                                self.bridge("pgrep sleep") + " | " + self.bridge("sort -n"),
+                                "Write-Output 'pkill -f sleep'"):
+                    with self.subTest(command=command):
+                        self.assertFalse(self.hook(shell, "kill_guard", command))
 
     def test_real_transcript_path_and_tool_workdir(self):
         transcript = self.scratch / "native-rollout.jsonl"

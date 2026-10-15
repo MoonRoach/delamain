@@ -167,7 +167,25 @@ def kill_pipeline_views(pipeline: dict, payload: dict) -> list[dict]:
     sys.path.insert(0, str(Path(linux_path(payload["pluginroot"])) / "hooks"))
     import kill_guard
     upstream = []
+    stdin_stages = []
     result = []
+
+    def shell_parts(body):
+        # Reuse the shared quote tokens before reading comments or separators.
+        # In particular, a newline inside quoted DATA cannot start a comment.
+        protected, strings = kill_guard.pg._protect(body.replace("\\\n", " "))
+        comments = []
+
+        def restore(text):
+            return kill_guard.pg._TOKEN.sub(lambda match: strings[int(match.group(1))], text)
+
+        def comment(match):
+            comments.append(restore(match.group(0)))
+            return ""
+
+        protected = re.sub(r"(?m)(?<![^\s;&|(])#[^\n]*", comment, protected)
+        return protected, restore, "\n".join(comments)
+
     for stage in pipeline["stages"]:
         replacements = [dict(change, start=change["start"] - stage["start"],
                              end=change["end"] - stage["start"])
@@ -182,13 +200,12 @@ def kill_pipeline_views(pipeline: dict, payload: dict) -> list[dict]:
                   *(command_source(change) for change in replacements)]
         inherited = kill_guard._has_source(upstream)
         emitted = []
+        printing = []
         for body in bodies:
+            protected, restore, scope = shell_parts(body)
             executed = kill_guard.pg.views(kill_guard._drop_ssh(body), True)[0]
             levels = list(kill_guard._levels(executed))
             if inherited:
-                # Match the original raw escape regex only in this body's
-                # scope. Commenting each line keeps display data inert.
-                scope = "\n".join("# " + line for line in body.splitlines())
                 for level in levels:
                     for pipe in kill_guard._pipelines(level):
                         start = pipe[0][0]
@@ -197,11 +214,30 @@ def kill_pipeline_views(pipeline: dict, payload: dict) -> list[dict]:
                         suffix = "".join(text + separator for text, separator in level[start:])
                         result.append({"kind": "shell", "script":
                                        "pgrep __desktop_pipeline_source__ | " + suffix + "\n" + scope})
+            # Keep literal printed output until the original parser knows
+            # whether a later native stage executes stdin. Other producer
+            # commands are checked by their exact leaves, not replayed here.
+            parts = kill_guard.pg._SEGMENT_SPLIT.split(protected)
+            printing.extend(restore(part) for part in parts[0::2]
+                            if kill_guard.pg._PRINTING.match(part))
+            if stdin_stages and payload.get("hook") == "kill_guard":
+                stages = kill_guard._split(protected)
+                for pipe in kill_guard._pipelines(stages):
+                    start = pipe[0][0]
+                    suffix = restore("".join(text + separator for text, separator in stages[start:]))
+                    if kill_guard.pg._SHELL_CONSUMER.match(suffix):
+                        context = " | ".join(stdin_stages) + " | " + suffix
+                        view = kill_guard.pg.views(kill_guard._drop_ssh(context), True)[0]
+                        # Printed text becomes code here, but its comments
+                        # cannot grant authority to another bridge invocation.
+                        view, restore_view, _ = shell_parts(view)
+                        result.append({"kind": "shell", "script": restore_view(view) + "\n" + scope})
             emitted.extend(text for level in levels for text, _ in level)
         # Independent leaves share inherited native stdin, never each other's
         # output. Their aggregate output is visible to the next native stage,
         # including ps in one stage followed by grep in a later stage.
         upstream.extend(emitted)
+        stdin_stages.append("( " + "; ".join(printing or ["__desktop_pipeline_stage__"]) + " )")
     return result
 
 

@@ -74,6 +74,10 @@ redirected input handle are forwarded unchanged; piped PowerShell objects become
 UTF-8 text lines. The child exit code, including original policy statuses 3 and 4,
 is retained in `$LASTEXITCODE`.
 
+Foreground cleanup after owner loss is best effort: synchronous lease-file reads
+through DrvFS/9P have no guaranteed upper latency bound, including when the Windows
+temporary directory is on another drive.
+
 Each call writes its Base64 JSON payload to a temporary file rather than the Windows
 command line. The payload includes arguments, forwarded environment and, for hooks,
 `tool_input`; it may contain credentials. Neither bridge logs payload contents.

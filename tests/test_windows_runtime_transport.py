@@ -919,7 +919,9 @@ param($Transport,$Directory,$ProviderDirectory,$Marker)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 . $Transport
-$linuxDirectory=(& ([Delamain.ProcessTransport]::WslExecutable()) --distribution Ubuntu --exec wslpath -a -u $Directory | Out-String).Trim()
+$trustedPath=[Delamain.ProcessTransport]::WslExecutable()
+$linuxDirectory=(& $trustedPath --distribution Ubuntu --exec wslpath -a -u $Directory | Out-String).Trim()
+$windowsDirectory=Split-Path -Parent (Split-Path -Parent $trustedPath)
 Set-Location -LiteralPath $ProviderDirectory
 [Environment]::CurrentDirectory=$Directory
 $env:PATH=$Directory+';'+$env:PATH
@@ -927,6 +929,23 @@ $priorSystemRoot=$env:SystemRoot; $priorWindir=$env:WINDIR
 $env:SystemRoot=$Directory
 $env:WINDIR=$Directory
 $env:FIXTURE_SEARCH_MARKER=$Marker
+# Inspect the actual environment block from the production Info factory. Use
+# native cmd.exe as the child so WSL interop cannot rewrite inherited values.
+$nativeArguments=[string[]]@('/d','/c','echo %SystemRoot%&&echo %WINDIR%')
+$method=[Delamain.ProcessTransport].GetMethod('Info',[Reflection.BindingFlags]'Static,NonPublic')
+$invokeArguments=[object[]]@('wsl.exe',$nativeArguments,$false)
+$childInfo=$method.Invoke($null,$invokeArguments)
+$childInfo.FileName=Join-Path $windowsDirectory 'System32/cmd.exe'
+$child=[Diagnostics.Process]::Start($childInfo)
+$childOutput=$child.StandardOutput.ReadToEnd()
+$childError=$child.StandardError.ReadToEnd()
+$child.WaitForExit()
+if ($child.ExitCode -ne 0) { throw "Native environment probe failed: $childError" }
+$childEnvironment=@($childOutput -split "`r?`n" | Where-Object { $_ -ne '' })
+$child.Dispose()
+if ($childEnvironment.Count -ne 2 -or $childEnvironment[0] -ine $windowsDirectory -or $childEnvironment[1] -ine $windowsDirectory) {
+    throw "Trusted WSL ProcessStartInfo child environment mismatch: expected '$windowsDirectory' twice, received '$($childEnvironment -join ', ')'."
+}
 $info=[Diagnostics.ProcessStartInfo]::new()
 $info.FileName='wsl.exe'; $info.UseShellExecute=$false
 $info.RedirectStandardOutput=$true; $info.CreateNoWindow=$true
@@ -944,11 +963,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Trusted WSL streaming failed' }
 $direct=[Delamain.ProcessTransport]::Run('wsl.exe',$arguments,$true,$false,$false,$null)
 if ($direct.ExitCode -ne 0) { throw 'Trusted Info selection failed' }
 if ([IO.File]::Exists($Marker)) { throw 'Production invoked cwd/PATH fake WSL' }
-$trustedPath=[Delamain.ProcessTransport]::WslExecutable()
 $env:SystemRoot=$priorSystemRoot; $env:WINDIR=$priorWindir
 [pscustomobject]@{ path=$trustedPath; bits=[IntPtr]::Size;
  cwd=[Environment]::CurrentDirectory; location=(Get-Location).ProviderPath;
- fake=[IO.File]::Exists($Marker); capture=$captured.Output; stream=$streamed; direct=$direct.Output } | ConvertTo-Json -Compress
+ fake=[IO.File]::Exists($Marker); capture=$captured.Output; stream=$streamed; direct=$direct.Output;
+ environment=$childEnvironment; windowsDirectory=$windowsDirectory } | ConvertTo-Json -Compress
 """
         for shell in self.native_shells():
             with self.subTest(shell=shell):
@@ -962,7 +981,9 @@ $env:SystemRoot=$priorSystemRoot; $env:WINDIR=$priorWindir
                 self.assertEqual(Path(data["path"]),expected)
                 for value in (data["capture"],data["stream"][0],data["direct"]):
                     self.assertEqual(json.loads(value),[["","日本語 😀",'quote" and $literal'],"trusted Linux"])
-                print(f"trusted WSL: {shell}, {data['path']}; unsafe cwd fake positive, production fake negative")
+                self.assertEqual(data["environment"],[data["windowsDirectory"],data["windowsDirectory"]],
+                    f"Trusted WSL child inherited poisoned Windows variables: {data['environment']}")
+                print(f"trusted WSL: {shell}, {data['path']}; child environment {data['environment']}; unsafe cwd fake positive, production fake negative")
 
     @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
     def test_guardian_ignores_malicious_python_module_in_selected_linux_cwd(self):

@@ -220,8 +220,10 @@ mkdir -p "$common/$(dirname "$ref")" "$common/logs/$(dirname "$ref")"
 ```
 
 Workspace-write Codex executors receive `maintenance.auto=false` through their child environment, preserving other
-inherited Git config overrides. Automatic maintenance would otherwise emit a misleading `packed-refs.lock` denial
-after a successful commit; shared maintenance stays outside the sandbox.
+inherited Git config overrides. Shared maintenance stays outside the sandbox. On Apple Git 2.50.1, a successful
+commit can still print a nonfatal `packed-refs.lock` denial even with automatic maintenance disabled (confirmed by
+Git trace with no maintenance child). Check the command's exit status; disabling maintenance does not suppress
+other Git lock diagnostics.
 
 These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
 In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,

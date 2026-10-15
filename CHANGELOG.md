@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The kill guard catches redirected name lookups and shell kills through `xargs`.** Process substitutions feeding
+  `xargs kill` or a `while read` loop, and `pgrep | xargs … sh -c "kill …"`, now receive the same refusal as other
+  bulk kills. Desktop's session-card hook and the registry share one session identity matcher, including verified
+  Desktop CLI restarts.
+
 - **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by

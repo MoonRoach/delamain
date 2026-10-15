@@ -97,6 +97,13 @@ BLOCKED=(
   'kill `pgrep -f worker`'
   'pgrep -f worker | xargs kill'
   'pgrep -f worker | xargs -r kill -9'
+  # Review 95 L9/L10: redirected pid sources and shell commands run by xargs.
+  'xargs kill < <(pgrep -f w)'
+  'xargs kill < <(ps aux | grep w)'
+  'while read p; do kill $p; done < <(pgrep -f w)'
+  'while read p; do kill $p; done < <(ps aux | grep w)'
+  'pgrep -f w | xargs -I{} sh -c "kill {}"'
+  'pgrep -f w | xargs -I{} sh -c "echo {}; kill {}"'
   # M1: pidof and grep on ps output are pid sources too, in $(…), backticks and pipes, at any stage of the pipeline
   'kill $(pidof node)'
   'kill `pidof node`'
@@ -125,6 +132,14 @@ kill $P'
 )
 for c in "${BLOCKED[@]}"; do denied "$c"; check $? 0 "denied: $c"; done
 ALLOWED=(
+  'xargs kill < <(cat pids)'
+  'xargs echo < <(pgrep -f w)'
+  'while read p; do echo $p; done < <(pgrep -f w)'
+  'while read p; do kill $p; done < <(cat pids)'
+  'diff <(pgrep a) <(pgrep b)'
+  'pgrep -f w | xargs -I{} sh -c "echo {}"'
+  'pgrep -f w | xargs echo; kill 4242'
+  'pgrep -f w | xargs echo "kill"'
   'kill 12345'
   'kill -- -12345'
   'kill -TERM $!'

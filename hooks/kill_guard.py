@@ -54,7 +54,7 @@ _KILL = re.compile(_HEAD + r"(?:\S*/)?kill(?![\w.-])")
 _PGREP = re.compile(_HEAD + r"(?:\S*/)?(?:pgrep|pidof)(?![\w.-])")  # a name lookup: its output is pids
 _GREP = re.compile(_HEAD + r"(?:\S*/)?grep(?![\w.-])")  # a pid source after a `ps` stage
 _PS = re.compile(_HEAD + r"(?:\S*/)?ps(?![\w.-])")
-_XARGS_KILL = re.compile(_HEAD + r"(?:\S*/)?xargs\b.*?(?:^|\s)(?:\S*/)?kill(?![\w.-])", re.DOTALL)
+_XARGS_KILL = re.compile(_HEAD + r"(?:\S*/)?xargs\b.*?(?:^|[\s;])(?:\S*/)?kill(?![\w.-])", re.DOTALL)
 _FOR_IN = re.compile(r"^\s*for\s+\w+\s+in\s")
 _ASSIGN = re.compile(r"^\s*(?:(?:export|local|declare|typeset|readonly)\s+(?:-\w+\s+)*)?\w+(?:\[[^\]]*\])?\+?=")
 _WHILE_READ = re.compile(r"^\s*while\s+(?:IFS=\S*\s+)?read\b")
@@ -117,7 +117,7 @@ def _trap(args: str):
 
 def _split(text: str):
     """[(stage, separator after it)] of a command text, split at the top level only: what stands inside `$(…)` or
-    backticks stays in its stage (read with `_substitutions`). A single `&` separates statements; a comment ends at
+    backticks or `<(…)` stays in its stage (read with `_substitutions`). A single `&` separates statements; a comment ends at
     the newline."""
     out, buf, stack, in_tick, i, n = [], [], [], False, 0, len(text)
 
@@ -135,9 +135,9 @@ def _split(text: str):
             continue
         if c == "`":
             in_tick = not in_tick
-        elif c == "$" and text.startswith("$(", i):
+        elif text[i:i + 2] in ("$(", "<("):
             stack.append("$")
-            buf.append("$(")
+            buf.append(text[i:i + 2])
             i += 2
             continue
         elif c == "(":
@@ -166,12 +166,12 @@ def _split(text: str):
 
 
 def _substitutions(stage: str):
-    """Bodies of the `$(…)` and `` `…` `` in a stage (outermost ones; each body is read again for its own)."""
+    """Bodies of the `$(…)`, `<(…)` and `` `…` `` in a stage (outermost ones; each body is read again for its own)."""
     bodies, i, n = [], 0, len(stage)
     while i < n:
         if stage[i] == "\\":
             i += 2
-        elif stage.startswith("$(", i):
+        elif stage[i:i + 2] in ("$(", "<("):
             depth, j = 1, i + 2
             while j < n and depth:
                 depth += (stage[j] == "(") - (stage[j] == ")")
@@ -237,9 +237,36 @@ def _drop_ssh(command: str, keep_line: bool = False) -> str:
                    for i, part in enumerate(parts))
 
 
+def _xargs_stages(command: str):
+    """Project each original stage before splitting the semicolons unwrapped from a shell's `-c` string.
+
+    Keep quoted arguments protected during the initial split: the complete xargs stage must retain its shell body,
+    while a subsequent independent `kill` must never be attributed to xargs.
+    """
+    protected, strings = pg._protect(pg.strip_heredocs(command.replace("\x00", "").replace("\\\n", " ")))
+    return [(pg.views(pg._TOKEN.sub(lambda m: strings[int(m.group(1))], stage), True)[0], sep)
+            for stage, sep in _split(protected)]
+
+
+def _redirected_loop_kills(stages):
+    """Kills inside a while-read loop whose closing `done` carries a redirected pid source."""
+    loops = []
+    for k, (stage, _) in enumerate(stages):
+        if re.match(r"^\s*(?:for|while|until)\b", stage):
+            loops.append(k)
+        elif re.match(r"^\s*done\b", stage) and loops:
+            start = loops.pop()
+            if _WHILE_READ.match(stages[start][0]) and _has_source([stage]):
+                for body, _ in stages[start + 1:k]:
+                    if _KILL.match(body):
+                        return body
+    return None
+
+
 def check(command: str):
     """(reason, overridable) of a denial, or None."""
-    executed = pg.views(_drop_ssh(command), True)[0]
+    local = _drop_ssh(command)
+    executed = pg.views(local, True)[0]
     levels = list(_levels(executed))
     for stages in levels:
         for stage, _ in stages:
@@ -250,7 +277,14 @@ def check(command: str):
             if trap:
                 return f"This is `{stage}`. {trap}", False
             return f"This is `{stage}` — a kill by name or pattern.", True
+    for pipe in _pipelines(_xargs_stages(local)):
+        for j, (_, stage) in enumerate(pipe):
+            if _XARGS_KILL.match(stage) and _has_source([st for _, st in pipe[:j + 1]]):
+                return f"This is `{stage}` after a name lookup — a kill of whatever it matches.", True
     for stages in levels:
+        redirected_kill = _redirected_loop_kills(stages)
+        if redirected_kill:
+            return f"This is `{redirected_kill}` in a loop reading a name lookup — a kill of whatever it matches.", True
         texts = [st for st, _ in stages]
         for k, stage in enumerate(texts):
             if _KILL.match(stage) and any(_has_source([st for st, _ in _split(body)]) for body in _substitutions(stage)):

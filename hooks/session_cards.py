@@ -71,11 +71,7 @@ def is_hub(session_id, host_id="") -> bool:
             rec = hc.roles_load(stage)["roles"].get("hub")
         except (hc.Failure, hc.UsageError, OSError, ValueError, AttributeError, TypeError):
             continue  # one unreadable registry must not hide the hub of another stage
-        if not isinstance(rec, dict):
-            continue
-        if sid in (rec.get("session"), rec.get("cli_session_id")):
-            return True
-        if host and rec.get("session") == host and (hc.desktop_session(host) or {}).get("cliSessionId") == sid:
+        if hc.session_matches(rec, sid, host):
             return True
     return False
 

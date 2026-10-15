@@ -19,6 +19,31 @@ hook(){ python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToo
 denied(){ hook "$@" | grep -q '"permissionDecision": "deny"'; }
 S=mcp__ccd_session__start_session; H=mcp__ccd_session__hand_off_to_session; SP=mcp__ccd_session__spawn_task
 
+# Both registry lookup paths and the hook must delegate identity matching to hubcore.
+python3 - "$B" "$HOOKS" <<'PYTEST'; check $? 0 "hook and registry share the session matcher"
+import sys
+sys.path[:0] = sys.argv[1:]
+import hubcore as hc
+import session_cards as cards
+from unittest.mock import patch
+from pathlib import Path
+rec = {"session": "registered"}
+assert hc.session_matches(rec, "registered", "")
+assert not hc.session_matches(rec, "other", "")
+with patch.object(hc, "session_matches", return_value=True) as match, \
+     patch.object(hc, "roles_load", return_value={"roles": {"hub": rec}}), \
+     patch.object(hc, "root", return_value=Path(sys.argv[1])), \
+     patch.object(Path, "iterdir", return_value=iter([Path("stage-a")])), \
+     patch.object(Path, "is_file", return_value=True):
+    assert cards.is_hub("from-hook")
+    assert match.call_args.args[1] == "from-hook"
+    assert hc.role_for_session("stage-a", "from-registry")[0] == "hub"
+    assert match.call_args.args[1] == "from-registry"
+    with patch.object(hc, "session_id", return_value="from-caller"):
+        assert hc.role_for_caller("stage-a")[0] == "hub"
+    assert match.call_args.args[1] == "from-caller"
+PYTEST
+
 # ---- no registry at all: nobody is a hub, nothing is denied (and nothing is printed)
 denied $S '{"initiation":"own_initiative","title":"x","prompt":"y"}' $HUB; check $? 1 "no registry: own_initiative passes"
 check "$(hook $S '{"initiation":"own_initiative"}' $HUB | wc -c | tr -d ' ')" 0 "no registry: no output"

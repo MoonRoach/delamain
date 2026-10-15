@@ -7,7 +7,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
               [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
-              [--permission-mode MODE] [--ignore-hold]
+              [--permission-mode MODE] [--mcp inherit|none|FILE[,FILE]] [--ignore-hold]
   agent status [R] [--stage S] [--all]
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
                                                       is the message, a word starting with `-` included)
@@ -371,6 +371,80 @@ def bg_wait_ceiling(cwd=None) -> str:
     return raw
 
 
+MCP_CHOICES = ("inherit", "none")
+
+
+def mcp_choice(given, cwd) -> object:
+    """The MCP servers of a Claude agent's runs: "inherit" (the user's config, enabled plugins and claude.ai connectors,
+    as an interactive session gets them), "none" (--strict-mcp-config: no server at all), or a list of absolute paths
+    of MCP config files (--strict-mcp-config --mcp-config FILE…: only their servers). `given` is --mcp, else
+    AGENT_HUB_SPAWN_MCP; files are comma-separated, a relative one of --mcp is relative to the working directory. A
+    repository's config.json — its .agent-hub/config.json, or a hub home inside it (repository_home) — may choose
+    inherit or none only: a file's servers are commands the CLI would start."""
+    raw, origin = (given, "flag") if given else hc.setting_origin("AGENT_HUB_SPAWN_MCP", cwd=cwd)
+    name = "--mcp" if origin == "flag" else "AGENT_HUB_SPAWN_MCP"
+    raw = (raw or "inherit").strip()
+    if raw in MCP_CHOICES:
+        return raw
+    cfg = None
+    if origin == "project":
+        cfg = hc.project_dir(cwd) / hc.CONFIG_DIRNAME / "config.json"
+    elif origin == "home" and repository_home():
+        cfg = hc.root() / "config.json"
+    if cfg is not None:
+        raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in {cfg}, a repository's config.json: one of {MCP_CHOICES} — an MCP "
+                            "config file goes in a hub home's config.json outside the repository, the environment or "
+                            "--mcp")
+    parts = [x.strip() for x in raw.split(",") if x.strip()]
+    if not parts:
+        raise hc.UsageError(f"{name}: one of {MCP_CHOICES}, or MCP config files")
+    for part in parts:
+        if not Path(part).expanduser().is_absolute() and origin != "flag":
+            raise hc.UsageError(f"{name}: {part}: an MCP config file must be an absolute path (or ~/…)")
+    return mcp_files([str(Path(x).expanduser().resolve()) for x in parts], name)
+
+
+def repository_home() -> bool:
+    """Whether the hub home is a repository's: AGENT_HUB_HOME "project" (<repo>/.agent-hub/local/), or a home under
+    <git top>/.agent-hub/ — what a child that got the project home as $AGENT_HUB_HOME (hc.child_env) sees, its layer
+    reading "env". A home the user named elsewhere is the user's, whatever its path contains."""
+    home = hc.home()
+    if home.layer == "project":
+        return True
+    path = home.path.resolve()
+    top = hc._git_top(path)
+    return top is not None and path.is_relative_to(top / hc.CONFIG_DIRNAME)
+
+
+def mcp_files(files: list, name: str) -> list:
+    """`files` when each is an MCP config the CLI takes (a JSON object with "mcpServers"); else a usage error. Run
+    again before a resume: the CLI would fail on a file deleted or broken since the spawn."""
+    for f in files:
+        if Path(f).is_dir():
+            raise hc.UsageError(f"{name}: {f}: is a directory, not an MCP config file")
+        try:
+            data = json.loads(Path(f).read_text(encoding="utf-8"))
+        except OSError:
+            raise hc.UsageError(f"{name}: {f}: no such file (inherit, none, or MCP config files)") from None
+        except ValueError as e:
+            raise hc.UsageError(f"{name}: {f}: not valid JSON ({e})") from None
+        if not (isinstance(data, dict) and isinstance(data.get("mcpServers"), dict)):
+            raise hc.UsageError(f'{name}: {f}: not an MCP config (a JSON object with "mcpServers")')
+    return files
+
+
+def mcp_text(mcp) -> str:
+    return mcp if isinstance(mcp, str) else "only " + ", ".join(mcp)
+
+
+def mcp_args(meta: dict) -> list:
+    """The CLI flags of an agent's MCP choice; an agent spawned before the choice existed inherits."""
+    mcp = meta.get("mcp") or "inherit"
+    if mcp == "inherit":
+        return []
+    return ["--strict-mcp-config"] + (["--mcp-config", *mcp] if isinstance(mcp, list) else [])
+
+
 def init_timeout(cwd=None) -> int:
     """Seconds to wait for a run's init event (it comes after MCP servers connect): AGENT_INIT_TIMEOUT or 120."""
     try:
@@ -476,6 +550,7 @@ def claude_argv(meta: dict, resume: bool) -> list:
         argv += ["--effort", meta["effort"]]
     argv += ["--output-format", "stream-json", "--verbose",
              "--permission-mode", meta.get("permission_mode") or DEFAULT_PERMISSION_MODE]
+    argv += mcp_args(meta)  # before --add-dir: --mcp-config takes several values too
     argv += hc.add_dir_args(meta["cwd"])  # before -n / -p: --add-dir takes several values
     if not resume:
         argv += ["-n", meta["title"]]
@@ -555,6 +630,10 @@ def cmd_spawn(a) -> int:
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
     if denied:
         raise hc.UsageError(denied)
+    if engine == "codex" and a.mcp and a.mcp != "inherit":
+        # `codex exec -c` cannot switch off the servers of Codex plugins; AGENT_HUB_SPAWN_MCP is for Claude agents
+        raise hc.UsageError("--mcp is only supported by the Claude engine")
+    mcp = mcp_choice(a.mcp, cwd) if engine == "claude" else None  # before pace_advice, which may journal
     pace_note = pace_advice(stage, engine, model_names, effort, a.task_class, reason, a.dry_run)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     sandbox = None
@@ -602,8 +681,8 @@ def cmd_spawn(a) -> int:
     if held:
         hc.warn(held)
     if a.dry_run:
-        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}; nothing "
-              "was started or written")
+        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}"
+              f"{', MCP ' + mcp_text(mcp) if mcp and mcp != 'inherit' else ''}; nothing was started or written")
         return 0
     d = agent_dir(stage, a.role)
     if (d / "meta.json").exists():
@@ -630,6 +709,8 @@ def cmd_spawn(a) -> int:
             "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
     meta["engine"] = engine
+    if mcp:
+        meta["mcp"] = mcp
     if reason:
         meta["reason"] = reason
     if engine == "codex":
@@ -660,6 +741,7 @@ def cmd_spawn(a) -> int:
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
+                               + (f", MCP {mcp_text(mcp)}" if mcp and mcp != "inherit" else "")
                                + (f", reason: {reason}" if reason else "")
                                + (f", {pace_note}" if pace_note else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
@@ -996,6 +1078,8 @@ def _send_locked(stage: str, a, msg: str) -> int:
         if meta.get("engine", "claude") == "claude":
             bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
             legacy_effort(meta)  # likewise a rule that refuses the effort it would get
+            if isinstance(meta.get("mcp"), list):  # likewise an MCP config file deleted or broken since the spawn
+                mcp_files(meta["mcp"], f"agent {a.role}'s MCP config")
         if not a.resume_anyway:
             limit, ctx = spawn_policy.resume_max_ctx(meta["cwd"]), read_log(Path(meta["dir"]) / "log.jsonl")["ctx"]
             if limit and ctx > limit:  # refused before the message is queued
@@ -1189,6 +1273,9 @@ def main(argv: list) -> int:
     s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
+    s.add_argument("--mcp", metavar="inherit|none|FILE[,FILE]",
+                   help="Claude: the MCP servers of the agent — inherit (the user's config, plugins and claude.ai "
+                        "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else inherit")
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
                         "on a new branch from origin's default branch (--base)")

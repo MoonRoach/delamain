@@ -79,7 +79,9 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or
 a scheduled job, and the user's settings are not edited (question 7): list the edit for the user to confirm. Question 10
-stays `inherit` (nobody can say which servers the agents use): list `none` for the user to confirm.
+stays `none` (nobody has said that the agents need servers) and writes nothing, so an `inherit` the user set earlier
+is kept: if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json`, list `inherit` for the user to
+confirm.
 
 ## 3. Write
 
@@ -105,7 +107,8 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
   `--apply`).
 
 For question 10, when the answer is yes, add `"AGENT_HUB_SPAWN_MCP": "inherit"` to the repository's `.agent-hub/config.json`,
-not the hub home's; when it is no, write nothing (`none` is the default).
+not the hub home's; when it is an explicit no, add `"AGENT_HUB_SPAWN_MCP": "none"` there, so that an `inherit` from the hub home or an
+earlier project config does not stay in force (a repository's setting wins over the hub home's).
 
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.

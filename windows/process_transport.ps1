@@ -107,12 +107,14 @@ namespace Delamain {
             if (control == null) return;
             try {
                 if (requestLease != null) requestLease.Dispose();
-                if (acknowledgementLease != null) acknowledgementLease.Dispose();
             } finally {
-                File.Delete(control);
-                File.Delete(control + ".ack");
-                control = null;
+                try {
+                    if (acknowledgementLease != null) acknowledgementLease.Dispose();
+                } finally { control = null; }
             }
+            // DeleteOnClose owns deletion. A Linux acknowledgement writer may
+            // still hold its fd after publishing done; a second File.Delete
+            // would fail on the resulting Windows delete-pending path.
         }
         const string Guardian = @"
 import os,signal,subprocess,sys,time,traceback

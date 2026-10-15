@@ -19,9 +19,10 @@ printf '%s\n' "$AGENT_HUB_HOME"
 mkdir -p "$AGENT_HUB_HOME/fixture"
 mktemp -d
 exit "$2"
-''', 'test-temp', lib, str(status), str(custom), outer], env={**os.environ, 'TMPDIR': outer}, capture_output=True, text=True)
+''', 'test-temp', lib, str(status), str(custom), outer], env={**os.environ, 'TMPDIR': outer + '/'}, capture_output=True, text=True)
         assert result.returncode == status, result.returncode
         paths = [Path(p) for p in result.stdout.splitlines()]
+        assert all("//" not in str(p) for p in result.stdout.splitlines()), "temporary paths must be normalized"
         leaked = [p for p in paths if p.exists()]
         import shutil
         for p in leaked:

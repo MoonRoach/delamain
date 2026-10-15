@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -145,6 +146,88 @@ def hook_args(cwd=None):
     return args
 
 
+REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE)
+
+
+def is_review_role(meta):
+    return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
+
+
+# Paths are relative to the linked worktree's private Git directory, never its config/pointers.
+WORKTREE_STATE_FILES = (
+    "HEAD", "HEAD.lock", "ORIG_HEAD", "ORIG_HEAD.lock", "index", "index.lock", "COMMIT_EDITMSG",
+    "MERGE_HEAD", "MERGE_HEAD.lock", "MERGE_MSG", "MERGE_MSG.lock", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH",
+    "AUTO_MERGE", "AUTO_MERGE.lock",
+    "CHERRY_PICK_HEAD", "CHERRY_PICK_HEAD.lock", "REVERT_HEAD", "REVERT_HEAD.lock", "SQUASH_MSG",
+    "FETCH_HEAD", "FETCH_HEAD.lock",
+)
+WORKTREE_STATE_DIRS = ("logs",)
+WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported and may move HEAD before failing; commit and merge are supported. "
+                         "Update the branch with a merge commit (for example from origin/main).")
+
+
+def worktree_git_roots(cwd):
+    """Grant operation state and this branch's refs, leaving Git config/pointers read-only."""
+    # Discover cwd's repository, never a repository selected by the hub's Git environment.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+            cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
+        branch = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                                cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    paths = result.stdout.strip().splitlines()
+    if result.returncode or len(paths) != 2:
+        return []
+    gitdir, common = (Path(p).resolve() for p in paths)
+    if gitdir == common:
+        return []
+    refs = []
+    if (common / "reftable").is_dir():
+        # Reftable is one shared store; it cannot be narrowed to one branch by path.
+        refs = [common / "reftable"]
+    elif branch.returncode == 0:
+        name = branch.stdout.strip()
+        if not name.startswith("refs/heads/") or any(p in (".", "..") for p in Path(name).parts):
+            raise hc.UsageError("cannot grant sandbox roots for an invalid worktree branch")
+        # Keep leaf grants even if pack-refs prunes the parent: fail closed, never widen.
+        ref = common / name
+        log = common / "logs" / name
+        refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
+    state = [gitdir / name for name in (*WORKTREE_STATE_FILES, *WORKTREE_STATE_DIRS)]
+    return [str(p) for p in [*state, common / "objects", *refs]]
+
+
+def prepare_worktree_sandbox(meta, env):
+    """Restore pinned leaf parents outside the sandbox and keep Git maintenance out of it."""
+    roots = [Path(p) for p in meta.get("sandbox_git_roots", [])]
+    common_dirs = [p.parent for p in roots if p.name == "objects"]
+    for common in common_dirs:
+        for root in roots:
+            if any(root.is_relative_to(common / prefix) for prefix in ("refs/heads", "logs/refs/heads")):
+                root.parent.mkdir(parents=True, exist_ok=True)
+    # Git's quoted -c transport survives Codex's default *KEY* environment exclusion.
+    # Preserve inherited parameters verbatim; the final value overrides earlier maintenance settings.
+    inherited = env.get("GIT_CONFIG_PARAMETERS", "")
+    env["GIT_CONFIG_PARAMETERS"] = (inherited + " " if inherited else "") + "'maintenance.auto=false'"
+
+
+
+def workspace_write_roots(meta):
+    policy = meta.get("sandbox_policy") or {}
+    if is_review_role(meta):
+        cwd, home = Path(meta["cwd"]).resolve(), hc.root().resolve()
+        if cwd == home or not cwd.is_relative_to(home):
+            raise hc.UsageError("Codex workspace-write reviewer --cwd must be a directory under the hub home")
+        if any(not Path(p).resolve().is_relative_to(cwd) for p in policy.get("writable_roots", [])):
+            raise hc.UsageError("Codex reviewer writable_roots must stay inside its cwd under the hub home")
+        return [str(cwd)]
+    git_roots = meta["sandbox_git_roots"] if "sandbox_git_roots" in meta else worktree_git_roots(meta["cwd"])
+    return list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())] + git_roots))
+
+
 def codex_argv(meta, prompt=None, resume=False):
     """The command line of a run. The prompt is not in it: the trailing `-` makes `codex exec` (and `exec resume`)
     read it from stdin, so it never shows in `ps`. `prompt` is accepted for callers that preview the command."""
@@ -164,7 +247,9 @@ def codex_argv(meta, prompt=None, resume=False):
         args += ["-c", "sandbox_mode=" + json.dumps(sandbox), "-c", 'approval_policy="never"']
         if sandbox == "workspace-write":
             policy = meta.get("sandbox_policy") or {}
-            roots = list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())]))
+            roots = workspace_write_roots(meta)
+            if is_review_role(meta):
+                policy = policy | {"exclude_tmpdir_env_var": True, "exclude_slash_tmp": True}
             args += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value(roots)]
             for key in ("network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"):
                 if key in policy:

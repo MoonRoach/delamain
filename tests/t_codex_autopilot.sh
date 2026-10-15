@@ -83,7 +83,8 @@ try:
     assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
     brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
     assert 'finite queue snapshot' in brief and 'Terminal follow-through' in brief and '--for 9m' not in brief
-    for phrase in ('prepare the required handoff', 'next quiet point',
+    for phrase in ('prepare the required handoff', 'At the first context warning',
+                   'complete the transfer now', 'A checkpoint alone is not completion',
                    'Do not compact to extend the shift', 'only the handoff procedure may continue',
                    'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):
         assert phrase in brief, (phrase, brief)
@@ -267,7 +268,8 @@ print('PASS unknown or missing active sandbox fails; explicit override remains s
 assert 'detached Codex successor' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
 assert '--engine codex' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
 soft = ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
-assert 'next quiet point' in soft and 'not a mandatory STOP' not in soft
+assert 'Hand over now' in soft and 'already-active atomic operation' in soft
+assert 'next quiet point' not in soft and 'not a mandatory STOP' not in soft
 assert 'Do not compact' in soft and 'available compaction' not in soft
 hard = ap.instruction('stage-a', 'opus', 'default', str(cwd), True, '10k')
 assert 'Hand over now' in hard and 'You may continue' not in hard

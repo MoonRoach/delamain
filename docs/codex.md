@@ -15,10 +15,17 @@ The coordinator and its workers can use different engines. The shared journal, i
 register, lock board and handoff files remain the protocol. Select an executor with `agent spawn --engine claude`
 or `--engine codex`; sending, status and stopping use the engine recorded at spawn.
 
+For a native Windows Codex coordinator, follow the [Windows workflow](windows-workflow.md).
+Its conditional transport runs the original core and detached workers in WSL2; the generic installation below
+is for the selected runtime host. Native Windows Claude integration is not established.
+
 ## Install in Codex
 
 Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and
-configuration use the standard-library TOML parser. The Claude engine continues to support Python 3.10+.
+configuration use the standard-library TOML parser. Native hooks use `bin/run-python --min-version 3.11` to find
+a compatible runtime even when `python3` is older. Set `DELAMAIN_PYTHON` to an executable path or command name
+to select it explicitly. See [Python selection](install.md#selecting-python-for-terminal-tools) for lookup order
+and terminal CLI usage. The Claude engine continues to support Python 3.10+ with its existing hook commands.
 
 Clone the repository if you do not have a local checkout yet:
 
@@ -46,6 +53,62 @@ See [official plugin packaging](https://developers.openai.com/plugins/build/plug
 Codex's SessionStart hook selects the Codex engine for that session. In a plain terminal, or when hooks are
 untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. In a plain terminal with no configured engine or detected Codex host, the default is `claude`.
 Use the installed plugin's `bin/` directory explicitly if a command is absent or shadowed on PATH.
+
+### Compaction veto
+
+The enabled, trusted Codex plugin registers `PreCompact` for both `auto` and `manual`.
+Its standalone guard returns the common hook output `continue: false`, `stopReason`
+and a nonempty `systemMessage` with exit 0, stopping compaction before it runs.
+The guard applies to every session
+where Codex dispatches this plugin hook, including native subagents; it does not need
+session identifiers or a transcript. Context budget settings and thresholds cannot
+bypass it. The Windows envelope returns the veto in native PowerShell before WSL
+transport, so an unavailable WSL does not open this path. Existing checkpoint and
+handoff policy still applies; the guard does not launch a successor or stop a process.
+
+`systemMessage` is the human-readable warning in the Codex UI/event stream;
+`stopReason` is recorded as the reason for stopping. The warning explains that an
+automatic context threshold can stop a turn before the assistant answers. No hook
+output can make the runtime continue sampling beyond that threshold after the veto.
+Save a checkpoint and hand off early under existing authority. If the turn has
+stopped because the automatic context limit was reached, recover from that checkpoint
+with a fresh coordinator for the same stage under existing authority; repeating
+prompts in the overfull session does not recover it. Below that limit, normal prompts
+and tools can continue after a blocked manual compaction attempt.
+Recovery preserves the compaction ban and the existing scope and permissions; it
+does not authorize a bypass or grant new permissions.
+
+The separate soft context budget never vetoes `UserPromptSubmit`. In a registered autopilot hub, every prompt
+above warn requires acknowledging the latest human input first and completing the same-stage handoff now,
+finishing only an already-active atomic operation. Preserve pending owner input in the checkpoint/handoff;
+start no new implementation. A settings refusal must leave a concrete owner reply and checkpoint, without
+guessed model/effort/access or a false READY result. Missing usage is reported as unknown. The three numeric
+budget thresholds alone can have private registered-stage overrides; see [Agent discipline](reference.md#agent-discipline).
+
+At the first WARN, a registered main hub with autopilot enabled latches durable `handoff_due` and closes
+ordinary recognized work. Missing/decreased usage, repeated warning buckets and owner/chain resets preserve it.
+Only the handoff path and narrow existing reads remain available; acknowledgement/reply stays possible.
+A real registry change or explicit threshold-policy change can release the old obligation. Subagents,
+non-hubs and disabled autopilot keep their previous behavior.
+
+Codex alone registers a `Stop` hook using the [official top-level continuation output](https://learn.chatgpt.com/docs/hooks#stop).
+It can continue an active handoff at most twice per obligation, with canonical same-request progress required
+before the second. The first continuation needs no readiness marker: it can check actual authority/settings and
+prepare the same handoff after a premature model final, without dispatching or granting authority. The assistant appends `[delamain handoff-continuation-ready]` only after checking the actual
+same-stage human transfer grant, observed settings and absence of human stop/revocation or a real blocker.
+That readiness assertion grants nothing; the continued app agent must recheck authority before native dispatch.
+No readiness for a second continuation, explicit stop/revocation, stale/unknown usage timestamp (over 120 seconds), insufficient measured headroom, unknown dispatch,
+settings failure or failed atomic counter reservation ends continuation. `stop_hook_active` cannot start an
+unreserved loop. Continuations carry `[delamain handoff-continuation]`, which never resets owner/chain state.
+This is active-turn continuation, not idle wake or a prompt veto. Native runtime qualification is required;
+a hook-process fixture alone does not prove the app dispatched or honored `Stop`.
+
+This requires a Codex runtime that dispatches `PreCompact` and honors the common stop
+output, with this hook enabled and trusted. Disabled or untrusted hooks, missing plugin
+files, or hook launch failures cannot provide a veto; do not treat a large automatic
+compaction threshold as an off switch. Hook-process and package tests alone do not
+prove runtime dispatch. This registration is Codex-specific and does not establish a
+Claude compaction veto. See [Codex PreCompact and common hook output](https://learn.chatgpt.com/docs/hooks#precompact).
 
 ### Update to a new version
 
@@ -176,17 +239,63 @@ including user and project hooks, not only Delamain's hooks.** Use it with hook 
 Set `AGENT_HUB_CODEX_HOOK_TRUST=reviewed` to require Codex's persisted trust instead; review/trust the definitions
 before starting a detached run. Changed hook definitions require renewed review in that mode.
 
-For a restricted reviewer, choose the sandbox explicitly:
+For a restricted reviewer, use `hub reviewer --for code --stage S` or the equivalent launch:
 
 ```sh
-agent spawn --engine codex --role reviewer --cwd /absolute/path/to/project \
-  --brief /absolute/path/to/review-brief.md --sandbox read-only
+agent spawn --engine codex --role reviewer --cwd /absolute/hub-home/S/coordinator/work \
+  --brief /absolute/path/to/review-brief.md --sandbox workspace-write
 ```
 
-The sandbox selection replaces full access for that worker. A read-only worker cannot append a journal or report
-on disk: use its captured result/status or explicitly permit the output location through the appropriate sandbox
-configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
-`--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
+Create the cwd first and put the absolute repository path in the brief for reading. Keep that repository outside the
+hub home and reviewer cwd, and do not add it to writable roots. The sandbox selection replaces full access for that
+worker: it can write the report and journal under the hub home while repository writes are denied. A `read-only`
+worker cannot write either; a review role/tag with that policy gets one warning at spawn.
+
+Workspace-write executors receive the hub home as a writable root. A review role/tag instead receives only its
+cwd strictly below the hub home, with temporary-directory writes excluded; wider explicit roots or a cwd outside
+that home are refused. Its report, journal and `.journal.lock` fit within the stage's `coordinator/work`; home
+configuration and other agents' inboxes stay read-only. Keep that cwd outside any repository.
+
+For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
+commit/merge messages and pseudorefs), their own logs and common objects.
+`commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
+refs/reflogs are limited to the worktree's initial branch and its lock files. Nested branch names also receive only leaf files, so sibling branches and reflogs stay read-only.
+If pack-refs prunes a leaf's parent directory, branch writes fail closed inside the sandbox. Executor spawn/resume
+restores missing parent directories of the pinned ref and reflog leaves outside the sandbox, without granting a
+namespace directory. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+Git root discovery ignores inherited `GIT_*` environment variables. A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
+`reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
+
+For an already running executor after external pack-refs/gc, restore the parents outside the sandbox. From its
+worktree, replace `<initial-branch>` with the branch pinned at spawn, then run:
+
+```bash
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+ref='refs/heads/<initial-branch>'
+mkdir -p "$common/$(dirname "$ref")" "$common/logs/$(dirname "$ref")"
+```
+
+Workspace-write Codex executors receive `maintenance.auto=false` through Git's quoted `GIT_CONFIG_PARAMETERS`
+transport, appending to inherited parameters. This avoids `GIT_CONFIG_KEY_n`, which Codex's default shell environment
+policy strips while retaining `GIT_CONFIG_COUNT`, breaking Git config parsing. Default secret-name exclusions remain
+enabled. Shared maintenance stays outside the sandbox. On Apple Git 2.50.1, a successful
+commit can still print a nonfatal `packed-refs.lock` denial even with automatic maintenance disabled (confirmed by
+Git trace with no maintenance child). Check the command's exit status; disabling maintenance does not suppress
+other Git lock diagnostics.
+
+These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
+In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
+sequencer or rewritten-ref roots are granted. Spawn prints the limitation and includes it in the worker's brief.
+Update the branch with a merge commit from the prepared base ref (for example `git merge origin/main`).
+The sandbox refuses creation of rebase state. In the macOS probe, `--merge` refused before HEAD changed, but
+`--apply` could move HEAD before failing, although the original branch ref stayed unchanged. A fully early refusal
+cannot be guaranteed by this file-root policy; do not run rebase in either mode. Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
+writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
+Commits with loose and packed refs were checked; explicit maintenance inside the sandbox can still be denied.
+Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
+access; they fail closed rather than receiving the whole Git directory.
+The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.
+A sandboxed interactive coordinator may need `--add-dir <hub-home>`; full access needs no directory grant.
 
 See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
 
@@ -215,12 +324,14 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   shown as unavailable rather than inferred. Codex has no `/agent-top`: run `agent-top` in a shell. The live pane is a
   Claude Code mod and does not draw in Codex.
 - Codex console autopilot (`hub succeed --engine codex --surface cli`, or automatic console detection) starts a detached Codex successor. It inherits the actual
-  rollout model, reasoning effort and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
+  rollout model, reasoning effort and sandbox policy, or the recorded launch settings of that exact detached worker when discovery is unavailable. Supported
   workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
-  policy fields are refused explicitly instead of discarded. An unspecified model
-  stays with the CLI configuration. Interactive approval policies become `never` for unattended successors: denied
-  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model, effort and sandbox policy. An absent effort stays with the launcher
-  default; unsupported effort values are refused before launch.
+  policy fields are refused explicitly instead of discarded. Unknown model, sandbox or approval settings are refused before reservation;
+  `AGENT_HUB_CODEX_DEFAULT_MODEL` and Full Access are not successor fallbacks. Interactive approval policies become `never` for unattended successors: denied
+  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model, effort and sandbox policy.
+  Codex successor effort is mandatory: if the current `turn_context` has none and no actual recorded launch effort is available,
+  the suggested command may omit `--effort`, but launch refuses; save/fill the handoff, journal `BLOCKED`, and end the shift until settings are observed or the owner recovers it.
+  Unsupported effort values are also refused before launch.
   `AGENT_HUB_SUCCESSOR_ENGINE` selects a hub-wide successor engine; `--engine` overrides it. The chain limit,
   reservations and takeover checks prevent duplicate launches. Reach the successor through `agent send` and the shared registers;
   in Git, it starts from the main checkout in a fresh named worktree so archiving the old coordinator cannot remove its directory.
@@ -273,11 +384,20 @@ A standing explicit owner instruction authorizing automatic same-stage context h
 API's explicit-user requirement until revoked: continue without another per-transfer approval. Record its exact
 source/reference and scope in the handoff and carry that pointer into the native takeover brief, preserving the
 Business DoD. The grant covers one successor for that active stage's context transfer; a new business scope,
-unrelated task, parallel duplicate coordinator or paused/completed stage needs its own authority. If authority
+unrelated task, parallel duplicate coordinator or completed stage needs its own authority. An implementation pause
+carries to the successor. A newer authorized same-stage read-only owner discussion may continue through the existing
+transfer grant without resuming implementation; an explicit transfer prohibition/revocation remains a blocker. If authority
 is absent or revoked, retain the request and predecessor and ask once for the missing scope; do independent
 authorized work while it is pending. If transport, access or identity is unavailable, retain the same request
 and report that concrete blocker. Neither case permits a CLI fallback, policy override, automatic retry or
 duplicate creation. Preparation remains pending work until verified takeover.
+
+The work-limit shell gate leaves the whole preparation path available, including read-only `hub effort`,
+`hub home`, authority queries through `ask`, literal path conversion and generated HANDOFF reads. Native app
+tools remain available under their existing human-authorization rules. Repeated owner prompts must reuse the
+same pending request and preserve new input. If dispatch is already reserved or its result is unknown, do not
+launch another successor. A prompt received by the predecessor after takeover is not automatically forwarded:
+the fresh coordinator must receive it through an actually authorized native message before claiming delivery.
 
 Under matching human authority, the app agent executes the full procedure through bind, takeover and verified status:
 

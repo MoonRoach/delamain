@@ -80,7 +80,11 @@ for name, recorded, target in (
     before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
     r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
           '--cwd',target,cwd=actual,ok=False)
-    assert 'no desktop request prepared' in r.stderr, (name,r.stdout,r.stderr)
+    expected = {
+        'parent': 'is not inside a git repository',
+        'other-repo': 'not in a worktree of the project of stage stage-a',
+    }.get(name, 'no desktop request prepared')
+    assert expected in r.stderr, (name,r.stdout,r.stderr)
     assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before, name
     assert not (stage/'auto-handoff.json').exists() and not (stage/'work').exists(), name
 
@@ -104,14 +108,14 @@ assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is
 
 home,stage,handoff=setup('project-record-absent')
 (stage/'stage.json').unlink()
-hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--cwd',tmp,cwd=tmp)
-assert state(stage)['pending']['project_root']==str(tmp.resolve()) and state(stage)['chain']==1
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--cwd',actual,cwd=actual)
+assert state(stage)['pending']['project_root']==str(repo.resolve()) and state(stage)['chain']==1
 
 home,stage,handoff=setup('project-record-broken-symlink')
 metadata=stage/'stage.json'; metadata.unlink(); metadata.symlink_to(stage/'missing-stage.json')
 before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
 r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--surface','desktop',
-      '--cwd',tmp,cwd=actual,ok=False)
+      '--cwd',actual,cwd=actual,ok=False)
 assert 'no desktop request prepared' in r.stderr, (r.stdout,r.stderr)
 assert {str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}==before
 assert metadata.is_symlink() and os.readlink(metadata)==str(stage/'missing-stage.json')
@@ -122,8 +126,8 @@ prepare_result=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','
 assert state(stage)['pending']['project_root']==str(repo.resolve())
 assert state(stage)['pending']['predecessor_cwd']==str(actual.resolve())
 saved=state(stage)
-hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--cwd',tmp,cwd=actual)
-assert state(stage)==saved, 'replay must retain the original reservation without validating a new target'
+hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--cwd',actual,cwd=actual)
+assert state(stage)==saved, 'replay from a valid hub worktree must retain the original reservation'
 
 home,stage,handoff=setup('project-root-none')
 (stage/'stage.json').write_text(json.dumps({'goal':'Complete the fixture queue','no_project':True}))
@@ -220,6 +224,21 @@ saved=(stage/'auto-handoff.json').read_bytes()
 hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again','--effort','medium',ok=False)
 assert (stage/'auto-handoff.json').read_bytes()==saved
 print('PASS retry flags update prepared settings/brief/create args; dispatch/uncertain/bound settings immutable; no duplicate reservation')
+
+# An accepted settings retry must retain main's request-bound grilling permission.
+home,stage,handoff=setup('retry-settings-owner-permission')
+prepare(handoff); req=state(stage)['pending']['request_id']
+hub('grilling','start','--stage','stage-a')
+saved=(stage/'auto-handoff.json').read_bytes()
+prepare(handoff,'--again','--owner-asked','--effort','medium','--dry-run')
+assert (stage/'auto-handoff.json').read_bytes()==saved
+prepare(handoff,'--again','--owner-asked','--effort','medium')
+p=state(stage)['pending']
+assert p['request_id']==req and state(stage)['chain']==1
+assert p['requested']['effort']=='medium' and p['create_args']['thinking']=='medium'
+assert p['grilling_owner_asked']['handoff']==str(handoff.resolve())
+assert pathlib.Path(p['brief']).read_text()==p['create_args']['prompt']
+print('PASS settings retry keeps request-bound owner permission; dry run changes neither settings nor permission')
 
 # A current turn context far before the last 4 MiB still supplies exact settings.
 home,stage,handoff=setup('large-parent-rollout')
@@ -396,7 +415,8 @@ prompt = args['prompt']
 for phrase in ('Terminal follow-through', 'remaining approved Business DoD', 'resource ownership',
                'next independent authorized ready work', 'expected event',
                "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope',
-               'prepare the required handoff', 'next quiet point',
+               'prepare the required handoff', 'At the first context warning', 'A checkpoint alone is not completion',
+               'Carry an implementation pause', 'read-only owner discussion', 'revocation blocks transfer',
                'Do not compact to extend the shift', 'only the handoff procedure may continue',
                'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):
     assert phrase in prompt, (phrase, prompt)

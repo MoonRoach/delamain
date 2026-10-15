@@ -9,10 +9,13 @@ import {
   barCells,
   badgeOf,
   capToasts,
+  closedHiddenCount,
+  closedStages,
   colorOf,
   countsOf,
   ctxPercent,
   glyphOf,
+  idleStages,
   isOwnCommand,
   journalColor,
   levelColor,
@@ -22,6 +25,7 @@ import {
   parseSnapshot,
   planRun,
   remember,
+  ringTarget,
   statusText,
   tagColor,
   taskText,
@@ -326,6 +330,28 @@ test('/agent-top <role> --stage S opens that agent card; an unknown role says so
   expect(none.text).toBe('agent-top pane opened: no agent "ghost"; ● 2 ✓ 0 ✗ 0')
 })
 
+test('/agent-top --stage S reads that stage itself: a closed stage, left out of the default call, is still shown', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', ($, e) => {
+    calls.push([...e.argv])
+    if (e.argv.includes('--agent')) return ran(cardJson(agent({ stage: 'shop', dir_name: 'worker' }), []))
+    return ran(e.argv.includes('--stage')
+      ? snapshot([agent({ stage: 'shop', dir_name: 'worker' })], { stages: ['shop'] })
+      : snapshot([agent()], { stages: ['stage-a'], closed_hidden: ['shop'] }))
+  })
+  const ok = await run($, 'worker --stage shop', 'agent-top')
+  expect(ok.text).toMatch(/^agent-top pane opened: /)
+  expect(calls.some(c => c.slice(1).join(' ') === '--json --stage shop')).toBe(true)
+  expect(calls.some(c => c.join(' ').endsWith('--agent worker --stage shop --feed 30'))).toBe(true)
+})
+
 test('where no pane can be placed, /agent-top answers with the text picture', async ($, on) => {
   const calls: string[][] = []
   on('command.register', REGISTERED)
@@ -588,6 +614,8 @@ test('planRun: every tick while the pane shows the list, every 15 s otherwise, t
   expect(planRun({ ...base, lastWatchAt: 85000 })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true, isAll: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, isOpen: true, hasStages: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, hasStages: true })).toEqual({ watch: false, extra: null })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true })).toEqual({ watch: false, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true, lastWatchAt: 85000 })).toEqual({ watch: true, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'journal' })).toEqual({ watch: true, extra: null })
@@ -1240,4 +1268,354 @@ test('a card call the engine kills on its timeout says so in one short line', as
   await ui.press({ key: 'open:stage-a/worker' })
   expect((await ui.find({ key: 'feed-note' }))?.text).toBe('feed unavailable: agent-top gave no answer in 60 s · retrying')
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- Summary's Stages section: idle stages and the two-press close
+
+const HUB = /\/bin\/hub$/
+const CLOSE_ARGV = (stage: string): string[] => ['close', '--stage', stage, '--why', 'closed from the agent-top pane']
+
+/** One stage's `stage_info` row of `agent-top --json`; idle for 3 h 20 m unless said otherwise. */
+const stageInfo = (o: Row = {}): Row => ({
+  goal: 'Ship the retro fixes', closed: null, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: true, live: 0, ...o,
+})
+const CLOSED = { at: '2026-10-04T11:00:00+00:00', why: 'closed from the agent-top pane', by: 'hub' }
+
+/** A snapshot of a live `stage-a` and the given other stages (idle unless their info says otherwise). */
+const withStages = (info: Record<string, Row>, extra: Row = {}): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', ...Object.keys(info)],
+    stage_info: { 'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, goal: 'Build the thing' }), ...info },
+    closed_hidden: [],
+    idle_after_s: 7200,
+    ...extra,
+  })
+
+/** The pane's stubs; `hub` answers `bin/hub`, `json` every `agent-top` call. Every argv is logged in `calls`. */
+function stubStages(on: On, json: (argv: readonly string[]) => string, hub: (argv: readonly string[]) => unknown, calls: string[][] = [], moves: string[] = []): void {
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', ($, e) => (moves.push(`${e.origin.kind}:${e.element ?? ''}`), {}))
+  on('process.run', ($, e) => {
+    calls.push([...e.argv])
+    return (HUB.test(e.argv[0] ?? '') ? hub(e.argv) : ran(json(e.argv))) as ReturnType<typeof ran>
+  })
+}
+
+const hubCalls = (calls: string[][]): string[][] => calls.filter(c => HUB.test(c[0] ?? '')).map(c => c.slice(1))
+
+test('parseSnapshot reads stage_info, closed_hidden and idle_after_s; an older CLI or a malformed row leaves them empty', async () => {
+  const s = parseSnapshot(
+    snapshot([agent()], {
+      stage_info: { 'stage-a': stageInfo({ closed: CLOSED, idle: false }), b: stageInfo({ goal: 'G', idle_s: null, last_activity_at: null, live: 2 }) },
+      closed_hidden: ['x', 'y'],
+      idle_after_s: 7200,
+    }),
+    0,
+  )
+  expect(s.stage_info['stage-a']).toEqual({ goal: 'Ship the retro fixes', closed: CLOSED, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: false, live: 0 })
+  expect(s.stage_info.b).toEqual({ goal: 'G', closed: null, last_activity_at: null, idle_s: null, idle: true, live: 2 })
+  expect(s.closed_hidden).toEqual(['x', 'y'])
+  expect(s.idle_after_s).toBe(7200)
+
+  const older = parseSnapshot(snapshot([agent()]), 0) // none of the three fields
+  expect([older.stage_info, older.closed_hidden, older.idle_after_s]).toEqual([{}, [], null])
+
+  const odd = parseSnapshot(snapshot([agent()], { stage_info: { a: 5, b: { closed: 'yes', idle_s: 'x', idle: 'true', live: null } }, closed_hidden: ['x', 7, null], idle_after_s: 'soon' }), 0)
+  expect(odd.stage_info).toEqual({ b: { goal: '', closed: null, last_activity_at: null, idle_s: null, idle: false, live: 0 } })
+  expect([odd.closed_hidden, odd.idle_after_s]).toEqual([['x'], null])
+})
+
+test('idleStages: only idle, open stages without live agents, the longest idle first, in the stage filter; closedStages, closedHiddenCount', async () => {
+  const snap = parseSnapshot(
+    snapshot([agent()], {
+      stages: ['a', 'b', 'c', 'd', 'e', 'f', 'gone'],
+      stage_info: {
+        a: stageInfo({ idle_s: 100 }),
+        b: stageInfo({ idle_s: 9000 }),
+        c: stageInfo({ idle_s: null }),
+        d: stageInfo({ idle: false }),
+        e: stageInfo({ closed: CLOSED, idle: false }),
+        f: stageInfo({ live: 1 }), // the CLI would not call it idle; a stage with a live agent is never offered anyway
+        stray: stageInfo(), // not in `stages`
+      },
+      closed_hidden: ['old', 'a'],
+    }),
+    0,
+  )
+  expect(idleStages(snap, []).map(r => r.stage)).toEqual(['b', 'a', 'c'])
+  expect(idleStages(snap, ['a', 'c', 'e']).map(r => r.stage)).toEqual(['a', 'c'])
+  expect(closedStages(snap, []).map(r => r.stage)).toEqual(['e'])
+  expect(closedStages(snap, ['a'])).toEqual([])
+  expect([closedHiddenCount(snap, []), closedHiddenCount(snap, ['a']), closedHiddenCount(snap, ['b'])]).toEqual([2, 1, 0])
+  expect(idleStages(parseSnapshot(snapshot([agent()]), 0), [])).toEqual([]) // an older CLI: nothing to offer
+})
+
+test('Summary: an idle stage has a close Button, the first press only arms it, the second runs `hub close` with exactly the agreed argv and refreshes', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  let isClosed = false
+  stubStages(
+    on,
+    () => (isClosed ? withStages({}, { closed_hidden: ['retro'] }) : withStages({ retro: stageInfo() })),
+    () => ((isClosed = true), ran('closed stage retro: 0 roles retired\nmore\n')),
+    calls,
+  )
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    isClosed = false
+    calls.length = 0
+    const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface })
+    await ui.press({ key: 'view-summary' })
+    expect((await ui.find({ key: 'stage:retro' }))?.text).toMatch(/^retro +idle 3h20 +Ship the retro fixes ?close$/)
+    expect(await ui.find({ key: 'stage:stage-a' })).toBeUndefined() // it has a live agent
+    const button = await ui.find({ key: 'close:retro' })
+    expect(button?.type).toBe('Button')
+    expect(button?.props.label).toBe('close')
+    expect(await ui.find({ key: 'sum-stages' })).toBeUndefined() // inline: a rule, not a frame
+    expect(await ui.find({ type: 'Text', text: /^── Stages ─+$/ })).toBeDefined()
+
+    await ui.press({ key: 'close:retro' }) // the first press: armed, nothing runs
+    expect(hubCalls(calls)).toEqual([])
+    expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('confirm close')
+    expect((await ui.find({ type: 'Text', text: 'confirm close' }))?.props).toMatchObject({ color: 'red', bold: true })
+    expect((await ui.find({ key: 'close-hint' }))?.text).toMatch(/^press again to close retro: its hub's locks are released, roles/)
+    expect(calls.some(c => c.includes('--force'))).toBe(false)
+
+    await ui.press({ key: 'close:retro' }) // the second one: the command
+    expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+    expect(calls.find(c => HUB.test(c[0] ?? ''))?.[0]).toMatch(/\/bin\/hub$/)
+    expect(calls.at(-1)?.slice(1)).toEqual(['--json']) // refreshed at once: the stage is gone from the list
+    expect(await ui.find({ key: 'close:retro' })).toBeUndefined()
+    expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+    const note = await ui.find({ key: 'close-note' })
+    expect(note?.text).toBe('✓ closed stage retro: 0 roles retired')
+    expect((await ui.find({ type: 'Text', text: /^✓ closed stage retro/ }))?.props.color).toBe('green')
+    expect((await ui.find({ type: 'Text', text: /^no idle stages · 1 closed hidden \(l shows them\)$/ }))?.props.dimColor).toBe(true)
+    expect(calls.some(c => c.includes('--force'))).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('a refused close (exit 2) shows the first stderr line in red and keeps the stage; a failed step (exit 1), a missing hub and a timeout say so too; never --force', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  let answer: () => unknown = () => ran('', 2, 'refused: retro has 1 live agent (worker)\nstop it first\n')
+  stubStages(on, () => withStages({ retro: stageInfo() }), () => answer(), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  const closeOnce = async () => {
+    await ui.press({ key: 'close:retro' })
+    await ui.press({ key: 'close:retro' })
+  }
+
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: refused: retro has 1 live agent (worker)')
+  expect((await ui.find({ type: 'Text', text: /^✗ retro: refused/ }))?.props.color).toBe('red')
+  expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('close') // still there, disarmed: a retry needs two presses again
+  expect(await ui.find({ text: /stop it first/ })).toBeUndefined()
+
+  answer = () => ran('partial\n', 1, 'FAILED: could not stop the background hub\n')
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: FAILED: could not stop the background hub')
+  answer = () => ran('', 1, '') // nothing said
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: hub exited with 1')
+  answer = () => ran('', 127, '')
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub cannot run/)
+  answer = () => ({ deny: 'spawn ENOENT: no such file or directory' })
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub is missing/)
+  answer = () => ({ deny: 'delamain: $.process.run(/p/bin/hub) aborted: still running after 60000 ms' })
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub gave no answer in 60 s; look at the stage/)
+
+  expect(hubCalls(calls)).toEqual(Array.from({ length: 6 }, () => CLOSE_ARGV('retro')))
+  expect(calls.some(c => c.includes('--force'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a close whose hub session still runs shows the ATTENTION in yellow, whole, how to end it included', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  const attention =
+    'closed stage retro: done. ATTENTION: the stage\'s hub "Hub retro #4" (hub-4, sid 11111111) still runs: other hubs can still message it by name and it answers — archive it in Desktop (local_abc). Hidden from agent-top.'
+  stubStages(on, () => withStages({ retro: stageInfo() }), () => ran(`${attention}\nmore\n`), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro' })
+  await ui.press({ key: 'close:retro' })
+  const note = await ui.find({ key: 'close-note' })
+  expect(note?.text).toMatch(/^⚠ closed stage retro: done\. ATTENTION/)
+  expect((await ui.find({ type: 'Text', text: /^⚠ closed stage retro/ }))?.props).toMatchObject({ color: 'yellow' })
+  expect((await ui.findAll({ type: 'Text', text: /archive it in Desktop \(local_abc\)/ })).length).toBe(1)
+  await ui.unmount()
+})
+
+test('a first press expires after 10 s, and arming another stage drops the first: only a second press on the same Button closes', async ($, on) => {
+  const clock = mock.clock(on)
+  const calls: string[][] = []
+  stubStages(on, () => withStages({ retro: stageInfo(), spike: stageInfo({ idle_s: 9000 }) }), () => ran('closed\n'), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  const labels = async () => [(await ui.find({ key: 'close:spike' }))?.props.label, (await ui.find({ key: 'close:retro' }))?.props.label]
+  expect(await labels()).toEqual(['close', 'close'])
+  expect((await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('close:'))).toEqual(['close:retro', 'close:spike']) // the longest idle first
+
+  await ui.press({ key: 'close:retro' })
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  await clock.advance(9000)
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  await clock.advance(1500) // 10 s since the press
+  expect(await labels()).toEqual(['close', 'close'])
+  expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+  await ui.press({ key: 'close:retro' }) // a press after the expiry is a first press again
+  expect(await labels()).toEqual(['close', 'confirm close'])
+
+  await ui.press({ key: 'close:spike' }) // another stage armed: retro is dropped
+  expect(await labels()).toEqual(['confirm close', 'close'])
+  await ui.press({ key: 'close:retro' }) // so this arms retro again and runs nothing
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  expect(hubCalls(calls)).toEqual([])
+
+  await ui.press({ key: 'view-journal' }) // leaving the view drops an armed stage as well
+  await ui.press({ key: 'view-summary' })
+  expect(await labels()).toEqual(['close', 'close'])
+  await ui.unmount()
+})
+
+test('one close at a time: while it runs the Button says closing… and presses are ignored; the result comes with the refresh', async ($, on) => {
+  const clock = mock.clock(on)
+  const calls: string[][] = []
+  let isClosed = false
+  stubStages(
+    on,
+    () => (isClosed ? withStages({ spike: stageInfo() }) : withStages({ retro: stageInfo(), spike: stageInfo({ idle_s: 9000 }) })),
+    async () => {
+      await clock.sleep(5000)
+      isClosed = true
+      return ran('closed stage retro\n')
+    },
+    calls,
+  )
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro' })
+  await ui.press({ key: 'close:retro' })
+  expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('closing…')
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+
+  await ui.press({ key: 'close:retro' }) // ignored: no second command, no arming
+  await ui.press({ key: 'close:spike' })
+  await ui.press({ key: 'close:spike' })
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('close')
+  expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+
+  await clock.advance(5000)
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✓ closed stage retro')
+  expect(await ui.find({ key: 'close:retro' })).toBeUndefined() // refreshed: gone
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('close')
+  await ui.press({ key: 'close:spike' }) // idle again: the next one is a normal first press
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('confirm close')
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+  await ui.unmount()
+})
+
+test('with nothing idle the Stages section says so and counts the closed stages the default view hides; `l` shows them (dim, no button)', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  stubStages(
+    on,
+    argv =>
+      argv.includes('--all')
+        ? withStages({ old: stageInfo({ closed: CLOSED, idle: false, goal: 'Done long ago' }), other: stageInfo({ closed: { ...CLOSED, at: '2026-10-03T11:00:00+00:00', why: 'wrapped up' }, idle: false }) })
+        : withStages({ busy: stageInfo({ idle: false, live: 1 }) }, { closed_hidden: ['old', 'other'] }),
+    () => ran('closed\n'),
+    calls,
+  )
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ type: 'Text', text: /no idle stages/ }))?.text).toBe('no idle stages · 2 closed hidden (l shows them)')
+  expect(await ui.findAll({ type: 'Button', text: /close/ })).toEqual([])
+  expect((await ui.find({ key: 'toggle-all' }))?.props).toMatchObject({ hotkey: 'l', label: 'old' }) // `l` works in Summary too
+
+  await ui.press({ key: 'toggle-all' })
+  expect(calls.at(-1)?.slice(1)).toEqual(['--json', '--all'])
+  expect(await ui.find({ type: 'Text', text: /^── Stages ─+$/ })).toBeDefined() // still in Summary
+  expect((await ui.find({ key: 'closed:old' }))?.text).toMatch(/^ closed +old +closed from the agent-top pane$/)
+  expect((await ui.find({ key: 'closed:other' }))?.text).toMatch(/^ closed +other +wrapped up$/)
+  const pill = await ui.find({ type: 'Text', text: ' closed ' })
+  expect(pill?.props).toMatchObject({ backgroundColor: 'gray', color: 'black' })
+  expect((await ui.find({ type: 'Text', text: 'old' }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /no idle stages$/ }))?.text).toBe('no idle stages') // nothing hidden any more
+  expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('close:'))).toEqual([])
+  const rows = (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(k => k.startsWith('closed:'))
+  expect(rows).toEqual(['closed:old', 'closed:other']) // the latest closed first
+  await ui.unmount()
+})
+
+test('Stages rows fit the body at 23 to 76 columns, inline and docked, idle, armed, refused and closed', async ($, on) => {
+  mock.clock(on)
+  const long = 'a-very-long-stage-name-indeed'
+  const goal = 'A goal long enough to need clipping on every width of the pane'
+  stubStages(
+    on,
+    () =>
+      withStages({
+        [long]: stageInfo({ goal, idle_s: 400000 }),
+        retro: stageInfo({ goal: '' }),
+        [`${long}-closed`]: stageInfo({ closed: { ...CLOSED, why: 'a reason long enough to need clipping too' }, idle: false }),
+        shut: stageInfo({ closed: CLOSED, idle: false }),
+      }),
+    () => ran('', 2, 'refused: a stage with a long name has live agents, open owner questions and more besides\n'),
+  )
+  await run($)
+  const wide: string[] = []
+  const prefixes = ['stage:', 'act:', 'closed:', 'close-']
+  const measure = async (ui: Awaited<ReturnType<typeof $.ui.mount>>, tag: string, inner: number) => {
+    for (const b of await ui.findAll({ type: 'Box' })) {
+      const k = b.key ?? ''
+      if (prefixes.some(p => k.startsWith(p)) && cells(b) > inner) wide.push(`${tag}: ${k} takes ${cells(b)} > ${inner}`)
+    }
+  }
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [23, 24, 25, 30, 40, 44, 60, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 60 }), surface: 'terminal' })
+      const inner = cols - (placement === 'dock' && cols >= 44 ? 8 : 0)
+      await ui.press({ key: 'view-summary' })
+      expect((await ui.findAll({ type: 'Box' })).filter(b => (b.key ?? '').startsWith('stage:')).length).toBe(2)
+      await measure(ui, `${placement} ${cols} idle`, inner)
+      await ui.press({ key: `close:${long}` })
+      expect((await ui.find({ key: 'close-hint' }))?.text).toMatch(/^press again/)
+      await measure(ui, `${placement} ${cols} armed`, inner)
+      await ui.press({ key: `close:${long}` })
+      expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗/)
+      await measure(ui, `${placement} ${cols} refused`, inner)
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
+})
+
+test('ringTarget: an agent row follows the cursor; a close Button gone from the drawing sends the ring to the Summary tab', async () => {
+  const tabs = ['view-agents', 'view-journal', 'view-summary', 'refresh']
+  expect(ringTarget('close:retro', null, [...tabs, 'close:retro', 'close:spike'])).toBe('close:retro') // still there: stays
+  expect(ringTarget('close:retro', null, [...tabs, 'close:spike'])).toBe('view-summary') // closed, or no longer idle
+  expect(ringTarget('close:retro', null, tabs)).toBe('view-summary')
+  expect(ringTarget('close:retro', null, ['refresh'])).toBeNull() // not drawn at all (another view): the ring is left alone
+  expect(ringTarget('open:s/a', 's/b', [...tabs, 'open:s/a', 'open:s/b'])).toBe('open:s/b')
+  expect(ringTarget('open:s/a', null, [...tabs, 'open:s/a'])).toBe('open:s/a')
+  expect(ringTarget('view-journal', 's/b', tabs)).toBe('view-journal')
+  expect(ringTarget(null, 's/b', tabs)).toBeNull()
 })

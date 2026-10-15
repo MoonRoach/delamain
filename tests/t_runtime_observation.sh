@@ -85,9 +85,12 @@ def write(events):
 def append(events):
     with path.open('a') as f:
         f.write(''.join(json.dumps(e)+'\n' for e in events))
-    os.utime(path, (now-7200, now-7200))
+    os.utime(path, (fixed_mtime, fixed_mtime))
 write([meta()]+inherited+[start(), context])
 os.utime(path, (now-7200, now-7200))
+# Use the filesystem's representable value: mounted filesystems may round the
+# requested timestamp. Subsequent growth must preserve that exact stored clock.
+fixed_mtime = path.stat().st_mtime
 coll = top.Collector(['stage-a'], show_all=True)
 finder = coll.subs
 quiet = finder.codex_session(child, None, now)
@@ -107,9 +110,28 @@ assert finder.codex_session(child, None, later) is None
 assert finder.codex_session(child, True, later).alive, 'known-live never expires'
 os.utime(path, (later, later)); cr.INDEX.checked = None
 assert subagents.Finder().codex_session(child, None, later) is None, 'touching the file cannot refresh owned activity'
-os.utime(path, (now-7200, now-7200)); cr.INDEX.checked = None
+os.utime(path, (fixed_mtime, fixed_mtime)); cr.INDEX.checked = None
 row = coll._subagent('stage-a', 'hub', {}, expired, later)
 assert row['expired'] and not row['handoff_blocking'] and row['state'] == 'unknown' and row['result'] is None
+# Render the actual expired observation through both public snapshot views.
+# The expiry message must survive an empty or a previously emitted last text;
+# neither case may invent a terminal result or turn the unknown badge into died.
+expiry_text = 'unknown observation expired; no death/completion evidence; not blocking handoff'
+for last_text in ('', 'earlier unfinished work'):
+    displayed = dict(row, last_text=last_text)
+    rendered = dict(now=later, stages=['stage-a'], agents=[displayed],
+                    counts=dict(live=0, done=0, error=0, dead=0, unknown=1), locks=[], questions={})
+    lines, _ = top.list_rows(rendered, 240, None)
+    listed = '\n'.join(line.text() for line in lines)
+    widget = top.render_widget(rendered)
+    assert expiry_text in listed and expiry_text in widget
+    assert 'unknown' in listed and '>unknown<' in widget and '>died<' not in widget
+    assert displayed['state'] == 'unknown' and displayed['result'] is None
+# A confirmed live child at the same age keeps its activity and blocking status,
+# including its render: the expired-unknown explanation must not leak into it.
+live = coll._subagent('stage-a', 'hub', {}, finder.codex_session(child, True, later), later)
+assert live['alive'] and live['handoff_blocking'] and not live['expired']
+assert top.what_now(live)[0] != expiry_text
 # Exercise actual handoff Finder and actual process-table registry evidence.
 real_clock = hub['live_subagents'].__globals__['time'].time
 hub['live_subagents'].__globals__['time'].time = lambda: later
@@ -139,14 +161,14 @@ with path.open('a') as f:
     f.write('{"type":"event_msg","payload":broken}\n')
     f.write('[]\n')
     f.write(json.dumps(terminal()))
-os.utime(path, (now-7200, now-7200))
+os.utime(path, (fixed_mtime, fixed_mtime))
 assert finder.codex_session(child, None, now).state == 'unknown'
 assert coll.log_state(path).last_event_ts == base+3
 with path.open('a') as f:
     f.write('\n')
-os.utime(path, (now-7200, now-7200))
+os.utime(path, (fixed_mtime, fixed_mtime))
 done = finder.codex_session(child, None, now)
-assert done and done.state == 'done' and done.mtime == now-7200
+assert done and done.state == 'done' and done.mtime == fixed_mtime
 assert done.last_event_ts == base+15 and done.age(now) == now-(base+15)
 row = coll._subagent('stage-a', 'hub', {}, done, now)
 assert row['last_event_at'] == stamp(base+15).split('.')[0]+'+00:00'
@@ -184,7 +206,7 @@ assert finder.codex_session(child, False, now, True).state == 'dead'
 # An incomplete child with no valid native birth/event time also has a bounded
 # observation lifetime. Filesystem freshness supplies TTL only, never display age.
 header = meta(); header['payload']['timestamp'] = 'invalid'
-write([header]); os.utime(path, (now-7200, now-7200)); cr.INDEX.checked = None
+write([header]); os.utime(path, (fixed_mtime, fixed_mtime)); cr.INDEX.checked = None
 missing_clock = subagents.Finder()
 assert missing_clock.codex_session(child, None, now) is None
 expired = missing_clock.codex_session(child, None, now, True)

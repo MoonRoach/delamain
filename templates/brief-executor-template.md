@@ -22,6 +22,9 @@ See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints
 ## Technical verification
 <What proves it works: the tests to run, and one check that would fail if the change were wrong.>
 
+## Tools
+MCP servers needed? (none by default) <A browser check, docs lookup, a GitLab/DB server: name it, and launch with `--mcp inherit` or `--mcp FILE`.>
+
 ## Stop
 Report the delivered result against the Business DoD, with technical evidence separately.
 <Where to stop: e.g. "push the branch and open a PR; do not merge". What not to touch.> At most <N> turns.

@@ -6,7 +6,7 @@ new_home
 export HUB_STAGE=stage-a PYTHONDONTWRITEBYTECODE=1 CODEX_HOME=$AGENT_HUB_HOME/codex CLAUDE_CONFIG_DIR=$AGENT_HUB_HOME/claude
 MON_TOKEN=monitor-token-positive
 python3 -c 'import time; time.sleep(600)' "$MON_TOKEN" & MON_PID=$!
-trap 'kill "$MON_PID" 2>/dev/null' EXIT
+trap 'kill "$MON_PID" 2>/dev/null; test_cleanup' EXIT
 python3 - "$B" "$AGENT_HUB_HOME" "$MON_PID" "$MON_TOKEN" <<'PY'
 import datetime as dt
 import importlib.machinery

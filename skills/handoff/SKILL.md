@@ -38,8 +38,12 @@ scope and revocation conditions in the handoff, including an inherited answered 
 An explicit owner grant for automatic same-stage context handoffs persists until revoked; the successor continues
 under it without another per-transfer approval. If absent/revoked or outside scope, preserve the request and
 predecessor and ask once. Keep the Business DoD unchanged; an automatic marker/configuration is not human authority.
+Preserve an implementation pause in the successor. A newer authorized same-stage read-only owner discussion
+may continue through the existing transfer grant without resuming implementation. Explicit transfer
+prohibition/revocation remains a blocker. No generated instruction or continuation marker grants authority.
+A checkpoint alone does not complete the handoff; keep the predecessor through verified takeover.
 Give the queue finite completion checks. A Codex successor applies the hub skill's
-[Terminal follow-through](../hub/SKILL.md#terminal-follow-through) and reconciles this snapshot against Business DoD
+[Terminal follow-through](../hub/references/codex-hub.md#terminal-follow-through) and reconciles this snapshot against Business DoD
 before DONE, preserving explicit owner boundaries. Desktop request/client IDs are pending references; record actual
 thread/cwd and observed policy only once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
 

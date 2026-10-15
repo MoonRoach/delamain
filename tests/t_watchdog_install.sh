@@ -138,6 +138,29 @@ cp $PL $P/plist.2
 CLAUDE_BIN=$T/fake_claude.py CODEX_BIN=$T/fake_codex.py wd install --scheduler launchd
 cmp -s $PL $P/plist.2; check $? 0 "a third install with the same settings leaves the plist byte-identical"
 check "$(count '^bootstrap' $FAKE_DIR/launchctl.log)" 2 "…and again exactly one bootstrap per install call"
+
+# ---- CLAUDE_CONFIG_DIR: ~/.claude is not neutral (the CLI then reads ~/.claude/.claude.json, not ~/.claude.json)
+CLAUDE_CONFIG_DIR=$HOME/.claude CLAUDE_BIN=$T/fake_claude.py wd install --scheduler launchd
+check "$(shenv $SHIM CLAUDE_CONFIG_DIR)" "$HOME/.claude" "negative: ~/.claude without ~/.claude.json (it may hold the real config) is exported"
+echo '{}' > $HOME/.claude.json
+CLAUDE_CONFIG_DIR=$HOME/.claude CLAUDE_BIN=$T/fake_claude.py wd install --scheduler launchd; check $RC 0 "install from a shell with CLAUDE_CONFIG_DIR=~/.claude and a ~/.claude.json exits 0"
+grep -q '^export CLAUDE_CONFIG_DIR=' $SHIM; check $? 1 "…and the shim does not export it"
+grep -qx 'unset CLAUDE_CONFIG_DIR' $SHIM; check $? 0 "…it unsets it (nor inherited from launchd/cron)"
+check "$(shexec $SHIM)" "[\"$PY\", \"$BINREAL/watchdog\", \"run\"]" "…and still ends in the exec line"
+CLAUDE_CONFIG_DIR=$HOME/.claude/ CLAUDE_BIN=$T/fake_claude.py wd install --scheduler launchd
+grep -q '^export CLAUDE_CONFIG_DIR=' $SHIM; check $? 1 "…nor with a trailing slash"
+check "$(CLAUDE_CONFIG_DIR=$HOME/.claude python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore; print(hubcore.child_env().get("CLAUDE_CONFIG_DIR", "unset"))' "$B")" unset "child_env (agent spawn, watchdog run) drops it too"
+mkdir -p $P/cc; CLAUDE_CONFIG_DIR=$P/cc CLAUDE_BIN=$T/fake_claude.py wd install --scheduler launchd
+check "$(shenv $SHIM CLAUDE_CONFIG_DIR)" "$P/cc" "negative: another CLAUDE_CONFIG_DIR is exported as set"
+grep -q '^unset CLAUDE_CONFIG_DIR' $SHIM; check $? 1 "…and not unset"
+check "$(CLAUDE_CONFIG_DIR=$P/cc python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore; print(hubcore.child_env().get("CLAUDE_CONFIG_DIR", "unset"))' "$B")" "$P/cc" "negative: child_env keeps another config dir"
+wd status --scheduler launchd; has 'job sets CLAUDE_CONFIG_DIR'; check $? 1 "negative: status does not flag another config dir"
+subst $SHIM '^export CLAUDE_CONFIG_DIR=.*' "export CLAUDE_CONFIG_DIR=$HOME/.claude"
+wd status --scheduler launchd; has "job sets CLAUDE_CONFIG_DIR=$HOME/.claude: .*Workspace not trusted.*install again"; check $? 0 "a shim written before the fix (CLAUDE_CONFIG_DIR=~/.claude): status says install again"
+subst $SHIM '^export CLAUDE_CONFIG_DIR=.*' "export CLAUDE_CONFIG_DIR='/a"
+wd status --scheduler launchd; check $RC 0 "negative: a shim line status cannot parse (an unclosed quote) does not crash status"
+rm -f $HOME/.claude.json
+CLAUDE_BIN=$T/fake_claude.py CODEX_BIN=$T/fake_codex.py wd install --scheduler launchd   # back to the shim the cron part expects
 check "$(cfget $A/config.json AGENT_HUB_WATCHDOG_EVERY)" '"10m"' "install keeps the home's other keys (EVERY)"
 # another home: another label
 new_home; B2=$AGENT_HUB_HOME; wd install --scheduler launchd; check $RC 0 "install of another home exits 0"

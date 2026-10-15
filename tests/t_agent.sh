@@ -65,6 +65,8 @@ $B/ask plan --stage stage-a "Do the thing" >/dev/null
 $B/agent-spawn --role withplan --cwd $W --model haiku --brief $W/b.md > $R/np2.out 2> $R/np2.err; check $? 0 "plan on record: spawn succeeds"
 grep -q 'no owner-approved plan' $R/np2.err; check $? 1 "plan on record: no warning"
 wait_dead withplan; $B/agent-stop withplan >/dev/null
+# Keep minimal-mode checks in the throwaway home even when the laptop has a real default stage.
+mkdir -p "$R/default"
 HUB_STAGE=default $B/agent-spawn --role dflt --cwd $W --model haiku --brief $W/b.md > $R/np3.out 2> $R/np3.err; check $? 0 "default stage: spawn succeeds"
 grep -q 'no owner-approved plan' $R/np3.err; check $? 1 "default stage (minimal mode): no warning"
 sleep 1; $B/agent-stop dflt --stage default >/dev/null
@@ -86,6 +88,10 @@ check "$(wc -l < $W/env.log)" "$N_ENV" "…and no CLI was started"
 [ ! -e $R/stage-a/agents/bgx ]; check $? 0 "…and no agent directory was created"
 CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=5000 $B/agent-spawn --role bgc --cwd $W --model haiku --brief $W/b.md >/dev/null
 tail -1 $W/env.log | grep -qx 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0'; check $? 0 "the caller's own CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS alone does not leak (0 wins)"
+# 4c. idle compaction (CLI 2.1.290+): a detached worker waiting on a jwait is never compacted behind its hub's back; the caller's value wins
+tail -2 $W/env.log | head -1 | grep -qx 'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000'; check $? 0 "default: the worker's CLI gets an idle-compaction minimum above any window"
+CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=300000 $B/agent-spawn --role idc --cwd $W --model haiku --brief $W/b.md >/dev/null
+tail -2 $W/env.log | head -1 | grep -qx 'CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=300000'; check $? 0 "negative: the caller's own CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS is kept"
 wait_dead bgc
 INBOX_BEFORE=$(cat $R/stage-a/agents/bgc/inbox.md); N_ENV=$(wc -l < $W/env.log)
 AGENT_HUB_BG_WAIT_CEILING_MS=x $B/agent-send bgc "resume me" > $R/o4c.out 2>&1; check $? 2 "negative: resume with a bad ceiling is a usage error"

@@ -38,6 +38,14 @@ import sys
 import time
 from pathlib import Path
 
+if __name__ == "__main__" and sys.argv[1:2] in (["session-start"], ["prompt"], ["pre-tool"]):  # hook mode: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # bin/delegation loads this module by filename
 from codex_compat import agent_call as codex_agent_call, native_tool, policy_tool
 
@@ -59,6 +67,10 @@ LEVELS = range(0, 6)
 # (Haiku did, CLI 2.1.289).
 FORMER_PLUGIN = sr.LEGACY_PLUGIN_NAME  # rename:transition
 # rename:transition
+# The owner asking to be grilled, in Russian or English: «грилинг», «грилл ми», «погриль», «грильни», "grill me",
+# "grilling", /…:grill-me. Not a barbecue grill («гриль», «грили», "grilled cheese") nor a path (skills/grilling/).
+GRILL_RE = re.compile(r"грилл?инг|грилл?\s*ми|погрилл?[ьи]|грилл?ьн|\bgrill\s+me\b|\bgrilling\b(?![/.])|:grill-me\b",
+                      re.IGNORECASE)
 FORMER_COMMAND_RE = re.compile(r"\s*/" + re.escape(FORMER_PLUGIN) + r":([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|\Z)")
 BUILTIN_LEVELS = {
     0: ("OFF", "Do everything yourself. No subagents (the Agent and Workflow tools are blocked by a hook) and no "
@@ -199,6 +211,26 @@ def former_name_context(prompt) -> str | None:  # rename:transition
             f"rest of the prompt as its arguments.")
 
 
+def grilling_context(prompt) -> str | None:
+    """A note for the model when the owner's prompt asks for grilling, else None. Free-text Russian («грилинг») did not
+    make hub models load the companion skill (14.10: 2 of 2 hub sessions answered in their own question format), so
+    the hook names it; the text is engine-neutral and decides nothing else."""
+    if not isinstance(prompt, str) or not GRILL_RE.search(prompt):
+        return None
+    return ("The owner's prompt looks like a request for grilling. If it is one, before replying load the companion "
+            "grilling skill (Claude Code: the Skill tool with `mattpocock-skills:grilling`; Codex: the `grilling` "
+            "skill) and run it as written: rounds of numbered questions, each with a recommended answer, in its "
+            "format, until the frontier of the topic the owner named is empty; facts you can look up are yours, not "
+            "questions. A hub's own question format (A/B with a default and a due time) and its \"stop once the "
+            "business result is clear\" limit do not apply to a grilling the owner asked for, and its decisions wait "
+            "for the owner's answers: a recommendation is not a default taken on silence. If the prompt only mentions "
+            "grilling, ignore this note. If the skill is not installed, say so once and follow the same method. In a "
+            "stage hub, a grilling over the stage's open questions runs in a session of its own instead: run `hub grill "
+            "--stage <S>` and do what it prints, without loading the skill here; a new topic the owner raises in the "
+            "hub is grilled here, unless the owner says otherwise: run `hub grilling start` before the first round and "
+            "`hub grilling end` once the frontier is empty or the owner stops it; until then automatic handoffs wait.")
+
+
 def emit(event: str, **fields) -> None:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": event, **fields}}, ensure_ascii=False))
 
@@ -259,9 +291,9 @@ def main(argv: list) -> int:
                     parts.append(f"Delegation level changed to {level}. " + policy(level))
             # rename:transition — independent of the dial: it is about the prompt, not about delegation
             if cmd == "prompt":
-                note = former_name_context(data.get("prompt"))
-                if note:
-                    parts.append(note)
+                for note in (former_name_context(data.get("prompt")), grilling_context(data.get("prompt"))):
+                    if note:
+                        parts.append(note)
             if parts:
                 emit(event, additionalContext="\n\n".join(parts))
         except Exception:  # noqa: BLE001 — fail-open

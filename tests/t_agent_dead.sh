@@ -12,7 +12,7 @@ spawn(){ FAKE_HOLD=${HOLD:-60} $B/agent spawn --role "$1" --cwd $W --model haiku
 exits(){ grep -c "EXIT $1: " "$(journal stage-a)"; }          # EXIT lines of the role, whatever they say
 killed(){ grep -c "EXIT $1: killed (no result)" "$(journal stage-a)"; }
 wait_gone(){ for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-trap 'chmod 755 $R/stage-a/agents/aro 2>/dev/null; for r in d1 d2 d3 d4 d5 d6 d7 d8 aro bok; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
+trap 'chmod 755 $R/stage-a/agents/aro 2>/dev/null; for r in d1 d2 d3 d4 d5 d6 d7 d8 aro bok; do $B/agent stop $r >/dev/null 2>&1; done; test_cleanup' EXIT
 
 # 1. kill -9 of the whole group, two observers at once, a jwait with the hub's default match waiting
 spawn d1; check $? 0 "spawn d1"

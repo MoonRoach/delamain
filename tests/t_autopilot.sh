@@ -81,7 +81,7 @@ setup
 CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli HUB_TAG=hub-1 succeed --model opus --permission-mode default > $R/s1.out 2>&1; rc=$?
 check $rc 0 "succeed: exit 0"
 call --bg argv | grep -q -- "^--bg --remote-control stage-a-hub-2 -n Hub stage-a #2 --add-dir $R --model opus --effort high --settings {"; check $? 0 "succeed: --bg command (name, title, the hub home granted — --cwd is inside it, not around it — model; no mode flag for default)"
-call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"])' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn"
+call --bg argv | python3 -c 'import json,sys,os; a=sys.stdin.read().split(" --settings ",1)[1]; p=json.loads(a)["permissions"]; r=os.path.realpath(sys.argv[1]); assert "Bash(hub takeover:*)" in p["allow"] and "Bash("+os.path.realpath(sys.argv[2])+"/hub takeover:*)" in p["allow"] and "Bash(jwait:*)" in p["allow"] and "Bash(jlog:*)" in p["allow"]; assert sys.argv[1] in p["additionalDirectories"] and r in p["additionalDirectories"]; assert "Edit(/"+r+"/**)" in p["allow"]; assert not any("agent spawn" in x for x in p["allow"]); assert json.loads(a)["idleCompaction"] is False' "$R" "$BR_BIN"; check $? 0 "succeed: --settings allows the hub's commands and the hub home, not agent spawn, and turns idle compaction off"
 check "$(call --bg cwd)" "$(cd $W && pwd -P)" "succeed: started in --cwd"
 call --bg argv | grep -q -- "--worktree"; check $? 1 "succeed: outside git no --worktree"
 call --bg prompt | grep -qF "/delamain:hub take over stage stage-a from $H: run \`$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H\`"; check $? 0 "succeed: prompt = hub skill + exact takeover command (no shell expansion)"
@@ -187,7 +187,7 @@ check "$(call --bg count):$(chain)" "none:none" "dry run: nothing started, no st
 setup; export FAKE_BG=bypass
 succeed --model opus --permission-mode bypassPermissions > /dev/null 2>&1; check $? 0 "bypass: exit 0"
 check "$(call --bg count)" 2 "bypass: retried once"
-call --bg argv 1 | grep -q -- "--permission-mode bypassPermissions$"; check $? 0 "bypass: the first try has no allow list (moot in bypass)"
+call --bg argv 1 | grep -q -- '--permission-mode bypassPermissions --settings {"idleCompaction":false}$'; check $? 0 "bypass: the first try has no allow list (moot in bypass), only idle compaction off"
 call --bg argv | grep -q -- "--permission-mode auto --settings"; check $? 0 "bypass: retried in auto for opus"
 J | grep -q "(opus, auto) as background session.*bypassPermissions needs its disclaimer accepted once"; check $? 0 "bypass: journal names the mode used and why"
 setup
@@ -236,6 +236,9 @@ check "$(call --bg count):$(pending kind)" "none:headless" "--headless: agent sp
 setup; AGENT_HUB_REASON_POLICY=refuse AGENT_HUB_EFFORT_DEFAULTS='{"opus": "low"}' succeed --model opus --headless > $R/rsn.out 2>&1
 check "$(pending kind)" headless "reason policy refuse: the headless successor still starts"
 grep -q 'hub successor' $R/stage-a/agents/hub-2/meta.json; check $? 0 "…with a reason in its meta.json"
+# AGENT_HUB_SPAWN_MCP is for executors: a headless hub successor keeps the MCP servers its predecessor had
+setup; AGENT_HUB_SPAWN_MCP=none succeed --model opus --headless > /dev/null 2>&1
+grep -q '"mcp": "inherit"' $R/stage-a/agents/hub-2/meta.json; check $? 0 "AGENT_HUB_SPAWN_MCP=none: the headless successor still inherits MCP servers"
 # no takeover by the deadline -> --fallback: log tail journaled, bg stopped (kept), headless from the same handoff
 setup; succeed --model opus > /dev/null 2>&1
 $B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 0 "fallback: exit 0"
@@ -569,8 +572,8 @@ AGENT_HUB_AUTO_HANDOFF=off cbh UserPromptSubmit > $R/h0.out; grep -q "delamain:h
 export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
 grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --effort high --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, effort, mode, cwd)"
-grep -q "plainly where it is: a background Remote Control session; in Claude Desktop it is listed under the repository's address group (for a repository not hosted on github.com a separate group from the folder group), on the phone in the Remote Control list" $R/h1.out; check $? 0 "hook, warn: the instruction tells the hub to say where the successor is"
-grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
+grep -qF 'where the owner finds it' $R/h1.out; check $? 0 "hook, warn: the instruction tells the hub to say where the successor is"
+grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF 'Hand over now' $R/h1.out && grep -qF 'Do not stop merely because a handoff file was written' $R/h1.out; check $? 0 "hook, warn: mandatory complete handoff, with no indefinite quiet-point delay"
 SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "delamain:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
 echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000
 cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0 "hook, warn: the configured mode wins over the session's"
@@ -584,10 +587,10 @@ fresh a; HOOK_EFFORT=xhigh cbh PostToolUse Bash | grep -qF -- '--model claude-op
 fresh b; HOOK_EFFORT=xhigh AGENT_HUB_SUCCESSOR_EFFORT=low cbh PostToolUse Bash | grep -qF -- '--effort low --permission-mode'; check $? 0 "hook, warn: AGENT_HUB_SUCCESSOR_EFFORT beats the hook input"
 fresh c; ( unset CLAUDE_EFFORT; PATH=$NO_PS:$PATH; HOOK_EFFORT=none cbh PostToolUse Bash ) > $R/h5.out
 grep -qF -- '--model claude-opus-5-5 --permission-mode' $R/h5.out; check $? 0 "hook, warn: an input with no effort and nothing else readable — the command has no --effort"
-grep -qF 'your own effort could not be read here' $R/h5.out; check $? 0 "hook, warn: …and the text tells the hub to let \`hub succeed\` read it, or pass --effort"
+grep -qF 'Your own effort could not be read here' $R/h5.out; check $? 0 "hook, warn: …and the text tells the hub to let \`hub succeed\` read it, or pass --effort"
 fresh d; HOOK_EFFORT=none CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: no effort in the input — the hook's own environment answers"
 TR=$TR0
-cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; check "$(wc -c < $R/h3.out | tr -d ' ')" 0 "hook: below block, Bash passes"
+cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; grep -q '"deny"' $R/h3.out; check $? 0 "hook: first warn closes ordinary Bash before block"
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"

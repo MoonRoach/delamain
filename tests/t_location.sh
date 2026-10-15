@@ -30,6 +30,7 @@ check $? 4 "start in the main clone on a feature branch → exit 4"
 WT=$G/proj/.claude/worktrees/s1-hub-1
 grep -qx "MOVE $WT" $G/last.out; check $? 0 "…MOVE <path>: <repo>/.claude/worktrees/<stage>-hub-<n>"
 grep -q 'EnterWorktree with path='$WT $G/last.out && grep -q 'mcp__ccd_directory__change_directory' $G/last.out && grep -q 'Codex: run every later command with the workdir '$WT $G/last.out; check $? 0 "…says how to move: EnterWorktree, change_directory, Codex workdir"
+grep -q "mcp__ccd_directory__change_directory with path=$G/proj — the main clone, not the worktree" $G/last.out && grep -q "call EnterWorktree with path=$WT, make no edits in the main clone" $G/last.out; check $? 0 "…a Desktop session under 'No folder' moves via the main clone, then EnterWorktree"
 grep -q "^Then re-run: .*/hub start --stage s1 --session $S1\$" $G/last.out; check $? 0 "…and the command line to re-run"
 check "$(head_of $WT)" "$(origin_head)" "…the worktree is on origin/main, not on the clone's feature branch"
 [ "$(git -C $WT rev-parse --abbrev-ref HEAD)" = worktree-s1-hub-1 ] && [ -d $WT/.agent-hub ]; check $? 0 "…on its own branch, with .agent-hub/"

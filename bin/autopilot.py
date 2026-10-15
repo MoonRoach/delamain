@@ -724,7 +724,7 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         brief = self.brief(why)
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--stage", self.stage, "--role", role, "--tag", role,
                 "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
-                "--reason", SUCCESSOR_REASON]
+                "--reason", SUCCESSOR_REASON, "--mcp", "inherit"]  # a hub keeps the MCP servers its predecessor had
         if self.effort:
             argv += ["--effort", self.effort]
         if self.root:

@@ -60,6 +60,14 @@ change — a Claude hub then gives a Codex-written change a Codex reviewer — a
 `<plugin-root>/templates/brief-review.md`, start the reviewer as printed, and **verify each finding against the
 code** before acting on it — a review is a colleague's opinion. Classes, the config, the skill reviewer contract:
 `<plugin-root>/docs/reviewers.md`.
+For a Codex reviewer use the printed `--sandbox workspace-write` with `--cwd` in the stage's `coordinator/work`
+under the hub home (create it first); without a stage fill `<HUB_WORK>` with a directory there. Put the absolute
+repository path, base and head in the brief for reading. Keep the repository outside the hub home and reviewer cwd,
+and never add it as a writable root. A review role receives only its cwd, with temporary-directory writes excluded;
+home config and other agents' inboxes remain read-only: report and journal writes work, repository writes are denied. `read-only`
+cannot write the report or journal and a Codex review role/tag launched that way gets one warning at spawn.
+Claude reviewers keep their repository cwd and must follow the brief's prohibition on repository edits.
+
 Configure the list in this order with availability checks for limited reviewers; if a legacy entry selects a
 Sol reviewer for Sol-authored work, bring that entry into line with the approved policy before using its command.
 
@@ -102,7 +110,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   Codex model and CLI checks before the first detached launch: [codex-hub.md](codex-hub.md#engine-models-and-hook-trust).
 
   `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the headless default: Claude uses its bypass mode, Codex uses
-  `--dangerously-bypass-approvals-and-sandbox`. For Codex read-only review, pass `--sandbox read-only` instead.
+  `--dangerously-bypass-approvals-and-sandbox`. For a Codex reviewer, use `--sandbox workspace-write` and cwd under the hub home, as in *Reviews* above.
   Codex hook trust is separate: see `docs/codex.md`; read the returned errors when a restricted operation fails.
 - **MCP servers.** A Claude executor loads no MCP server by default (`AGENT_HUB_SPAWN_MCP`, default `none`): every
   server's tool list sits in each turn's context and adds startup time. Decide per task when writing the brief ("Tools"

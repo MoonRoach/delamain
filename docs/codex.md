@@ -179,17 +179,45 @@ including user and project hooks, not only Delamain's hooks.** Use it with hook 
 Set `AGENT_HUB_CODEX_HOOK_TRUST=reviewed` to require Codex's persisted trust instead; review/trust the definitions
 before starting a detached run. Changed hook definitions require renewed review in that mode.
 
-For a restricted reviewer, choose the sandbox explicitly:
+For a restricted reviewer, use `hub reviewer --for code --stage S` or the equivalent launch:
 
 ```sh
-agent spawn --engine codex --role reviewer --cwd /absolute/path/to/project \
-  --brief /absolute/path/to/review-brief.md --sandbox read-only
+agent spawn --engine codex --role reviewer --cwd /absolute/hub-home/S/coordinator/work \
+  --brief /absolute/path/to/review-brief.md --sandbox workspace-write
 ```
 
-The sandbox selection replaces full access for that worker. A read-only worker cannot append a journal or report
-on disk: use its captured result/status or explicitly permit the output location through the appropriate sandbox
-configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
-`--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
+Create the cwd first and put the absolute repository path in the brief for reading. Keep that repository outside the
+hub home and reviewer cwd, and do not add it to writable roots. The sandbox selection replaces full access for that
+worker: it can write the report and journal under the hub home while repository writes are denied. A `read-only`
+worker cannot write either; a review role/tag with that policy gets one warning at spawn.
+
+Workspace-write executors receive the hub home as a writable root. A review role/tag instead receives only its
+cwd strictly below the hub home, with temporary-directory writes excluded; wider explicit roots or a cwd outside
+that home are refused. Its report, journal and `.journal.lock` fit within the stage's `coordinator/work`; home
+configuration and other agents' inboxes stay read-only. Keep that cwd outside any repository.
+
+For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
+commit/merge messages and pseudorefs), their own logs and common objects.
+`commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
+refs/reflogs are limited to the worktree's initial branch and its lock files. For nested branch names, their first
+namespace directory is granted so Git can recreate it after pack-refs; sibling refs in that namespace are also
+writable. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
+`reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
+
+These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
+In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
+sequencer or rewritten-ref roots are granted. Spawn prints the limitation and includes it in the worker's brief.
+Update the branch with a merge commit from the prepared base ref (for example `git merge origin/main`).
+The sandbox refuses creation of rebase state. In the macOS probe, `--merge` refused before HEAD changed, but
+`--apply` could move HEAD before failing, although the original branch ref stayed unchanged. A fully early refusal
+cannot be guaranteed by this file-root policy; do not run rebase in either mode. Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
+writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
+Git may emit a nonfatal `packed-refs.lock` denial; commits with loose and packed refs were checked.
+Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
+access; they fail closed rather than receiving the whole Git directory.
+The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.
+A sandboxed interactive coordinator may need `--add-dir <hub-home>`; full access needs no directory grant.
 
 See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
 

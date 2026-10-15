@@ -73,10 +73,23 @@ start: load skill `my-review-skill`; give it the brief file, the repository, the
 $ hub reviewer --for docs        # the skill serves code and risky only
 reviewer: agent (agent opus/high)
 start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
+
+$ AGENT_HUB_ENGINE=codex hub reviewer --for code --stage web
+reviewer: agent (agent gpt-6-astra/high)
+start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model gpt-6-astra --effort high --stage web --brief <BRIEF>
 ```
 
-For an `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief file) and
-runs the line as it is — **no `--worktree`**: a reviewer only reads. With `--stage S` (else `$HUB_STAGE`) the line
+For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief
+file). For a Codex `agent` reviewer it prints `--sandbox workspace-write` and `--cwd` pointing to the stage's
+`coordinator/work` under the hub home. Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
+Create that directory before spawning, and put the absolute repository path, base and head in the brief for reading.
+The reviewer receives only its cwd as a writable root; wider explicit roots are refused, and temporary-directory
+writes are excluded. Home configuration and other agents' inboxes stay read-only. Keep the repository outside the
+hub home and the chosen cwd; do not add it to writable roots. The sandbox then lets
+Codex write its report and journal, while repository writes are denied. `read-only` cannot write either; spawning a
+Codex review role/tag with that policy emits one warning. Claude's review brief prohibits repository edits; it does
+not acquire a Codex sandbox through this command. In both cases run the line with **no `--worktree`**: a reviewer
+reads the existing checkout. With `--stage S` (else `$HUB_STAGE`) the line
 carries `--stage S`, so the reviewer joins that stage whatever the shell's `HUB_STAGE` is. `agent spawn` refuses a role whose agent still
 runs, so a second review at the same time takes another `--role`. For a `skill` reviewer the hub loads the skill and
 gives it the four inputs of the contract.

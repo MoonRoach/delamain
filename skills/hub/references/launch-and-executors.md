@@ -51,9 +51,12 @@ The hub writes the review brief and launches the reviewer itself; the author of 
 briefing its own reviewer steers it to what the author already checked). For money, masking and permissions the brief
 is narrowed to that risk (the template's "Look hardest at") and leaves style out.
 
-`hub reviewer --for <class>` walks the configured reviewers (`AGENT_HUB_REVIEWERS`, default one ordinary `agent
+`hub reviewer --for <class> --author <role>` walks the configured reviewers (`AGENT_HUB_REVIEWERS`, default one ordinary `agent
 spawn`) and prints the first that is available now and exactly how to start it: an `agent spawn --role review-… --brief
-<BRIEF>` line, or "load skill `<skill>`" for a reviewer skill the user plugged in. Write the brief from
+<BRIEF>` line, or "load skill `<skill>`" for a reviewer skill the user plugged in. **Always pass `--author`**: the
+role of the agent that wrote the change (its engine and model come from its `meta.json`), or `codex/<model>` /
+`claude/<model>` for work done elsewhere. Without it the reviewer is chosen as if the hub's own host engine wrote the
+change — a Claude hub then gives a Codex-written change a Codex reviewer — and the command says so on stderr. Write the brief from
 `<plugin-root>/templates/brief-review.md`, start the reviewer as printed, and **verify each finding against the
 code** before acting on it — a review is a colleague's opinion. Classes, the config, the skill reviewer contract:
 `<plugin-root>/docs/reviewers.md`.

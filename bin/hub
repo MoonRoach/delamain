@@ -16,7 +16,7 @@
   hub rename   --stage OLD --to NEW [--dry-run]
   hub close    --stage stage-a [--why TEXT] [--force] [--dry-run]
   hub effort   [--session ID] [--json]
-  hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
+  hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage stage-a] [--json] [--all]
   hub grill    [open] --stage stage-a [--questions ID,…] [--also-stage S] [--topic T] [--owner-words T]
                [--host auto|desktop|codex-app|bg|manual] [--model M] [--effort E] [--again] [--dry-run]
   hub grill    bind --stage stage-a --launch ID --session FULL_ID
@@ -195,6 +195,9 @@ reviewer chooses the reviewer for a change: it walks the list AGENT_HUB_REVIEWER
 .agent-hub/config.json, the hub home's config.json; default one `agent` entry) and prints the first reviewer that is
 available now — for the change class --for, if given — and exactly how to start it (bin/reviewers.py, docs/reviewers.md).
 --all judges and lists every entry, with why not for the ones passed over; --json prints the same as JSON.
+--author ROLE|ENGINE[/MODEL] names who wrote the change (a role of the stage — read from the agent's meta.json — or
+claude|codex[/model]); the reviewer is chosen by it, not by the host's engine, and every `check` gets it as
+AGENT_HUB_REVIEW_AUTHOR_ENGINE / AGENT_HUB_REVIEW_AUTHOR_MODEL. Without it the host's engine is assumed, and a line says so.
 Exit 0 with a reviewer, 1 when none is available, 2 usage.
 home prints where the hub keeps its files and why there: $AGENT_HUB_HOME, else a repository's .agent-hub/config.json
 AGENT_HUB_HOME "project" (<main checkout>/.agent-hub/local/) or "user", else ~/agent-hub — the legacy ~/.claude/agent-hub
@@ -1701,20 +1704,27 @@ def cmd_grilling(a) -> int:
 
 def cmd_reviewer(a) -> int:
     helper_lines = hc.review_helper_lines()
-    loaded = reviewers.load()
+    author = reviewers.parse_author(a.author, a.stage) if a.author else None
+    host = engines.selected()
+    if not author:  # never silent: the host's engine is a guess about who wrote the change
+        hc.warn(f"author unknown: assuming the host engine ({host}) wrote the change; pass --author <role | engine[/model]> "
+                "so the reviewer is chosen by who really wrote it")
+    loaded = reviewers.load(author=author)
     for problem in loaded.problems:
         hc.warn(problem)
-    verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all)
+    verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all, author=author)
     source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
     start = reviewers.start_line(chosen.entry, a.stage) if chosen else None
     if a.json:
         print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
+                          "author": author.as_dict() if author else None, "assumed_author_engine": None if author else host,
                           "chosen": chosen.entry.name if chosen else None, "start": start, "helper_threshold": helper_lines,
                           "entries": [reviewers.entry_json(v) | ({"check_output": v.output} if a.all and v.output else {})
                                       for v in verdicts],
                           "invalid": loaded.problems}, ensure_ascii=False, indent=1))
         return 0 if chosen else 1
+    print(f"author: {author} ({author.source})" if author else f"author: unknown, host engine {host} assumed")
     if a.all or not chosen:
         print(f"reviewers from {source}" + (f", change class {reviewers.show(a.for_class)}" if a.for_class else "") + ":")
         for v in verdicts:
@@ -2198,6 +2208,10 @@ def main(argv: list) -> int:
     r = sub.add_parser("reviewer", parents=[stage_opt], help="choose the reviewer for a change and print how to start it "
                        "(with a stage, the `agent spawn` line carries --stage)")
     r.add_argument("--for", dest="for_class", metavar="CLASS", help="the change's class (docs, code, risky, …)")
+    r.add_argument("--author", metavar="ROLE|ENGINE[/MODEL]",
+                   help="who wrote the change: a role of the stage (its engine and model are read from the agent's "
+                        "meta.json) or claude|codex[/model]; the reviewer is chosen by it, not by the host's engine. "
+                        "Checks see AGENT_HUB_REVIEW_AUTHOR_ENGINE / _MODEL")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
     r.add_argument("--json", action="store_true")
     ho = sub.add_parser("home", parents=[stage_opt], help="where the hub keeps its files; `home migrate` moves them "

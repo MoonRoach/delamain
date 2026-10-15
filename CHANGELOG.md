@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`hub reviewer --author` chooses the reviewer by who wrote the change, not by the hub's host.** `--author` takes a
+  role of the stage (engine and model are read from the agent's `meta.json`) or `claude|codex[/model]`. Every
+  reviewer `check` gets `AGENT_HUB_REVIEW_AUTHOR_ENGINE` and `AGENT_HUB_REVIEW_AUTHOR_MODEL` (removed from its
+  environment when the author is unknown), and the built-in default reviewer takes the engine other than the author's.
+  Without `--author` the host engine is assumed and the command says so, on stderr and in `--json`
+  (`author: null`, `assumed_author_engine`). Before, a Claude hub gave a Codex-written change a Codex reviewer, and a
+  Codex hub, which has no fresh Claude limit observation, gave it Codex Astra. The hub skill's *Reviews* tells the hub to
+  pass `--author`. See [Reviewers](docs/reviewers.md#the-author-of-the-change).
 - **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
   replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
   more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%

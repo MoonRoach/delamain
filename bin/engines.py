@@ -208,15 +208,11 @@ def prepare_worktree_sandbox(meta, env):
         for root in roots:
             if any(root.is_relative_to(common / prefix) for prefix in ("refs/heads", "logs/refs/heads")):
                 root.parent.mkdir(parents=True, exist_ok=True)
-    # Append rather than replace: callers can carry safe.directory or other Git overrides.
-    try:
-        count = int(env.get("GIT_CONFIG_COUNT", "0"))
-        if count < 0:
-            raise ValueError
-    except ValueError:
-        raise hc.UsageError("GIT_CONFIG_COUNT must be a nonnegative integer") from None
-    env.update({"GIT_CONFIG_COUNT": str(count + 1), f"GIT_CONFIG_KEY_{count}": "maintenance.auto",
-                f"GIT_CONFIG_VALUE_{count}": "false"})
+    # Git's quoted -c transport survives Codex's default *KEY* environment exclusion.
+    # Preserve inherited parameters verbatim; the final value overrides earlier maintenance settings.
+    inherited = env.get("GIT_CONFIG_PARAMETERS", "")
+    env["GIT_CONFIG_PARAMETERS"] = (inherited + " " if inherited else "") + "'maintenance.auto=false'"
+
 
 
 def workspace_write_roots(meta):

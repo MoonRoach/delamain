@@ -219,8 +219,10 @@ ref='refs/heads/<initial-branch>'
 mkdir -p "$common/$(dirname "$ref")" "$common/logs/$(dirname "$ref")"
 ```
 
-Workspace-write Codex executors receive `maintenance.auto=false` through their child environment, preserving other
-inherited Git config overrides. Shared maintenance stays outside the sandbox. On Apple Git 2.50.1, a successful
+Workspace-write Codex executors receive `maintenance.auto=false` through Git's quoted `GIT_CONFIG_PARAMETERS`
+transport, appending to inherited parameters. This avoids `GIT_CONFIG_KEY_n`, which Codex's default shell environment
+policy strips while retaining `GIT_CONFIG_COUNT`, breaking Git config parsing. Default secret-name exclusions remain
+enabled. Shared maintenance stays outside the sandbox. On Apple Git 2.50.1, a successful
 commit can still print a nonfatal `packed-refs.lock` denial even with automatic maintenance disabled (confirmed by
 Git trace with no maintenance child). Check the command's exit status; disabling maintenance does not suppress
 other Git lock diagnostics.

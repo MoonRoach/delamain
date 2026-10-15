@@ -6,6 +6,8 @@
 . "$(dirname "$0")/lib.sh"
 new_home; R=$AGENT_HUB_HOME; export CLAUDE_SESSIONS_DIR=$R/sessions HUB_STAGE=stage-a
 HOOK=$HOOKS/session_cards.py
+# A detached runner inherits its installed plugin root; exercise this checkout's hook and hubcore together.
+export PLUGIN_ROOT="$(cd "$T/.." && pwd)"
 HUB=11111111-1111-4111-8111-111111111111          # a terminal hub (cli id)
 LOC=22222222-2222-4222-8222-222222222222          # a Desktop hub: local_ id …
 LOCCLI=aaaaaaaa-2222-4222-8222-222222222222       # … and its current CLI session

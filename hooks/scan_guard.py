@@ -277,25 +277,15 @@ def _hit(ctx: _Ctx, word_raw: str, cwd, shell: bool = True):
 # -- commands ------------------------------------------------------------------------------------------------------
 
 _KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "eval", "coproc"}
-# wrappers that run the rest of the command, and the options of each that take a value
-_WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir"),
-             "doas": ("-u", "-C"), "env": ("-u", "-C", "-S", "-P", "-a", "--chdir", "--unset", "--split-string", "--argv0"),
-             "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"),
-             "time": ("-f", "-o"), "exec": ("-a",), "stdbuf": (), "setsid": (), "nohup": (), "command": (), "builtin": (),
-             "unbuffer": (), "noglob": (), "nocorrect": ()}
-# the options of a wrapper that give its child another working directory
-_CHDIR = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}
+# wrappers that run the rest of the command, with the options of each that take a value, and the options that give
+# the child another working directory: polling_guard reads the same tables
+_WRAPPERS, _CHDIR = pg.WRAPPERS, pg.WRAPPER_CHDIR
 _INFO = {"--version", "--help", "-V", "--list-file-types", "--help-types", "--man"}  # prints and exits: no walk
 
 
 def _skip_flags(words, i: int, valued=()) -> int:
-    """The index after the option words that start at `i`; an option in `valued` takes the next word too."""
-    n = len(words)
-    while i < n and words[i].startswith("-") and len(words[i]) > 1:
-        if words[i] == "--":
-            return i + 1
-        i += 2 if words[i] in valued else 1
-    return i
+    """The index after the option words that start at `i`; an option in `valued` takes its value too."""
+    return pg.skip_options(words, i, valued)[0]
 
 
 def _strip_redirects(words):
@@ -312,29 +302,22 @@ def _strip_redirects(words):
     return out, stdin
 
 
-def _chdir(words, i: int, end: int, flags):
-    """The word that `env -C DIR` / `--chdir=DIR` / `--chdir DIR` (`flags`) names in `words[i:end]`, the last one, or None."""
-    found = None
-    for k in range(i, min(end, len(words))):
-        w = words[k]
-        for flag in flags:
-            if w == flag and k + 1 < len(words):
-                found = words[k + 1]
-            elif w.startswith(flag + "=") and flag.startswith("--"):
-                found = _W(w.partition("=")[2])
-                found.raw = w.raw.partition("=")[2]
-            elif w.startswith(flag) and len(w) > 2 and flag[1] != "-" and not w.startswith("--"):  # `-C/tmp`
-                found = _W(w[2:])
-                found.raw = w.raw[2:]
-    return found
+def _hit_word(words, hit) -> _W:
+    """The word an option's value is (`pg.skip_options` names it by word and offset)."""
+    k, off = hit
+    if off is None:
+        return words[k]
+    value = _W(words[k][off:])
+    value.raw = words[k].raw[off:]
+    return value
 
 
 def _command(words):
-    """(name, arguments, via xargs, directory) of the command a stage runs: assignments, keywords and wrappers are
-    skipped. The directory is the word `env -C` / `sudo -D` gave the command, or None. None for a stage that runs nothing
-    a walk could come from."""
+    """(name, arguments, via xargs, directories) of the command a stage runs: assignments, keywords and wrappers are
+    skipped. The directories are the words `env -C` / `sudo -D` gave the command, outermost first. None for a stage that
+    runs nothing a walk could come from."""
     words = list(words)
-    n, i, xargs, chdir = len(words), 0, False, None
+    n, i, xargs, chdirs = len(words), 0, False, []
     while i < n:
         w = words[i]
         base = str(w).rsplit("/", 1)[-1]
@@ -347,20 +330,19 @@ def _command(words):
         elif base in _WRAPPERS:
             if base == "command" and i + 1 < n and words[i + 1] in ("-v", "-V"):
                 return None  # only looks the name up
-            j = _skip_flags(words, i + 1, _WRAPPERS[base])
-            chdir = _chdir(words, i + 1, j, _CHDIR.get(base, ())) or chdir
-            i = j
+            i, hits = pg.skip_options(words, i + 1, _WRAPPERS[base], _CHDIR.get(base, ()))
+            chdirs += [_hit_word(words, h) for h in hits]
         elif base in ("timeout", "gtimeout"):
-            i = _skip_flags(words, i + 1, ("-k", "-s")) + 1
+            i = _skip_flags(words, i + 1, pg.TIMEOUT_VALUED) + 1
         elif base == "xargs":
             xargs = True
-            i = _skip_flags(words, i + 1, ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "-R", "-S"))
+            i = _skip_flags(words, i + 1, pg.XARGS_VALUED)
         else:
             break
     if i >= n:
         return None
     name = str(words[i]).rsplit("/", 1)[-1]
-    return name, list(words[i + 1:]), xargs, chdir
+    return name, list(words[i + 1:]), xargs, chdirs
 
 
 class _Walk:
@@ -537,8 +519,8 @@ _WALKERS = {"find": _find, "gfind": _find, "bfs": _find, "fd": _fd, "fdfind": _f
 
 
 class _Stage:
-    def __init__(self, name, args, xargs, stdin, chdir=None):
-        self.name, self.args, self.xargs, self.stdin, self.chdir = name, args, xargs, stdin, chdir
+    def __init__(self, name, args, xargs, stdin, chdirs=()):
+        self.name, self.args, self.xargs, self.stdin, self.chdirs = name, args, xargs, stdin, chdirs
 
 
 def _parse_stage(ctx: _Ctx, stage: str, closing: int):
@@ -558,8 +540,8 @@ def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
     walk = parse(st.args) if parse and not any(a in _INFO for a in st.args) else None
     if walk is None or (walk.depth is not None and walk.depth <= 1):
         return None  # not a walk, or one that never leaves the first level
-    if st.chdir:  # `env -C DIR`: the command starts there, whatever the shell's directory is
-        where = _expand(ctx, st.chdir.raw, cwd)
+    for word in st.chdirs:  # `env -C DIR`: the command starts there, each directory read from the one before
+        where = _expand(ctx, word.raw, cwd)
         cwd = where[0] if where and not where[1] else None
     if walk.base:
         base = _expand(ctx, walk.base.raw, cwd)

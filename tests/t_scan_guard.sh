@@ -310,6 +310,51 @@ for c in ("env -C ~ find . -name x", "env -C ~/repos find ~ -name x"):
     check(verdict(bash(c, cwd=HS + "/repos")) == "deny", f"round 2, refused from a project under the home: {c!r}")
 
 
+# ---- round 3 of the review: a wrapper before a printing command, the options of a wrapper with their values, and the directory of
+# `env -C` / `sudo -D` reaching the body of `bash -c` and the next `env -C`. Each case that flips with the session's directory is
+# run from both sides (the home and a project): a one-sided test cannot tell a rule from a constant.
+R3_PASS = [
+    # what a wrapper runs is the printing command, whose `bash -c '…'` arguments are only text
+    "command echo bash -c 'find ~ -name x'", "env printf '%s\\n' bash -c 'find ~ -name x'", "sudo -u root echo bash -c 'find ~ -name x'",
+    "env -i FOO=1 echo bash -c 'find ~ -name x'", "nice -n 5 echo sh -c 'find ~ -name x'", "timeout 5 echo bash -c 'find ~ -name x'",
+    "timeout -k 5 10 printf '%s\\n' bash -c 'find ~ -name x'", "xargs echo bash -c 'find ~ -name x'", "nohup echo eval 'find ~ -name x'",
+    "sudo -nu root jlog bash -c 'find ~ -name x'", "env -C /tmp echo bash -c 'find ~ -name x'", "time command echo bash -c 'find ~ -name x'",
+    "sudo -p 'pw: ' echo bash -c 'find ~ -name x'", "exec -a x echo bash -c 'find ~ -name x'", "command -p printf '%s' bash -c 'find ~ -name x'",
+    # the value of an option is not another option: `sudo -p -D/ …` is the prompt `-D/`, not a change of directory
+    "sudo -p -D/ find . -name x", "sudo -p '-D/' find . -name x", "sudo -p-D/ find . -name x", "sudo --prompt=-D/ find . -name x",
+    "env -u -C find . -name x", "sudo -u -D/ find . -name x",
+    # `env -C` reaches the body of a shell and the next wrapper; a body that stays in /tmp or a project is no walk of the home
+    "env -C /tmp bash -c 'find . -name x'", "env -C '/tmp' zsh -c 'rg foo'", "env -C ~/repos bash -c 'find . -name x'",
+    "env -C ~ env -C repos bash -c 'find . -name x'", "env -C ~ env -C repos find . -name x", "env -C ~ sh -c 'cd repos && find . -name x'",
+    "env -C ~ bash -c 'find ~/repos -name x'", "sudo -D /tmp bash -c 'find . -name x'", "env --chdir=/tmp bash -c 'rg foo'",
+    "env -C ~ env -C /tmp find . -name x", "env -C ~ env -C /tmp bash -c 'find . -name x'",
+]
+for c in R3_PASS:
+    check(verdict(bash(c)) == "pass", f"round 3, allowed: {c!r}")
+for c in ("env -C /tmp bash -c 'find . -name x'", "env -C /tmp env -C . find . -name x", "env -C /tmp env -C . bash -c 'find . -name x'",
+          "env -C ~/repos env -C app find . -name x", "sudo -D /tmp bash -c 'find . -name x'", "env --chdir=/tmp bash -c 'rg foo'",
+          "env -C '/tmp' bash -c 'find . -name x'", "env -C \"/tmp\" env -C . find . -name x", "env -C /tmp env -C ~/repos find . -name x",
+          "env -C ~/repos bash -c 'find . -name x'", "command echo bash -c 'find ~ -name x'", "env printf '%s' bash -c 'rg foo'"):
+    check(verdict(bash(c, cwd=HS)) == "pass", f"round 3, allowed with the session in the home: {c!r}")
+R3_REFUSED = [
+    # the wrapper's own command is a shell, behind every kind of option and value
+    "command bash -c 'find ~ -name x'", "env bash -c 'find ~ -name x'", "sudo -u root bash -c 'find ~ -name x'", "sudo -nu root bash -c 'find ~ -name x'",
+    "timeout -k 5 10 bash -c 'find ~ -name x'", "nice -n 5 bash -c 'find ~ -name x'", "env -i FOO=1 bash -c 'find ~ -name x'",
+    "xargs -0I{} sh -c 'find ~ -name x'", "time -p sh -c 'find ~ -name x'", "sudo -p 'pw: ' bash -c 'find ~ -name x'", "exec -a x bash -c 'find ~ -name x'",
+    "sudo env bash -c 'find ~ -name x'", "env -C /tmp env -C ~ bash -c 'find . -name x'", "sudo -u root -- bash -c 'find ~ -name x'",
+    "sudo -p -D/ find ~ -name x", "sudo -nu root find ~ -name x", "env -C /tmp bash -c 'find ~ -name x'", "env -C /tmp bash -c 'cd ~ && find . -name x'",
+    # `env -C ~` / `sudo -D ~` reach the body of a shell, and a second `env -C` is read relative to the first
+    "env -C ~ bash -c 'find . -name x'", "env -C @H@ zsh -c 'rg foo'", "env -C ~ sh -c 'find . -name x'", "sudo -D ~ bash -c 'find . -name x'",
+    "env -C ~ env -C . find . -name x", "env -C ~ env -C . bash -c 'find . -name x'", "env --chdir=$HOME bash -c 'find . -name x'",
+    "env -C \"$HOME\" bash -c 'find . -name x'", "env -C /tmp env -C ~ find . -name x", "env -C ~ -i bash -c 'find . -name x'",
+]
+for c in R3_REFUSED:
+    check(verdict(bash(c)) == "deny", f"round 3, refused: {c!r}")
+for c in ("env -u -C find . -name x", "env -C /tmp bash -c 'find ~ -name x'", "env -C ~ bash -c 'find . -name x'", "sudo -p -D/ find . -name x",
+          "env -C /tmp env -C ~ find . -name x", "env -C ~ env -C . find . -name x"):
+    check(verdict(bash(c, cwd=HS)) == "deny", f"round 3, refused with the session in the home: {c!r}")
+
+
 import time
 
 

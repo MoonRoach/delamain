@@ -113,14 +113,86 @@ _TOKEN = re.compile(r"\x00(\d+)\x00")
 # value (`-o pipefail`) must not break the chain up to `-c`.
 _EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*[oO]\s+\w+|-\S+))*?\s+-\w*c(?:\s+--)?"
                        r"|eval)\s*$")
-# Who may run such a string, for a caller that reads `data`: the command word of the segment is a shell, `eval` or a command that
-# runs the rest of its line (a wrapper, `xargs`, `find -exec`, `watch` …). `echo bash -c '…'` and `jlog bash -c '…'` only
-# print their arguments.
-_LAUNCHER = (r"(?:\S*/)?(?:sudo|doas|env|nice|ionice|nohup|exec|time|timeout|gtimeout|xargs|command|builtin|setsid|stdbuf|caffeinate"
-             r"|unbuffer|noglob|nocorrect|watch|flock|parallel|entr|find|bfs|gfind|fd|fdfind|su|runuser|setpriv|unshare|arch|xcrun"
-             r"|taskset|numactl|script|strace|systemd-run|tmux|screen|sandbox-exec)")
-_EXEC_LEAD = re.compile(r"\s*(?:(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*)*(?:\w+=\S+\s+)*"  # matched at a command's start
-                        rf"(?:{_SHELL}\b|eval\b|{_LAUNCHER}\b)")
+# Who may run such a string, for a caller that reads `data`: the command a segment really runs — behind its keywords,
+# assignments and wrappers, each wrapper's options read with their values — is a shell, `eval`, or a command that runs the rest
+# of its line (`find -exec`, `watch` …). `echo bash -c '…'`, `jlog bash -c '…'` and `env printf '%s' bash -c '…'` only print
+# their arguments.
+# Wrappers: command words that run the rest of their line, and the options of each that take a value.
+WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir", "--prompt"),
+            "doas": ("-u", "-C"), "env": ("-u", "-C", "-S", "-P", "-a", "--chdir", "--unset", "--split-string", "--argv0"),
+            "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"), "time": ("-f", "-o"), "exec": ("-a",),
+            "stdbuf": ("-i", "-o", "-e"), "setsid": (), "nohup": (), "command": (), "builtin": (), "unbuffer": (), "noglob": (),
+            "nocorrect": ()}
+WRAPPER_CHDIR = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}  # the options that give the child another directory
+TIMEOUT_VALUED = ("-k", "-s", "--kill-after", "--signal")
+XARGS_VALUED = ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "-R", "-S")
+_RUNNERS = frozenset(("watch", "flock", "parallel", "entr", "find", "bfs", "gfind", "fd", "fdfind", "su", "runuser", "setpriv", "unshare",
+                      "arch", "xcrun", "taskset", "numactl", "script", "strace", "systemd-run", "tmux", "screen", "sandbox-exec"))
+_SHELL_NAMES = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
+_WALK_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "coproc"))
+_ASSIGNMENT = re.compile(r"\w+(?:\[[^\]]*\])?\+?=")
+_WORD = re.compile(r"\S+")
+_WALK_WORDS = 64  # a command's own prefix is a few words; a longer one is read as "may run"
+
+
+def skip_options(words, i: int, valued=(), grab=()):
+    """(the index after the option words that start at `i`, [(k, offset)] of the values of the options in `grab`). An option
+    in `valued` takes a value: the next word, or the rest of its own word (`--chdir=DIR`, `-C/tmp`, and in a cluster `-nu root`,
+    `-iC/tmp`); that value is never read as an option (`sudo -p -D/ cmd`: `-D/` is the prompt). The value is `words[k]` from
+    `offset` on (the whole word for `None`). `--` ends the options."""
+    n, hits = len(words), []
+    while i < n and words[i].startswith("-") and len(words[i]) > 1:
+        w = str(words[i])
+        if w == "--":
+            return i + 1, hits
+        takes, flag, off = False, None, None
+        if w in valued:
+            takes, flag = True, w
+        elif w.startswith("--"):
+            name, eq, _ = w.partition("=")
+            if eq and name in valued:
+                flag, off = name, len(name) + 1
+        else:
+            for p in range(1, len(w)):
+                if "-" + w[p] in valued:
+                    flag = "-" + w[p]
+                    takes, off = p + 1 == len(w), (p + 1 if p + 1 < len(w) else None)
+                    break
+        if flag in grab:
+            if not takes:
+                hits.append((i, off))
+            elif i + 1 < n:
+                hits.append((i + 1, None))
+        i += 2 if takes else 1
+    return i, hits
+
+
+def command_runs_string(seg: str, first: int):
+    """(may the command that starts at `first` in `seg` run a `-c` / `eval` string, [the directory words its `env -C` /
+    `sudo -D` wrappers give it, in order, as typed])."""
+    words = [m.group() for _, m in zip(range(_WALK_WORDS), _WORD.finditer(seg, first))]
+    n, i, dirs = len(words), 0, []
+    while i < n:
+        w = words[i].lstrip("({")
+        base = w.rsplit("/", 1)[-1]
+        if w in ("", *_WALK_KEYWORDS) or _ASSIGNMENT.match(w):
+            i += 1
+        elif base in _SHELL_NAMES or base == "eval":
+            return True, dirs
+        elif base == "command" and i + 1 < n and words[i + 1] in ("-v", "-V"):
+            return False, dirs  # only looks the name up
+        elif base in WRAPPERS:
+            i, hits = skip_options(words, i + 1, WRAPPERS[base], WRAPPER_CHDIR.get(base, ()))
+            dirs += [words[k] if off is None else words[k][off:] for k, off in hits]
+        elif base in ("timeout", "gtimeout"):
+            i = skip_options(words, i + 1, TIMEOUT_VALUED)[0] + 1  # then the duration
+        elif base == "xargs":
+            i = skip_options(words, i + 1, XARGS_VALUED)[0]
+        else:
+            return base in _RUNNERS, dirs
+    return n >= _WALK_WORDS, dirs
+
+
 _BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")  # a single `&` ends a command inside a segment too
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
@@ -357,11 +429,16 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
             word = _word_start(seg, m.start())
             first = starts[bisect.bisect_right(starts, word) - 1] if starts else None
             if first is not None and first not in runners:
-                runners[first] = bool(_EXEC_LEAD.match(seg, first))
-            runs = _runs_argument(seg, word, shell_segment, first is None or runners[first])
+                runners[first] = command_runs_string(seg, first)
+            runs = _runs_argument(seg, word, shell_segment, first is None or runners[first][0])
         if runs and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
             inner = views(_unquote(quoted), keep_seps, data)
-            wait.append(f";{inner[0]};" if data is None else f";({inner[0]});")  # a caller that reads `cd` needs the subshell
+            if data is None:
+                wait.append(f";{inner[0]};")
+            else:  # a caller that reads `cd` needs the subshell, and the directory `env -C` / `sudo -D` gave it
+                moved = "".join(f"cd {_TOKEN.sub(lambda t: _datum(data, strings[int(t.group(1))]), d)}; "
+                                for d in (runners[first][1] if not runs_all and first is not None else []))
+                wait.append(f";({moved}{inner[0]});")
             ci.append(f";{inner[2]};")
         else:
             wait.append(_datum(data, quoted))

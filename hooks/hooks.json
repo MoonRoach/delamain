@@ -1,5 +1,5 @@
 {
-  "description": "Delamain: lock-board enforcement, owner-question summary, a warning when an old command shadows the plugin's tools, handoff size cap, and the agent-discipline hooks (context budget, polling guard, delegation dial and subagent rules), and a guard that keeps a registered hub from Desktop session cards.",
+  "description": "Delamain: lock-board enforcement, a guard against killing processes by pattern, owner-question summary, a warning when an old command shadows the plugin's tools, handoff size cap, and the agent-discipline hooks (context budget, polling guard, delegation dial and subagent rules), and a guard that keeps a registered hub from Desktop session cards.",
   "modules": ["./agent-top.tsx"],
   "hooks": {
     "SessionStart": [
@@ -40,6 +40,11 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/kill_guard.py\"",
             "timeout": 10
           }
         ]

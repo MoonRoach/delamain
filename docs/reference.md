@@ -210,7 +210,7 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
   authentication" notes sit in every turn's context (about 3.5k tokens on one machine with a dozen servers, mostly
   unauthenticated, and about a second of startup). `agent spawn` starts the agent with no MCP server by default
   (`--strict-mcp-config`); `--mcp inherit` gives it the servers of your config, plugins and connectors (the behaviour
-  before 1.0.10), `--mcp FILE[,FILE]` only the servers of those MCP config files (`{"mcpServers": {…}}`, the format of
+  before 1.0.11), `--mcp FILE[,FILE]` only the servers of those MCP config files (`{"mcpServers": {…}}`, the format of
   `claude --mcp-config`); `AGENT_HUB_SPAWN_MCP` sets the default. The choice is kept for the agent's resumes. `none`
   drops the servers of the project's own `.mcp.json` too: a repository whose agents need them sets `inherit` in its
   `.agent-hub/config.json`, which wins over a hub home's `none`. The hub chooses per task (browser checks, docs lookup,

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.11 — 2026-10-15
+
 - **A walk of the home directory or `/` is refused: it raised the macOS "access data from other apps" prompt.** On 15.10
   the owner got «"claude.app" would like to access data from other apps» five times between 10:00 and 11:03; one cause
   was `find ~ -name hive1.py …` in a background session (Claude Code's shell shows `find` as `bfs`). A walk from `~`

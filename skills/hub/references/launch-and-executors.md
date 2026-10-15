@@ -85,7 +85,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally leaves
   `EXIT <role>: …` in the journal under its tag; one that ends normally without a status word of its own, `ENDED <role>: …`
   (`REVIEWED <role>: …` for a review role) — the agent stopped, nothing is wrong.
-  `agent status [R]` — alive or not, the model it runs on, age of the last event, turns (the last run's next to the total
+  `agent status [R]` — alive or not, the engine and model it runs on (`codex/<model>`, `claude/<model>`), age of the last event, turns (the last run's next to the total
   after a resume), the last line it said, its worktree.
   `agent send R "…"` — alive: into its inbox and the journal; process gone: the session resumes with this message and
   replays the unread inbox. `agent stop R` — stop it and retire the role. An agent's question arrives as

@@ -5,6 +5,7 @@
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"; B="$(cd "$T/../bin" && pwd)"
 OUT="${1:-$(mktemp -d)}"; mkdir -p "$OUT"
+. "$T/temp_dirs.sh"
 export HOME="$(mktemp -d)"; export AGENT_HUB_HOME="$HOME/hub-home"
 # Positive control: the tools honour AGENT_HUB_HOME, and without it they fall back to $HOME/agent-hub — of a throw-away
 # HOME, never the real one; a HOME of its own, run from it (no repository's .agent-hub/ around): a stage in the test
@@ -22,7 +23,7 @@ JOBS="${TEST_JOBS:-$((CPUS * 2 > 8 ? CPUS * 2 : 8))}"
 case "$JOBS" in ''|*[!0-9]*|0) JOBS=8;; esac
 run_one() {  # run_one <script>: its own sandbox, log and exit-code file under $OUT
   t="$1"; name=$(basename "$t" .sh)
-  S=$(mktemp -d); mkdir -p "$S/home" "$S/tmp"
+  S=$(command mktemp -d "$TMPDIR/script.XXXXXX"); mkdir -p "$S/home" "$S/tmp"
   export HOME="$S/home" AGENT_HUB_HOME="$S/home/hub-home" TMPDIR="$S/tmp"
   bash "$t" > "$OUT/$name.log" 2>&1; echo $? > "$OUT/$name.rc"
   rm -rf "$S"

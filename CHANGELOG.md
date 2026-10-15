@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
+  backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
+  Standalone tests and the suite harness own and remove their temporary directories, including on failure.
+
 - **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by

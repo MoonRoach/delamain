@@ -21,7 +21,7 @@ out = subprocess.run(["ps", "-ww", "-axo", "pid=,command="], capture_output=True
 print(sum(1 for l in out.splitlines() if n in l and int(l.split(None, 1)[0]) != os.getpid()))'; }
 cmd_of(){ ps -ww -o command= -p "$1"; }
 cleanup(){ for r in cl cx; do $B/agent stop $r >/dev/null 2>&1; done; }
-trap cleanup EXIT
+trap 'cleanup; test_cleanup' EXIT
 
 # --- Claude: spawn
 export CLAUDE_BIN=$T/fake_claude.py

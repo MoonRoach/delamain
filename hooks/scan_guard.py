@@ -13,13 +13,16 @@ Refused, when the walk root is `~`, `$HOME`, `${HOME}`, the absolute home path, 
 * Bash: `find`, `bfs`, `fd`, `rg`, `grep -r` (`-R`, `--recursive`, `-d recurse`), `ag`, `ack`, `du`, `tree` and `ls -R`,
   also behind `sudo` / `env` / `timeout` / `nohup` / `xargs` / `eval` / `if !` / `VAR=x`, in a pipeline, after `&&` or
   `;`, inside `$(…)` and `bash -c "…"`; a walker with no root, or `.`, while the working directory is the home — the
-  session's own, or after `cd ~` / `cd $HOME` / `cd` earlier in the command;
+  session's own, or after `cd ~` / `cd $HOME` / `cd` earlier in the command (not a `cd` in a pipeline or a background
+  list: it runs in a subshell), or through `env -C DIR` / `sudo -D DIR`, which start the command in DIR;
 * the Grep and Glob tools: `path` is one of those roots, or absent while the session's directory is the home; Glob's
   `pattern` may also name the root (`~/**/x`).
 
 Not refused: a named subdirectory (`find ~/repos`, `rg foo ~/agent-hub`, `find ~/Library/LaunchAgents`), the project, a
 walk that stays on the first level (`find ~ -maxdepth 1`, `fd -d 1`, `tree -L 1`), `ls ~`, a file (`grep foo
-~/.zshrc`), quoted text no shell runs, a command that runs its argument elsewhere (`ssh`, `docker exec`, `kubectl
+~/.zshrc`), quoted text no shell runs (a `bash -c '…'` / `eval '…'` string is run only by a shell or a command that
+runs the rest of its line — `sudo`, `env`, `xargs`, `find -exec` …; `echo bash -c '…'` and `jlog bash -c '…'` print it; a heredoc body is
+text unless a shell reads it, whatever its delimiter, and `cat <<EOF && find ~` still reads the rest of its line), a command that runs its argument elsewhere (`ssh`, `docker exec`, `kubectl
 exec` … walk another disk), a word the hook cannot resolve without running something (`$(…)`, `$VAR`, `~user`), and a command that carries the marker
 `# scan-ok` (AGENT_HUB_SCAN_ESCAPE) — for a walk the owner asked for. The Grep and Glob tools have no marker.
 

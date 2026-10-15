@@ -260,6 +260,8 @@ R2_PASS = [
     # a string printed, logged or passed on that happens to read like `bash -c '…'`: no shell runs it
     "echo bash -c 'find ~ -name x'", "printf '%s\\n' bash -c 'find ~ -name x'", "jlog bash -c 'find ~ -name x'", "echo sh -c \"find ~ -name x\"",
     "echo eval 'find ~ -name x'", "echo sudo bash -c 'find ~ -name x'", "jlog PROGRESS bash -lc 'find ~ -name x' && echo ok",
+    "sleep 1 & echo bash -c 'find ~ -name x'", "true & jlog bash -c 'find ~ -name x'",
+    "git commit -m \"$(cat <<'EOF'\nfix: find ~ -name x is refused\nEOF\n)\"",
     # `cd` in a pipeline or in the background does not move the shell
     "cd ~ | cat; find . -name x", "cd ~ & wait; find . -name x", "echo x | cd ~; find . -name x", "cd ~ |& cat; find . -name x",
     "cd ~ && ls & find . -name x", "true & cd ~ & find . -name x",
@@ -285,8 +287,9 @@ R2_REFUSED = [
     "bash -c 'find ~ -name x'", "sudo bash -c 'find ~ -name x'", "env FOO=1 bash -c 'find ~ -name x'", "timeout 5 bash -c 'find ~ -name x'",
     "nohup bash -c 'find ~ -name x' &", "echo x | xargs -I{} sh -c 'find ~ -name x'", "time bash -lc 'find ~ -name x'", "(bash -c 'find ~ -name x')",
     "if bash -c 'find ~ -name x'; then echo y; fi", "env -C /tmp bash -c 'find ~ -name x'", "bash -eo pipefail -c 'find ~ -name x'",
-    "find . -name y -exec bash -c 'find ~ -name x' _ {} \;", "watch bash -c 'find ~ -name x'", "FOO=bar bash -c 'find ~ -name x'",
-    "echo ok; bash -c 'find ~ -name x'", "echo ok && eval 'find ~ -name x'", "echo \"$(find ~ -name x)\"", "jlog \"$(find ~ -name x)\"",
+    "find . -name y -exec bash -c 'find ~ -name x' _ {} \\;", "watch bash -c 'find ~ -name x'", "FOO=bar bash -c 'find ~ -name x'",
+    "echo ok; bash -c 'find ~ -name x'", "echo ok && eval 'find ~ -name x'", "sleep 1 & bash -c 'find ~ -name x'",
+    "echo hi &bash -c 'find ~ -name x'", "echo hi & eval 'find ~ -name x'", "true & echo ok & sudo env X=1 sh -c 'find ~ -name x'", "echo \"$(find ~ -name x)\"", "jlog \"$(find ~ -name x)\"",
     "echo bash -c \"$(find ~ -name x)\"", "printf 'find ~ -name x' | bash",
     # `env -C` moves the child into the home
     "env -C ~ find . -name x", "env -C @H@ rg foo", "env --chdir=$HOME find . -name x", "env --chdir ~ du -sh *", "env -C ~ -i find . -name x",

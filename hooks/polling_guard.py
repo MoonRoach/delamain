@@ -119,8 +119,9 @@ _EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*
 _LAUNCHER = (r"(?:\S*/)?(?:sudo|doas|env|nice|ionice|nohup|exec|time|timeout|gtimeout|xargs|command|builtin|setsid|stdbuf|caffeinate"
              r"|unbuffer|noglob|nocorrect|watch|flock|parallel|entr|find|bfs|gfind|fd|fdfind|su|runuser|setpriv|unshare|arch|xcrun"
              r"|taskset|numactl|script|strace|systemd-run|tmux|screen|sandbox-exec)")
-_EXEC_LEAD = re.compile(r"^\s*(?:(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*)*(?:\w+=\S+\s+)*"
+_EXEC_LEAD = re.compile(r"\s*(?:(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*)*(?:\w+=\S+\s+)*"  # matched at a command's start
                         rf"(?:{_SHELL}\b|eval\b|{_LAUNCHER}\b)")
+_BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])")  # a single `&` ends a command inside a segment too
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
 _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
@@ -343,13 +344,22 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
     wait, ci = [], []
     pos = 0
     shell_segment = "<<<" in seg and bool(_SHELL_CONSUMER.match(seg))
-    exec_ok = data is None or bool(_EXEC_LEAD.match(seg))  # a caller that collects `data` tells a runner from a printer
+    # a caller that collects `data` tells a command that runs a `-c` string from one that only carries it
+    starts = [0] + [b.end() for b in _BACKGROUND.finditer(seg)] if data is not None else []
+    runners: dict = {}
     keep_strings = bool(_CI_COMMAND.match(seg))
     for m in _TOKEN.finditer(seg):
         wait.append(seg[pos:m.start()])
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
-        if (runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment, exec_ok)) and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
+        runs = runs_all
+        if not runs:
+            word = _word_start(seg, m.start())
+            first = starts[bisect.bisect_right(starts, word) - 1] if starts else None
+            if first is not None and first not in runners:
+                runners[first] = bool(_EXEC_LEAD.match(seg, first))
+            runs = _runs_argument(seg, word, shell_segment, first is None or runners[first])
+        if runs and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
             inner = views(_unquote(quoted), keep_seps, data)
             wait.append(f";{inner[0]};" if data is None else f";({inner[0]});")  # a caller that reads `cd` needs the subshell
             ci.append(f";{inner[2]};")

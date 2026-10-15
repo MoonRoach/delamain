@@ -18,6 +18,13 @@
   tree on the side. `polling_guard.views` gained an optional `data` list for hooks that read a command's arguments.
   `tests/t_scan_guard.sh` holds both lists, the Grep and Glob cases, the marker, the switch and fail-open.
 
+- **A heredoc opener with no terminator no longer holds `polling_guard` and `kill_guard` for 12 s and more.** Both read
+  a command through a regex that looked for the closing delimiter line again from every blank line after the opener
+  (50000 blank lines after a `<<EOF` that sits in quotes took 12 s; Claude Code 2.1.299 blocks the call when a hook
+  misses its timeout, and the fail-safe's timer cannot interrupt a regex). The terminator is now found in one pass over
+  the command's lines (`polling_guard.strip_heredocs`), also for a delimiter with a dash or a dot (`<<'END-NOTES'`),
+  which the old pattern did not read at all.
+
 - **`hub reviewer --author` chooses the reviewer by who wrote the change, not by the hub's host.** `--author` takes a
   role of the stage (engine and model are read from the agent's `meta.json`) or `claude|codex[/model]`. Every
   reviewer `check` gets `AGENT_HUB_REVIEW_AUTHOR_ENGINE` and `AGENT_HUB_REVIEW_AUTHOR_MODEL` (removed from its

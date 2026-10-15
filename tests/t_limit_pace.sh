@@ -90,8 +90,18 @@ for elapsed in (1, 5.99, 6, 40):
     check(a.refuse is None and not any("run this as" in l for l in a.lines), f"{elapsed}h: burn alone cannot move/refuse")
     if elapsed < 6:
         check("low-confidence" in lp.describe(P["codex"]["7d"]), f"{elapsed}h: early forecast labelled")
+        early = P["codex"]["7d"]
+        check(lp.note_crossing(f"early-{int(elapsed * 100)}", early, write=False) is None,
+              f"{elapsed}h: no early dry-run alarm")
+        check(lp.note_crossing(f"early-{int(elapsed * 100)}", early) is None and lp.note_crossing("*owner", early, journal=False) is None,
+              f"{elapsed}h: no early journal alarm or owner notification crossing")
+        check(not (lp.hc.state_dir() / "limit-pace" / "crossings.json").exists(),
+              f"{elapsed}h: early observations do not consume crossing state")
     else:
         check("low-confidence" not in lp.describe(P["codex"]["7d"]), f"{elapsed}h: confidence boundary")
+        if elapsed == 6:
+            check(lp.note_crossing("early-boundary", P["codex"]["7d"]) is not None,
+                  "6h: crossing is announced when the confidence boundary is reached")
 
 P = pair("codex", 75, 21)
 p = P["codex"]["7d"]
@@ -124,6 +134,21 @@ for alternate in ("unknown", "stale"):
     check(not a.stop and not a.refuse and not any("run this as" in l for l in a.lines), alternate + ": alternative unverified")
     P["codex"]["7d"] = dataclasses.replace(P["codex"]["7d"], level="stale")
     check(lp.advise("codex", "sol", "medium", "stage-a", P).refuse is None, "stale requested engine never refuses")
+
+# Practical exhaustion with an unverified alternative is an explicit warning, never a quota gate.
+for engine in lp.ENGINES:
+    for alternate in ("unknown", "stale"):
+        P = pair(engine, 99, 21)
+        qengine = lp.other(engine)
+        P[qengine]["7d"] = dataclasses.replace(P[qengine]["7d"], level=alternate)
+        a = lp.advise(engine, "sol", "medium", "stage-a", P)
+        for label, text in (("spawn", " ".join(a.lines)), ("summary", lp.summary(engine, P)),
+                            ("compact", lp.compact(engine, P))):
+            check("practically exhausted" in text and "probe" in text and "--reason" in text,
+                  f"{engine}/{alternate}/{label}: probe or explicitly launch despite exhaustion")
+            check(not any(term in text for term in ("launch: run on", "this launch: keep", "keep this launch")),
+                  f"{engine}/{alternate}/{label}: no unconditional go advice")
+        check(not a.stop and not a.refuse, f"{engine}/{alternate}: unknown data still creates no gate")
 
 # Five-hour forecasts report the window, not a schedule for work.
 P = pair("codex", 21, 25)
@@ -281,4 +306,12 @@ check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…th
 $B/watchdog run --stage stage-w > $R/wd2.out 2>&1
 check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $JW)" 1 "a second tick: no new line"
 check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…and no new notification"
+# The actual watchdog must neither journal nor notify on the first hour's extrapolation.
+FX clear; FX codex 4 --elapsed-h 1 --span-h 0; FX claude 20,21
+mkdir -p $R/stage-early/coordinator/work
+$B/roles set --stage stage-early hub 55555555-5555-4555-8555-555555555555 --kind cli --tag hub-1 > /dev/null
+JE=$R/stage-early/coordinator/work/journal-$(today).md
+$B/watchdog run --stage stage-early > $R/wd-early.out 2>&1; check $? 0 "early watchdog tick"
+[ ! -f "$JE" ] || ! grep -q '@hub LIMIT' "$JE"; check $? 0 "early watchdog: no journal alarm"
+check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "early watchdog: no owner notification after positive control"
 exit $fail

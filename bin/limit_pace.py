@@ -454,6 +454,14 @@ def preferred(p: Pace, q: Pace) -> Pace:
     return p
 
 
+def unverified_exhaustion(p: Pace, q: Pace) -> Optional[str]:
+    """Warn about near-empty quota without treating a missing alternative reading as a refusal."""
+    if p.fresh and 100 - p.used < EXHAUSTED_REMAINING and not q.fresh:
+        return (f"{ENGINE_NAME[p.engine]} is practically exhausted; {ENGINE_NAME[q.engine]} is unverified "
+                f'({q.level}): probe it, or launch with --reason "…"')
+    return None
+
+
 def ask_command(stage: str, p: Pace, lock: Optional[dict], q: Optional[Pace], cls: Optional[str]) -> str:
     """A permission for this launch with an executable default, respecting the owner's engine lock."""
     nums = short(p) + ("; " + short(q) if q is not None else "")
@@ -503,7 +511,10 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
                          'work that needs judgement (--task-class judgement --reason "…")')
     locked = lock is not None and lock["engine"] == engine
     chosen = preferred(p, q)
-    if chosen.engine != engine and locked:
+    warning = unverified_exhaustion(p, q)
+    if warning:
+        adv.lines.append("2. launch: " + warning)
+    elif chosen.engine != engine and locked:
         adv.lines.append(f"2. move: stage {stage} is on {ENGINE_NAME[engine]} by {lock['decision']}; "
                          f"run this launch on the locked engine. {describe(q)}. Ask the owner:")
         adv.lines.append("   " + ask_command(stage, p, lock, q, cls))
@@ -512,7 +523,7 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
                          "(same class, more remaining room for this launch)")
     else:
         adv.lines.append(f"2. launch: run on {ENGINE_NAME[engine]} with the requested model and effort")
-    if not q.fresh and 100 - p.used < SHORT_REMAINING:
+    if not q.fresh and 100 - p.used < SHORT_REMAINING and not warning:
         adv.lines.append(f"   headroom on {ENGINE_NAME[q.engine]} is not verified: run a probe there; "
                          "keep this launch on the requested engine meanwhile")
     if q.fresh and 100 - p.used < SHORT_REMAINING and 100 - q.used < SHORT_REMAINING:
@@ -558,6 +569,9 @@ def summary(engine: str, paces: dict, stage: Optional[str] = None) -> str:
 
 def launch_action(p: Pace, q: Pace, stage: Optional[str]) -> str:
     """Task-independent surfaces point to per-launch selection; spawn supplies the actual task class."""
+    warning = unverified_exhaustion(p, q)
+    if warning:
+        return "this launch: " + warning
     lock = stage_lock(stage)
     chosen = preferred(p, q)
     if lock and lock["engine"] == p.engine and chosen.engine != p.engine:
@@ -601,8 +615,9 @@ def _crossings_file() -> Path:
 def note_crossing(stage: str, p: Pace, write: bool = True, journal: bool = True) -> Optional[str]:
     """When `p` is at a higher level than `stage` was last told for this window instance, the `@hub LIMIT …` line
     (recorded, and written to the stage's journal when `journal`, unless write=False) — once per stage, engine, window
-    instance and level. A level that falls is not recorded: the next rise in the same window is not a new crossing."""
-    if not p.fresh or p.rank == 0 or p.resets_at is None:
+    instance and level. Early low-confidence forecasts are display-only and consume no crossing state.
+    A level that falls is not recorded: the next rise in the same window is not a new crossing."""
+    if not p.fresh or p.low_confidence or p.rank == 0 or p.resets_at is None:
         return None
     path = _crossings_file()
     key = f"{stage}/{p.engine}/{p.window}"

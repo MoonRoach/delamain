@@ -252,6 +252,8 @@ The advice follows one order, and a model or effort is never changed silently:
    this launch on the locked engine. Permission for one launch leaves the stage's engine decision intact.
 4. **State uncertainty.** If either weekly reading is unknown or stale, report the missing comparison and suggest
    a fresh probe. Continue under the requested engine choice; missing data does not create a gate.
+   Below 3% remaining with an unverified alternative, explicitly warn of practical exhaustion and offer a probe
+   or a launch with `--reason`, rather than giving an unconditional go recommendation.
 
 The hard stop uses remaining quota, not projected pace:
 
@@ -277,7 +279,9 @@ agent-top --once             "Limit pace" lines per engine; --json: limit_pace {
 watchdog (R6)                one `[pace] @hub LIMIT …` journal line per crossing in each stage with a hub
 ```
 
-A forecast crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; it is
+In the first 6 hours, low-confidence forecasts are displayed without a journal alarm, owner notification or
+crossing-state record. At the confidence boundary, a crossing can be announced for the first time.
+A later forecast crossing (on pace → ahead → over pace) is announced once per stage, engine, window and level; it is
 context for the next launch's quota comparison, not a scheduling instruction. A level that falls
 and rises again within the same window is not announced twice. The record is `<state dir>/limit-pace/crossings.json`.
 `agent spawn` and the watchdog write it; the digest and `agent-top` only read.

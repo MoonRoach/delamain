@@ -191,7 +191,8 @@ tick would do.
 
 R6 reports forecast changes; it does not schedule work. For each launch, follow
 [limit pace](reference.md#limit-pace): compare fresh remaining weekly percentages and advise an equivalent model
-class and effort for that launch. Forecasts from the first 6 hours of the week are low-confidence display only;
+class and effort for that launch. Forecasts from the first 6 hours of the week are low-confidence display only:
+they produce neither a journal alarm nor an owner notification, and consume no crossing state;
 five-hour windows are contextual only. Neither supplies a reason to delay work until reset. Engine locks remain in
 force: ask whether to allow the other engine for this launch, with running the locked engine as the default.
 The spawn refusal uses the verified weekly quota rules in the reference, not the forecast crossing.

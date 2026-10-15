@@ -1163,10 +1163,12 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if (branch or desktop_worktree) and surface != "desktop":
         raise hc.UsageError("--branch/--desktop-worktree are only supported for desktop requests")
     # A desktop retry reuses its reservation, including an uncertain native launch. Never spawn a fallback.
-    with state_lock(stage):
-        data = load_state(stage)
-        existing = data.get("pending") or {}
-        if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
+    existing = load_state(stage).get("pending") or {}
+    if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
+        with state_lock(stage):
+            data = load_state(stage)
+            if (data.get("pending") or {}) != existing:
+                raise hc.Failure("desktop request changed before retry; inspect it again")
             if existing.get("taken_over"):
                 raise hc.Failure("desktop successor already took over")
             if not again:

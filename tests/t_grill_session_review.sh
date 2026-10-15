@@ -149,7 +149,7 @@ p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
 check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD, 'bg expected full identity joins',p.stderr)
 
 # A native candidate that arrives early cannot capture a launch later bound to another full identity.
-f = Fixture(); launch,_ = f.open()
+f = Fixture(); f.prompt(); launch,_ = f.open()
 f.grill('join','--launch',launch,'--session','self',sid=OTHER)
 p = f.grill('bind','--launch',launch,'--session',CHILD,sid=OTHER)
 check(p.returncode == 2 and not f.role(), 'only launcher binds without administrative reason',p.stderr)
@@ -159,7 +159,8 @@ p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
 check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD, 'expected native child wins over early candidate',p.stderr)
 p = f.grill('done','--launch',launch,sid=CHILD)
 check(p.returncode == 0, 'expected child reports after native binding',p.stderr)
-p = f.run('hub','handoff','--stage','stage-a','--out',str(f.root/'HANDOFF-review.md'))
+check(not f.mark().exists(), 'hub marker stays cleared after GRILLED')
+p = f.run('hub','handoff','--stage','stage-a','--n','1','--out',str(f.root/'HANDOFF-review.md'))
 check(p.returncode == 0, 'hub handoff proceeds after GRILLED',p.stderr)
 
 # M3: stale cleanup cannot remove a new pending launch, even with an administrative reason.

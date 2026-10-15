@@ -435,6 +435,47 @@ class CodexHooks(unittest.TestCase):
         self.assertNotIn('transfer_stop', self.directive_state(stage))
         self.assertFalse((stage / 'auto-handoff.json').exists())
 
+    def test_stop_current_task_and_working_latch_until_explicit_transfer_resume(self):
+        stage, transcript = self.fresh_budget()
+        original = transcript.read_text()
+        for text in ('Stop the current task.', 'Stop working.',
+                     'PLEASE STOP THE CURRENT TASK; explain the current state.',
+                     'Please stop working!\nWhat is the current state?'):
+            with self.subTest(text=text):
+                transcript.write_text(original)
+                (stage.parent / '.state/context-budget/codex-own.json').unlink(missing_ok=True)
+                self.append_human(transcript, text)
+                self.assertEqual(self.stop(transcript, last_assistant_message='Acknowledged.'), {})
+                self.assertTrue(self.directive_state(stage)['transfer_stop'])
+                self.assertEqual(self.directive_state(stage)['stop_continuations'], 0)
+                self.append_human(transcript, 'What is the current state?', response=True)
+                self.hook('context_budget.py', event='UserPromptSubmit', prompt='What is the current state?',
+                          transcript_path=str(transcript))
+                self.assertEqual(self.stop(transcript, last_assistant_message='Acknowledged.'), {})
+                # A narrower implementation pause does not revoke the preceding full stop.
+                pause = 'Stop implementation. Explain the result.'
+                self.append_human(transcript, pause)
+                self.hook('context_budget.py', event='UserPromptSubmit', prompt=pause,
+                          transcript_path=str(transcript))
+                self.assertEqual(self.stop(transcript, last_assistant_message='Acknowledged.'), {})
+                self.assertTrue(self.directive_state(stage)['transfer_stop'])
+                self.assertEqual(self.directive_state(stage)['stop_continuations'], 0)
+                self.hook('context_budget.py', event='UserPromptSubmit',
+                          prompt='Resume the handoff; implementation remains paused.',
+                          transcript_path=str(transcript))
+                self.assertFalse(self.directive_state(stage)['transfer_stop'])
+                self.assertEqual(self.stop(transcript, last_assistant_message='Acknowledged.')['decision'], 'block')
+                self.assertEqual(self.directive_state(stage)['stop_continuations'], 1)
+                self.assertFalse((stage / 'auto-handoff.json').exists())
+
+    def test_stop_implementation_sentence_preserves_readonly_transfer(self):
+        stage, transcript = self.fresh_budget()
+        self.append_human(transcript, 'Stop implementation. Explain the result.')
+        self.assertEqual(self.stop(transcript, last_assistant_message='Acknowledged.')['decision'], 'block')
+        self.assertNotIn('transfer_stop', self.directive_state(stage))
+        self.assertEqual(self.directive_state(stage)['stop_continuations'], 1)
+        self.assertFalse((stage / 'auto-handoff.json').exists())
+
     def test_stop_implementation_pause_readonly_russian_preserves_transfer(self):
         stage, transcript = self.fresh_budget()
         self.append_human(transcript, 'Не продолжай реализацию; продолжай обсуждение только для чтения и передавай смену при необходимости.')
@@ -461,6 +502,8 @@ class CodexHooks(unittest.TestCase):
                      'Ничего больше не делай.', 'Пожалуйста, остановись.'):
             self.assertIs(context_budget.transfer_directive(text), True, text)
         for text in ('Do not continue implementation; continue our read-only discussion and hand over when needed.',
+                     'Stop implementation. Explain the result.',
+                     'Stop working on implementation. Explain the result.',
                      'Не продолжай реализацию; продолжай обсуждение и передавай смену при необходимости.'):
             self.assertIsNone(context_budget.transfer_directive(text), text)
         _, transcript = self.fresh_budget()

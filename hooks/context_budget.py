@@ -91,6 +91,7 @@ TRANSFER_STOP = re.compile(
     r"\b(?:authority|grant|transfer) (?:absent|revoked|prohibited|forbidden)\b|"
     r"\b(?:do not|don't) (?:continue|resume)(?=\s*(?:[.!?;]|$|any(?:thing| work| activity)\b|all (?:work|activity)\b))|"
     r"\b(?:stop|pause|suspend)\s+(?:all (?:work|activity)|everything)\b|"
+    r"(?:^|[.;!\n])\s*(?:please\s+)?stop\s+(?:working|the\s+current\s+task)(?=\s*(?:[.;!\n]|$))|"
     r"(?:^|[.;!\n])\s*(?:please\s+)?stop(?:\s+(?:now|here))?(?=\s*(?:[.;!\n]|$))|"
     r"не\s+(?:передавай(?:те)?|передавать)\b|(?:останови(?:те)?|отмени(?:те)?)\s+передачу|"
     r"передача (?:запрещена|отменена)|разрешение(?: на передачу)? отозвано|"
@@ -822,6 +823,9 @@ def handle(data, hc, state_dir, key, writable=True):
         hub = ap.tool("hub")
         try:
             cwd = ap.predecessor_cwd(hub_stage, data.get("cwd") or None)
+        except Exception:  # noqa: BLE001 — optional cwd enrichment must not remove the work gate or command
+            cwd = None
+        try:
             model = ap.successor_model(None, path)
             mode = ap.configured_mode() or data.get("permission_mode") or None
             effort = ap.configured_effort() or ap.hub_effort(data)
@@ -834,7 +838,9 @@ def handle(data, hc, state_dir, key, writable=True):
                                         fmt(block), effort)
                 return (prefix + f"The canonical operation is `hub succeed --stage {hub_stage}`; use the installed "
                         "command below. " + shared.replace("your own effort could not be read here",
-                                                         "Your own effort could not be read here"))
+                                                         "Your own effort could not be read here")
+                        + " Do not stop merely because a handoff file was written. Follow the canonical procedure "
+                        "above and report the successor's actual name and link/address and where the owner finds it.")
             if engine == "codex":
                 context = ap.codex_context(sid, path)
                 model = ap.codex_model(None, context, Path(cwd or os.getcwd()))

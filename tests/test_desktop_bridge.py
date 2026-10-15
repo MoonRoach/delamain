@@ -103,7 +103,7 @@ class NoCompactionPackageTests(unittest.TestCase):
             self.assertEqual(built['hooks']['PreCompact'][0]['matcher'], '^(manual|auto)$')
             self.assertEqual((ROOT / 'hooks/no_compaction.py').read_bytes(),
                              (package / 'hooks/no_compaction.py').read_bytes())
-            self.assertIn('hooks/no_compaction.py', receipt['core_hashes'])
+        self.assertIn(str(Path('hooks') / 'no_compaction.py'), receipt['core_hashes'])
 
 
 class NativeNoCompactionTests(unittest.TestCase):

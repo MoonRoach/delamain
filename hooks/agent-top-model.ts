@@ -562,6 +562,8 @@ export function actionText(a: Agent): string {
 /** What the agent is doing now (live) or said last (finished), one line. */
 export function nowText(a: Agent): string {
   if (a.alive) return a.action ? actionText(a) : a.last_text ? `⋯ ${oneLine(a.last_text)}` : '⋯ thinking'
+  if (a.state === 'unknown') return a.expired ? 'unknown observation expired; no completion notice' : a.last_text ? oneLine(a.last_text) : 'no completion notice; state unknown'
+  if (a.state === 'stopped') return oneLine(a.last_text || a.result?.text || 'stopped')
   if (a.result && (a.state === 'done' || a.state === 'error')) return oneLine(a.last_text || a.result.text || a.result.subtype)
   if (a.last_text) return oneLine(a.last_text)
   if (a.kind === 'subagent') return 'no completion notice: its parent session ended or it was stopped'

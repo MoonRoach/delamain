@@ -30,6 +30,15 @@ wait_dead none1; $B/agent-stop none1 > /dev/null
 # 4. config files: only their servers; a relative --mcp path is the caller's working directory's
 (cd $W && spawn files --mcp one.json,$W/two.json > /dev/null); check $? 0 "spawn --mcp FILE,FILE"
 tail -1 $W/argv.log | grep -q -- "--strict-mcp-config --mcp-config $RW/one.json $RW/two.json "; check $? 0 "--mcp files: strict plus --mcp-config with absolute paths"
+wait_dead files
+# 4b. a resume re-checks the files: one deleted since the spawn is refused before the message is queued
+mv $W/two.json $W/two.away; N=$(wc -l < $W/argv.log); INBOX=$(cat $R/stage-a/agents/files/inbox.md)
+$B/agent-send files "again" > $R/rs.out 2>&1; check $? 2 "negative: resume with a deleted MCP config file"
+grep -q "two.json: no such file" $R/rs.out; check $? 0 "…naming the file"
+[ "$(wc -l < $W/argv.log)" = "$N" ] && [ "$(cat $R/stage-a/agents/files/inbox.md)" = "$INBOX" ]; check $? 0 "…before a CLI starts or the inbox changes"
+mv $W/two.away $W/two.json
+$B/agent-send files "again" > /dev/null; check $? 0 "resume once the file is back"
+tail -1 $W/argv.log | grep -q -- "--resume .*--mcp-config $RW/one.json $RW/two.json "; check $? 0 "…with the same files"
 wait_dead files; $B/agent-stop files > /dev/null
 # 5. the setting: the environment and the hub home's config.json, the flag wins over both
 AGENT_HUB_SPAWN_MCP=none spawn envn > /dev/null; check $? 0 "spawn with AGENT_HUB_SPAWN_MCP=none"
@@ -55,8 +64,17 @@ wait_dead projn; $B/agent-stop projn > /dev/null
 echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" > $P/.agent-hub/config.json
 N=$(wc -l < $P/argv.log)
 $B/agent-spawn --role projf --cwd $P --model haiku --brief $P/b.md > $R/pf.out 2>&1; check $? 2 "negative: a repository's MCP config file is refused"
-grep -q "hub home's config.json, the environment or --mcp" $R/pf.out; check $? 0 "…naming where a file may go"
+grep -q "outside the repository, the environment or --mcp" $R/pf.out; check $? 0 "…naming where a file may go"
 check "$(wc -l < $P/argv.log)" "$N" "…and no CLI was started"
+# a hub home inside the repository (AGENT_HUB_HOME "project") is the repository's too
+echo '{"AGENT_HUB_HOME": "project"}' > $P/.agent-hub/config.json
+mkdir -p $P/.agent-hub/local; echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" > $P/.agent-hub/local/config.json
+(unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph.out 2>&1
+check $? 2 "negative: an MCP config file in a project hub home's config.json is refused"
+grep -q "in a repository's config.json" $R/ph.out; check $? 0 "…as the repository's setting"
+echo '{"AGENT_HUB_SPAWN_MCP": "none"}' > $P/.agent-hub/local/config.json
+(unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph2.out 2>&1
+check $? 0 "…while none there is taken"; grep -q 'MCP none' $R/ph2.out; check $? 0 "…and shown"
 # 7. bad values fail before anything starts
 N=$(wc -l < $W/argv.log)
 spawn bad1 --mcp $W/nope.json > $R/b1.out 2>&1; check $? 2 "negative: a missing file"

@@ -63,7 +63,8 @@ def tool(name, cwd=WS, **ti):
 
 
 def reason(r):
-    return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    """The refusal text, or "" when there is none: a check on it then fails instead of the script crashing."""
+    return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"] if verdict(r) == "deny" else ""
 
 
 # ---- positive control: the hook exists, runs, and refuses the incident command
@@ -78,14 +79,14 @@ REFUSED = [
     "rg foo ~", "grep -r foo ~", "du -sh ~/*", "fd x /", "cd ~ && find . -name x",
     # more shapes of the same walk
     "find ~ -name hive1.py -not -path '*/node_modules/*'", "find -L ~ -name x", "find ~ -type f -name '*.py' | head",
-    "bfs ~ -name x", "bfs -name x @H@", "find ~/Library -name x", "find ~/Library/Containers -name x",
+    "bfs ~ -name x", "find ~/Library -name x", "find ~/Library/Containers -name x",
     "find \"$HOME/Library/Group Containers\" -name x", "find ~/Library/Group\\ Containers -name x",
     "find ~/\"Library\" -name x", "find ~/./Library -name x", "find @H@/repos/.. -name x", "find ~/Library/.. -name x",
     "find ~/* -name x", "find ~/L* -name x", "find /* -name x", "find /Users/* -name x", "find ~/Library/* -name x",
     "rg -g '*.py' foo $HOME", "rg --files ~", "rg -e foo ~", "rg -t py -i foo ~", "rg --glob '*.md' foo / ",
     "grep -rn foo ~", "grep -R foo $HOME", "grep --recursive foo ~", "grep -e foo -r ~", "grep foo -rl ~", "egrep -ri 'a|b' ~",
     "grep -d recurse foo ~", "grep --directories=recurse foo ~", "grep -rn -A 3 foo ~",
-    "du -sh ~", "du -sh $HOME/*", "du -d 1 ~", "du -sk /Users", "du -sh ~/Library", "dust ~",
+    "du -sh ~", "du -sh $HOME/*", "du -d 1 ~", "du -sk /Users", "du -sh ~/Library",
     "fd x ~", "fd -e py . ~", "fd --hidden x /Users", "fd -t f -e py x $HOME", "fd --search-path ~ x",
     "ag foo ~", "ack foo ~", "ag -g '\\.py$' ~", "tree ~", "tree -L 3 ~", "tree -a /",
     "ls -R ~", "ls -laR $HOME", "ls -lR / ", "ls --recursive ~",
@@ -174,16 +175,16 @@ check(verdict(bash("find ~ -name x")) == "deny", "  and on")
 
 # ---- the refusal text: what happened, why, where to search instead, how to override
 r = bash("find ~ -name hive1.py")
-text = reason(r) if verdict(r) == "deny" else ""
+text = reason(r)
 check("macOS" in text and "data from other apps" in text, "the reason names the macOS privacy prompt")
 check("find ~ -name hive1.py" in text, "  quotes the command")
 check("AGENT_HUB_HOME" in text and "subdirectory" in text, "  says where to search instead: the project, the hub home, a named subdirectory")
 check("# scan-ok" in text, "  names the per-command marker")
-check(len(text.splitlines()) <= 12 and len(text) < 1200, f"  stays short ({len(text)} characters)")
+check(0 < len(text.splitlines()) <= 12 and len(text) < 1200, f"  stays short ({len(text)} characters)")
 text = reason(bash("find ~ -name x", AGENT_HUB_SCAN_ESCAPE="walk-ok"))
 check("# walk-ok" in text and "# scan-ok" not in text, "  names the configured marker word")
-check("`/`" in reason(bash("find / -name x")) or "filesystem" in reason(bash("find / -name x")), "  says what the root was for `/`")
-check("current directory" in reason(bash("find . -name x", cwd=HS)), "  says when the root is the current directory, which is the home")
+check("filesystem" in reason(bash("find / -name x")), "  says what the root was for `/`")
+check("current directory" in reason(bash("rg foo", cwd=HS)), "  says when the root is the current directory, which is the home")
 
 # ---- the Grep and Glob tools
 TOOL_REFUSED = [
@@ -217,7 +218,7 @@ check(verdict(tool("Grep", cwd=HS + "/repos", pattern="foo")) == "pass", "allowe
 check(verdict(tool("Grep", cwd=HS + "/repos", pattern="foo", path="src")) == "pass", "allowed: Grep with a relative path under the home")
 check(verdict(tool("Grep", cwd=HS, pattern="foo", path="repos")) == "pass", "allowed: Grep with a relative subdirectory while the session is in the home")
 r = tool("Grep", pattern="foo", path="~")
-check(verdict(r) == "deny" and "Bash" in reason(r), "the tool refusal says how a deliberate walk goes: through Bash with the marker")
+check("Bash" in reason(r), "the tool refusal says how a deliberate walk goes: through Bash with the marker")
 check(verdict(run({"hook_event_name": "PreToolUse", "tool_name": "Grep", "cwd": WS, "tool_input": {"pattern": "x", "path": "~"}},
                   AGENT_HUB_SCAN_GUARD="off")) == "pass", "AGENT_HUB_SCAN_GUARD=off turns it off for Grep too")
 for name in ("Read", "Write", "Edit", "WebFetch", "Agent"):

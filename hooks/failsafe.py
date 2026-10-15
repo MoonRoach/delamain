@@ -30,6 +30,7 @@ DEADLINES = {
     "board_locks.py": 8.5,  # timeout 10: a slow guard costs latency, never a skipped lock if it can be avoided
     "polling_guard.py": 8.5,
     "kill_guard.py": 8.5,
+    "scan_guard.py": 8.5,
     "questions.py": 8.5,  # timeout 10
     "delegation.py": 8.5,
     "path_shadow.py": 8.5,

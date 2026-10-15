@@ -40,6 +40,11 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/kill_guard.py\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/scan_guard.py\"",
+            "timeout": 10
           }
         ]
       },

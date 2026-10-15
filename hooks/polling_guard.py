@@ -261,7 +261,16 @@ def _substitutions(quoted: str) -> list:
     return bodies
 
 
-def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = False):
+def _datum(data, quoted: str) -> str:
+    """What stands for a data string in the wait projection: `""`, or, when the caller collects them, a token
+    `\\x01N\\x01` whose string is `data[N]`."""
+    if data is None:
+        return '""'
+    data.append(quoted)
+    return f"\x01{len(data) - 1}\x01"
+
+
+def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = False, data: list = None):
     """(wait text, CI text) of a segment. Strings a shell runs are unwrapped into commands (recursively); any other
     string is data: `""` for the wait search, and for the CI rules too unless the segment's command word is `gh` /
     `glab` — their quoted arguments carry the API path. `$(…)` in a data string still runs."""
@@ -274,14 +283,14 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
         if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
-            inner = views(_unquote(quoted), keep_seps)
+            inner = views(_unquote(quoted), keep_seps, data)
             wait.append(f";{inner[0]};")
             ci.append(f";{inner[2]};")
         else:
-            wait.append('""')
+            wait.append(_datum(data, quoted))
             ci.append(quoted if keep_strings else '""')
             for body in _substitutions(quoted):
-                inner = views(body, keep_seps)
+                inner = views(body, keep_seps, data)
                 # keep_seps: the substitution stays where it stood, `kill "$(pgrep x)"` is still one command
                 wait.append(f"$({inner[0]})" if keep_seps else f";{inner[0]};")
                 ci.append(f";{inner[2]};")
@@ -291,7 +300,7 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
     return "".join(wait), "".join(ci)
 
 
-def views(cmd: str, keep_seps: bool = False):
+def views(cmd: str, keep_seps: bool = False, data: list = None):
     """Three projections of a command: (where to look for a wait, what the `pgrep -f` check reads, what the CI-status
     rules read).
 
@@ -312,7 +321,10 @@ def views(cmd: str, keep_seps: bool = False):
     that mentions `gh run view` does not.
 
     `keep_seps` joins the segments of each projection with the separators the command had (`|`, `&&`, a newline …)
-    instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it)."""
+    instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it). `data`, a list the caller passes in,
+    makes the wait projection keep the data strings instead of `""`: each stands as a token `\\x01N\\x01` and is
+    appended, quotes included, to the list as item N; a printing stage that nothing feeds to a shell is kept like any
+    other stage, with its own `$(…)` (hooks/scan_guard.py reads the arguments and the pipes of a command)."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
     cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
     protected, strings = _protect(cmd)
@@ -340,17 +352,17 @@ def views(cmd: str, keep_seps: bool = False):
     for i, seg in enumerate(segs):
         printing = bool(_PRINTING.match(seg))
         before = len(wait)
-        if printing and not fed[i]:
+        if printing and not fed[i] and data is None:
             # Printing is not running, but the shell does run `$(…)` in double quotes — for the wait search and for
             # the CI rules alike: `echo "$(gh run view 1)"`.
             for num in _TOKEN.findall(seg):
                 for body in _substitutions(strings[int(num)]):
-                    inner = views(body, keep_seps)
+                    inner = views(body, keep_seps, data)
                     wait.append(f";{inner[0]};")
                     quoted.append(body)
                     ci.append(f";{inner[2]};")
         else:
-            wait_text, ci_text = _segment_views(seg, strings, printing and fed[i], keep_seps)
+            wait_text, ci_text = _segment_views(seg, strings, printing and fed[i], keep_seps, data)
             wait.append(wait_text)
             ci.append(ci_text)
             quoted.append(_TOKEN.sub(lambda m: strings[int(m.group(1))], seg))

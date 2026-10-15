@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling
+  the owner, and the successor lost the thread of questions and answers. A hub's grilling is now marked when the
+  grilling skill loads (a Skill call in Claude Code, a read of its `SKILL.md` in Codex, a prompt invoking it;
+  `AGENT_HUB_GRILLING_SKILL`, default `grill`) and by `hub grilling start`, and cleared by `hub grilling end`, a
+  takeover, or `AGENT_HUB_GRILLING_STALE_MIN` (240) minutes without an owner prompt. While it holds, the context-budget
+  message says to finish the grilling instead of handing over, the autopilot's Bash/Write/Edit gate stays open, and
+  `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`,
+  95% of a Codex window, else 900k) the handoff becomes due all the same and its § 0 carries the grilling for the
+  successor to resume.
+
 ## 1.0.8 — 2026-10-15
 
 - **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's

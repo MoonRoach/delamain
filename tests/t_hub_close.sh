@@ -8,7 +8,7 @@ HUB=11111111-1111-4111-8111-111111111111; WK=22222222-2222-4222-8222-22222222222
 AG=33333333-3333-4333-8333-333333333333; NEW=44444444-4444-4444-8444-444444444444
 export CLAUDE_BIN=$T/fake_claude_bg.py FAKE_AGENTS=prev FAKE_PREV_SID=$HUB FAKE_BG_LOG=$(mktemp -d)/bg.log
 python3 -c 'import os, time; os.setsid(); time.sleep(600)' $AG & SLEEPER=$!; disown $SLEEPER
-trap 'kill $SLEEPER 2>/dev/null' EXIT
+trap 'kill $SLEEPER 2>/dev/null; test_cleanup' EXIT
 python3 - "$R" "$HUB" "$WK" "$AG" "$SLEEPER" <<'PY'
 import json, os, sys, time
 root, hub, wk, ag, pid = sys.argv[1:]

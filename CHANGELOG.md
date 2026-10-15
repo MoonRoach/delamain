@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
+  backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
+  Parser upgrades invalidate cached readings even for unchanged logs. Standalone tests and the suite harness own
+  and remove their temporary files and directories, including on failure.
+
+- **The kill guard catches redirected name lookups and shell kills through `xargs`.** Process substitutions feeding
+  `xargs kill` or a `while read` loop, and `pgrep | xargs … sh -c "kill …"`, now receive the same refusal as other
+  bulk kills. Desktop's session-card hook and the registry share one session identity matcher, including verified
+  Desktop CLI restarts.
+
+- **`hub grill open` can start from an untrusted hub home.** After Claude explicitly refuses workspace trust,
+  it tries only the hub's registered worktree, then the project's main checkout. If all refuse trust, the error
+  lists every attempted directory and recommends trusting the hub's worktree (or main checkout if none is registered).
+  A trusted calling directory stays unchanged; trust records are never modified, and an uncertain launch is never retried.
+
+- **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
+  (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
+  needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by
+  @Cartograf666 in #76.
+
+- **`run-python` usage errors no longer block hooks.** A bad `--min-version` value or a missing script exited 2,
+  which Claude and Codex hooks treat as "block", so a manifest typo would have blocked every tool call. Both now exit 1
+  and fail open. Docs note that a detached `agent` loses its exit journal line if its launch interpreter is removed
+  mid-run, while the worker's exit code is still propagated.
+
 ## 1.0.12 — 2026-10-15
 
 - **The lock hook no longer stalls on long heredoc-like input with no closing delimiter.** `board_locks` now uses

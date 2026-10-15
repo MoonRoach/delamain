@@ -1,16 +1,17 @@
 #!/bin/sh
 # Launch with a compatible runtime without changing the system Python.
 set -eu
+# Usage errors exit 1, not 2: exit 2 means "block" to Claude/Codex hooks, and a manifest typo must fail open.
 
 minimum=3.10
 if [ "${1:-}" = "--min-version" ]; then
     minimum=${2:-}
-    case "$minimum" in 3.10|3.11) ;; *) echo "run-python: --min-version must be 3.10 or 3.11" >&2; exit 2 ;; esac
+    case "$minimum" in 3.10|3.11) ;; *) echo "run-python: --min-version must be 3.10 or 3.11" >&2; exit 1 ;; esac
     shift 2
 fi
 if [ "$#" -eq 0 ]; then
     echo "Usage: run-python [--min-version 3.10|3.11] SCRIPT [ARGS...]" >&2
-    exit 2
+    exit 1
 fi
 
 compatible() {

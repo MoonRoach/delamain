@@ -87,9 +87,18 @@ class PythonRuntime(unittest.TestCase):
                 self.assertFalse((self.directory / 'selected').exists())
 
     def test_no_python_and_invalid_invocation(self):
-        for args, code in (((str(self.probe),), 1), ((), 2), (('--min-version',), 2),
-                           (('--min-version', '3.9', str(self.probe)), 2)):
+        for args, code in (((str(self.probe),), 1),):
             self.assertEqual(self.run_launcher(*args).returncode, code)
+
+    def test_usage_errors_exit_1_not_2(self):
+        # Exit 2 means "block" to Claude/Codex hooks; a usage error must fail open with 1.
+        self.interpreter('python3', (3, 11))
+        self.assertEqual(self.run_launcher('--min-version', '3.10', '-c', 'pass').returncode, 0)  # positive control
+        for args in (('--min-version', '3.9', '-c', 'pass'), ('--min-version',), ()):
+            with self.subTest(args=args):
+                result = self.run_launcher(*args)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('run-python', result.stderr)
 
     def test_python_command_fallback(self):
         self.interpreter('python', (3, 11))
@@ -140,6 +149,7 @@ class PythonRuntime(unittest.TestCase):
              patch.object(agent.sys, 'executable', str(selected)), patch.object(agent.subprocess, 'Popen', side_effect=popen):
             agent.launch(meta, 'brief', False)
             self.assertEqual(captured[0].wait(timeout=5), 17)
+        self.assertTrue(recorded.exists(), 'the exit note did not run the launch interpreter (selected python never recorded args)')
         self.assertEqual(recorded.read_text().splitlines(), [str(ROOT / 'bin/agent'), 'exit-note', 'builder',
                                                            '--stage', 'fixture', '--code', '17'])
         self.assertFalse((self.directory / 'selected').exists())

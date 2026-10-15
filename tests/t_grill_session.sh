@@ -283,4 +283,82 @@ grep -q "not trusted" $O/bg3.out; check $? 0 "…and says what to do"
 python3 -c 'import json,sys; assert "pending" not in json.load(open(sys.argv[1]))' $R/stage-a/grill.json 2>/dev/null || test ! -e $R/stage-a/grill.json
 check $? 0 "…and records no pending launch"
 
+# ---- trust refusal falls back within the stage's project, never changes trust records
+REPO="$O/project"; WT="$O/hub worktree"; OTHER="$O/other worktree"
+git init -q "$REPO"
+git -C "$REPO" -c user.name=Test -c user.email=test@example.invalid commit -q --allow-empty -m initial
+git -C "$REPO" worktree add -q -b hub-test "$WT"
+git -C "$REPO" worktree add -q -b other-test "$OTHER"
+python3 - "$R/stage-a" "$REPO" "$WT" <<'PYSET'
+import json, pathlib, sys
+stage = pathlib.Path(sys.argv[1])
+(stage / "stage.json").write_text(json.dumps({"repo": sys.argv[2]}))
+p = stage / "roles.json"
+d = json.loads(p.read_text()); d["roles"]["hub"]["worktree"] = sys.argv[3]
+p.write_text(json.dumps(d))
+PYSET
+fromcwd(){ (cd "$1" && "$B/hub" grill open --stage stage-a --host bg); }
+clearlaunch(){ HUB_TAG=hub-1 "$B/hub" grill done --stage stage-a --launch "$(pendingid)" --why test >/dev/null 2>&1; }
+checkcwd(){
+  python3 - "$R/stage-a/grill.json" "$O/bg.log" "$1" "$2" <<'PYCWD'
+import json, os, sys
+pending = json.load(open(sys.argv[1]))["pending"]
+assert pending["cwd"] == os.path.realpath(sys.argv[3]), pending
+calls = [r for r in map(json.loads, open(sys.argv[2])) if "--bg" in r["argv"]]
+assert [r["cwd"] for r in calls] == [os.path.realpath(p) for p in json.loads(sys.argv[4])], calls
+last = calls[-1]["argv"]
+assert "--add-dir" in last and os.environ["AGENT_HUB_HOME"] in last, last
+PYCWD
+  check $? 0 "$3"
+}
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED="$WT" fromcwd "$R" > "$O/trust-home.out" 2>&1
+check $? 0 "untrusted hub home: launches in the registered worktree"
+checkcwd "$WT" "[\"$R\",\"$WT\"]" "fallback cwd recorded and hub home accessible"
+clearlaunch
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED="$OTHER" fromcwd "$OTHER" > "$O/trust-current.out" 2>&1
+check $? 0 "trusted calling worktree: launches there"
+checkcwd "$OTHER" "[\"$OTHER\"]" "trusted cwd unchanged, no second launch"
+clearlaunch
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED="$REPO" fromcwd "$R" > "$O/trust-main.out" 2>&1
+check $? 0 "untrusted registered worktree: falls back to the main checkout"
+checkcwd "$REPO" "[\"$R\",\"$WT\",\"$REPO\"]" "only registered worktree and main checkout tried"
+clearlaunch
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED="$OTHER" fromcwd "$R" > "$O/trust-other.out" 2>&1
+check $? 1 "extra trusted agent worktree is never selected"
+test ! -e "$R/stage-a/grill.json"; check $? 0 "extra trusted worktree: no pending launch"
+python3 - "$O/bg.log" "$O/trust-other.out" "$R" "$WT" "$REPO" <<'PYTRIED'
+import json, os, sys
+expected = [os.path.realpath(p) for p in sys.argv[3:]]
+calls = [r["cwd"] for r in map(json.loads, open(sys.argv[1])) if "--bg" in r["argv"]]
+assert calls == expected, calls
+message = open(sys.argv[2]).read()
+assert all(p in message for p in expected), message
+assert f"run `claude` in {expected[1]} once" in message, message
+PYTRIED
+check $? 0 "failure lists every attempted cwd and recommends trusting registered worktree"
+# Without a registered worktree the guidance points to the main checkout.
+python3 - "$R/stage-a/roles.json" <<'PYUNREGISTER'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["roles"]["hub"].pop("worktree")
+open(p, "w").write(json.dumps(d))
+PYUNREGISTER
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere fromcwd "$R" > "$O/trust-none.out" 2>&1
+check $? 1 "no trusted checkout: fails with guidance"
+python3 - "$O/bg.log" "$O/trust-none.out" "$R" "$REPO" <<'PYNONE'
+import json, os, sys
+expected = [os.path.realpath(p) for p in sys.argv[3:]]
+calls = [r["cwd"] for r in map(json.loads, open(sys.argv[1])) if "--bg" in r["argv"]]
+assert calls == expected, calls
+message = open(sys.argv[2]).read()
+assert all(p in message for p in expected), message
+assert f"run `claude` in {expected[1]} once" in message, message
+PYNONE
+check $? 0 "no registered worktree: lists attempts and recommends trusting main checkout"
+test ! -e "$R/stage-a/grill.json"; check $? 0 "all refused: no pending launch"
+
 exit $fail

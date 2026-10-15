@@ -96,10 +96,15 @@ check "$(meta food 'm["resolved_model"]')" "claude-sonnet-5-5" "meta records the
 check "$(meta food 'm["model"]')" "sonnet" "…next to the alias that was asked for"
 python3 -c 'import json,sys; n=json.load(open(sys.argv[1]))["roles"]["food"]["note"]; assert n=="agent-spawn claude-sonnet-5-5", n' $R/stage-a/roles.json; check $? 0 "the roles note carries the resolved id too"
 grep -q 'started headless agent food (claude-sonnet-5-5/high, asked for sonnet)' $(journal stage-a); check $? 0 "the start line shows the resolved id"
-$B/agent status food > $P/st.out; grep -q '^food \[food\] claude-sonnet-5-5 (asked for sonnet): ' $P/st.out; check $? 0 "agent status shows the resolved id"
+$B/agent status food > $P/st.out; grep -q '^food \[food\] claude/claude-sonnet-5-5 (asked for sonnet): ' $P/st.out; check $? 0 "agent status shows the resolved id"
 $B/agent spawn --role full --cwd $W --model claude-opus-5-5 --brief $W/b.md > /dev/null 2>&1; wait_dead full
 grep -q 'started headless agent full (claude-opus-5-5/high)' $(journal stage-a); check $? 0 "negative: a full id needs no 'asked for'"
 $B/agent status full | grep -q 'asked for'; check $? 1 "…nor does status"
+# ---- status shows the engine of the agent, for both engines
+$B/agent status full | grep -q '^full \[full\] claude/claude-opus-5-5: '; check $? 0 "agent status shows the claude engine"
+CODEX_BIN=$T/fake_codex.py $B/agent spawn --engine codex --role cdx --cwd $W --brief $W/b.md > /dev/null 2>&1; wait_dead cdx
+$B/agent status cdx | grep -q '^cdx \[cdx\] codex/'; check $? 0 "agent status shows the codex engine"
+$B/agent status cdx | grep -q '^cdx \[cdx\] claude/'; check $? 1 "negative: …and not claude for a codex worker"
 AGENT_HUB_MODEL_MAP="sonnet=claude-sonnet-4-1" $B/agent spawn --role pinned --cwd $W --model sonnet --brief $W/b.md > /dev/null 2>&1; wait_dead pinned
 check "$(meta pinned 'm["model"]')" "claude-sonnet-4-1" "AGENT_HUB_MODEL_MAP still pins an alias (opt-in)"
 AGENT_TOP_AGENT_BIN=$B/agent $B/agent-top --once --stage stage-a --width 120 > $P/top.out 2>&1

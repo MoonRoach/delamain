@@ -2,6 +2,7 @@
 # Tests for agent-top on fake stages (no real agent, stand or role is touched): states of agents incl. negative controls,
 # --once/--json, big-log tail reading, "writes nothing" fingerprint, narrow widths, curses UI in a pty with a stub `agent`.
 set -u
+. "$(dirname "$0")/temp_dirs.sh"
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
@@ -14,7 +15,7 @@ SID_A=11111111-aaaa-4aaa-8aaa-111111111111; SID_Q=22222222-bbbb-4bbb-8bbb-222222
 # the sleeper's command line holds both session ids: "pid alive AND session id in its command line" is the liveness rule
 python3 -c 'import time; time.sleep(900)' $SID_A $SID_Q &
 SLEEPER=$!
-trap 'kill $SLEEPER 2>/dev/null' EXIT
+trap 'kill $SLEEPER 2>/dev/null; test_cleanup' EXIT
 python3 $T/agent_top_fixture.py $R $SLEEPER $SID_A $SID_Q > $R/fixture.out; check $? 0 "fixture built"
 python3 $B/ask add --stage stage-a --blocks "test" --default "nothing" --due 2020-01-01T00:00 --by test --source test "Test question?" > $R/ask.out 2>&1
 check $? 0 "fixture: overdue question registered"

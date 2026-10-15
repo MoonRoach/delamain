@@ -30,4 +30,28 @@ check "$(find $REAL -type f | wc -l | tr -d ' ')" 0 "…and nothing at all reach
 sed -i.bak '/isolate.sh/d' $S/t_probe.sh; rm -f $S/t_probe.sh.bak
 env -u DELAMAIN_TEST_SANDBOX HOME=$REAL/home XDG_CONFIG_HOME=$REAL/xdg bash $S/t_probe.sh > /dev/null
 [ -f $REAL/xdg/delamain/homes.json ]; check $? 0 "control: without isolate.sh the registration lands in the caller's XDG directory"
+# inherited AGENT_HUB_* / AGENT_TOP_* settings that name real directories are dropped, with a sandbox of their own or one
+# run_all.sh gave (AGENT_HUB_HOME alone is kept in the second case: it is the sandbox's); a caching agent-top then writes
+# nothing at the caller's AGENT_HUB_STATE_DIR
+mkdir -p $REAL/h
+cat > $S/t_env.sh <<EOF2
+#!/bin/bash
+set -u
+. "$T/isolate.sh"
+echo "\${AGENT_HUB_STATE_DIR:-}|\${AGENT_HUB_LOCK_RULES:-}|\${AGENT_HUB_SCOPE_DIRS:-}|\${AGENT_TOP_HUB_BIN:-}|\${AGENT_BOARD_FILE:-}|\${CLAUDE_CONFIG_DIR:-}|\${AGENT_HUB_HOME:-}"
+$T/../bin/roles set hub 11111111-1111-4111-8111-111111111111 --tag hub-1 --stage s1 > /dev/null 2>&1
+$T/../bin/agent-top --json > /dev/null 2>&1
+EOF2
+DIRTY="AGENT_HUB_STATE_DIR=$REAL/state AGENT_HUB_LOCK_RULES=$REAL/rules.json AGENT_HUB_SCOPE_DIRS=$REAL/scope AGENT_TOP_HUB_BIN=$REAL/hub AGENT_BOARD_FILE=$REAL/board.md CLAUDE_CONFIG_DIR=$REAL/claude AGENT_HUB_HOME=$REAL/h"
+out=$(env -u DELAMAIN_TEST_SANDBOX HOME=$REAL/home XDG_CONFIG_HOME=$REAL/xdg $DIRTY AGENT_TOP_CACHE=1 bash $S/t_env.sh | head -1)
+check "$(echo "$out" | grep -c "$REAL")" 0 "a script started alone drops every inherited AGENT_HUB_*/AGENT_TOP_* path and the board, claude config and AGENT_HUB_HOME of the caller"
+check "$(find $REAL -type f -newer $S/t_env.sh | wc -l | tr -d ' ')" 0 "…and agent-top and roles write nothing at the caller's state dir, home or config"
+SB=$S/sandbox; mkdir -p $SB/home
+out=$(env DELAMAIN_TEST_SANDBOX=$SB HOME=$SB/home XDG_CONFIG_HOME=$SB/home/.config $DIRTY AGENT_HUB_HOME=$SB/home/hub-home AGENT_TOP_CACHE=1 bash $S/t_env.sh | head -1)
+check "$(echo "$out" | cut -d'|' -f1-6 | grep -c "$REAL")" 0 "a script run by run_all.sh drops them too…"
+check "$(echo "$out" | cut -d'|' -f7)" "$SB/home/hub-home" "…and keeps the AGENT_HUB_HOME run_all.sh gave it"
+# control: the same probe without isolate.sh keeps the caller's state dir and writes the agent-top cache there
+sed -i.bak '/isolate.sh/d' $S/t_env.sh; rm -f $S/t_env.sh.bak
+env -u DELAMAIN_TEST_SANDBOX HOME=$REAL/home XDG_CONFIG_HOME=$REAL/xdg $DIRTY AGENT_HUB_HOME=$REAL/h AGENT_TOP_CACHE=1 bash $S/t_env.sh > /dev/null 2>&1
+[ -d $REAL/state ]; check $? 0 "control: without isolate.sh the caller's AGENT_HUB_STATE_DIR receives the cache"
 exit $fail

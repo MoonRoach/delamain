@@ -315,4 +315,36 @@ SR=$(mktemp -d); export XDG_CONFIG_HOME=$SR/xdg; mkdir -p $SR/p/.agent-hub/local
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=d["homes"][0]; print(e["layer"], e["repo"].endswith("/p"))' $XDG_CONFIG_HOME/delamain/homes.json | grep -qx "project True"; check $? 0 "(l) a home first registered through a child's pinned path is still recorded as a project home"
 export XDG_CONFIG_HOME=$S/xdg
 
+# ---- (m) a label or a path may hold '@', spaces and ' · ': the name ends at the first '@' or ' · '
+SM=$(mktemp -d); export HOME=$SM/home XDG_CONFIG_HOME=$SM/xdg; mkdir -p $HOME "$SM/plain" "$SM/my@repo name"
+(cd "$SM/my@repo name" && git init -q && mkdir .agent-hub && echo '{"AGENT_HUB_HOME": "project"}' > .agent-hub/config.json && $B/roles set hub $H1 --tag hub-1 --stage gam > /dev/null 2>&1); check $? 0 "(m) setup: a project home in a directory called 'my@repo name'"
+(cd $SM/plain && $B/roles set hub $H2 --tag hub-1 --stage def > /dev/null 2>&1)
+MH=$(cd "$SM/my@repo name" && python3 -c 'import os; print(os.path.realpath(".agent-hub/local"))')
+msel(){ (cd $SM/plain && $B/agent-top --json "$@" 2> $SM/err | python3 -c 'import json,sys; d=json.load(sys.stdin); print("|".join(d["stages"]) or "-")'); }
+check "$(msel)" "def|gam · my@repo name" "(m) the displayed id of a stage whose label holds '@' and a space"
+check "$(msel --stage 'gam · my@repo name')" "gam · my@repo name" "(m) --stage with the displayed form (the ' · ' form is read before any '@' in the label)"
+check "$(msel --stage 'gam@my@repo name')" "gam · my@repo name" "(m) --stage name@label splits at the first '@'; the label keeps its own"
+check "$(msel --stage "gam@$MH")" "gam · my@repo name" "(m) --stage name@/path with an '@' and a space in the path"
+check "$(msel --stage "gam@$MH/")" "gam · my@repo name" "(m) …and with a trailing slash"
+check "$(msel --stage 'gam@nobody')" "-" "(m) negative: another label selects nothing, with no 'bad stage name'"
+[ -s $SM/err ]; check $? 1 "(m) …and nothing on stderr"
+
+# ---- (n) the lock board of a home whose stages are shown is read, each lock attributed to its home
+cat > "$MH/board.md" <<'BOARD'
+```locks
+{"kind": "main-merge", "repo": "demo", "owner_name": "gam-hub", "until": "2099-01-01T00:00", "why": "merging"}
+```
+BOARD
+cat > $SM/lk.py <<'PY'
+import json, sys
+d = json.load(sys.stdin)
+print("|".join('%s@%s:%s' % (l["kind"], l["home_label"], l["active"]) for l in d["locks"]) or "-")
+PY
+lk(){ (cd $SM/plain && $B/agent-top --json "$@" 2>/dev/null | python3 $SM/lk.py); }
+check "$(lk)" "main-merge@my@repo name:True" "(n) a lock in a foreign home's board shows, with that home as its label"
+(cd $SM/plain && $B/agent-top --once --width 120 2>&1 | grep -q 'main-merge demo (my@repo name) until 2099-01-01 00:00'); check $? 0 "(n) …and the text says whose it is while homes are many"
+check "$(lk --stage def)" "-" "(n) negative: a view of the default home's stage does not read the other home's board"
+(cd $SM/plain && AGENT_BOARD_FILE=$SM/other.md $B/agent-top --json 2>/dev/null | python3 -c 'import json,sys; assert json.load(sys.stdin)["locks"] == []'); check $? 0 "(n) AGENT_BOARD_FILE keeps its meaning: that one board is read, not each home's"
+export HOME=$S/home XDG_CONFIG_HOME=$S/xdg
+
 exit $fail

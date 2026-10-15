@@ -779,6 +779,14 @@ def home_stage_names(kh) -> list:
         return []
 
 
+def split_selector(raw: str) -> tuple:
+    """(name, separator, qualifier) of a `--stage` value: `NAME`, `NAME@LABEL-or-PATH` or the displayed `NAME · LABEL`. A
+    stage name has neither '@' nor ' · ', so whichever comes first ends the name and the rest (a label or a path may hold
+    either) is the qualifier."""
+    m = re.search(r"@| · ", raw)
+    return (raw, "", "") if m is None else (raw[:m.start()], m.group(0), raw[m.end():])
+
+
 def home_matches(kh, qual: str) -> bool:
     """Whether the qualifier of a `--stage name@qual` names the home: its label ("" is ~/agent-hub) or its path."""
     return kh.label == qual or ("/" in qual and hc.real_path(qual) == hc.real_path(kh.path))
@@ -798,9 +806,7 @@ def discover_stages(only, show_all: bool = False) -> tuple:
     if only:
         out = []
         for raw in only:
-            name, sep, qual = raw.partition("@")          # NAME[@HOME]: HOME is a label or a home's path
-            if not sep:
-                name, sep, qual = raw.partition(HOME_SEP)  # the displayed `name · label`, as typed
+            name, sep, qual = split_selector(raw)
             hit = [ref(kh, name) for kh, _ in per if (kh.path / name).is_dir() and (not sep or home_matches(kh, qual))]
             if not hit:   # not found anywhere: the resolved home's (empty) stage, as before
                 hit = [ref(per[0][0], name)] if not sep else []
@@ -1029,7 +1035,7 @@ class Collector:
             agents += mine
         agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
-        locks = self._locks(now)
+        locks = self._locks(now, refs)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
         costs = {s: self._stage_costs(self.where[s], rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
         rates = self.token_rates()                                                  # prices must not depend on the list's filter
@@ -1239,16 +1245,27 @@ class Collector:
         return out
 
     # -- locks / roles
-    def _locks(self, now: float) -> list:
+    def _locks(self, now: float, refs: list) -> list:
+        """The lock boards of the resolved home and of every home whose stages are shown (a board is per home), each lock
+        with its home; $AGENT_BOARD_FILE, the one board the owner pointed everything at, is read once, as the resolved home's."""
         import board
+        homes = list(dict.fromkeys([self.homes[0]] + [r.home for r in refs]))
+        explicit = os.environ.get("AGENT_BOARD_FILE")
+        out, saved = [], board.BOARD
         try:
-            recs = board.load()
-        except (board.BoardError, ValueError, OSError):
-            return []
-        at = board.now()
-        return [{"kind": r["kind"], "repo": r.get("repo") or board.DEFAULT_REPO, "owner_name": r.get("owner_name") or "?",
-                 "until": r["until"], "active": board.is_active(r, at), "why": r.get("why") or "",
-                 "value": r.get("value") or ""} for r in recs]
+            for kh in homes[:1] if explicit else homes:
+                board.BOARD = Path(explicit) if explicit else kh.path / "board.md"
+                try:
+                    recs = board.load()
+                except (board.BoardError, ValueError, OSError):
+                    continue
+                at = board.now()
+                out += [{"kind": r["kind"], "repo": r.get("repo") or board.DEFAULT_REPO, "owner_name": r.get("owner_name") or "?",
+                         "until": r["until"], "active": board.is_active(r, at), "why": r.get("why") or "",
+                         "value": r.get("value") or "", "home": str(kh.path), "home_label": kh.label} for r in recs]
+        finally:
+            board.BOARD = saved
+        return out
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
         ref = self.where[stage]
@@ -1707,13 +1724,18 @@ def stage_rows(snap: dict, width: int) -> list:
     return rows
 
 
+def lock_home(snap: dict, lk: dict) -> str:
+    """" (label)" after a lock's repo while stages come from several homes, so a lock of another home says whose it is."""
+    return f" ({lk['home_label']})" if snap.get("multi_home") and lk.get("home_label") else ""
+
+
 def summary_rows(snap: dict, width: int) -> list:
     rows = stage_rows(snap, width) + [R(("", "norm")), R(("Locks (lock list)", "bold_u"))]
     if not snap["locks"]:
         rows.append(R(("  no locks", "dim")))
     for lk in snap["locks"]:
         st = "norm" if lk["active"] else "dim"
-        rows += wrap_rows(f"{lk['kind']} {lk['repo']} until {lk['until'][:16].replace('T', ' ')}"
+        rows += wrap_rows(f"{lk['kind']} {lk['repo']}{lock_home(snap, lk)} until {lk['until'][:16].replace('T', ' ')}"
                           f"{'' if lk['active'] else ' (expired)'} — {lk['owner_name']}: {lk['why']}", width, st, "  ", "    ", 3)
     rows += [R(("", "norm")), R(("Owner questions (ask summary)", "bold_u"))]
     if not snap["questions"]:
@@ -1911,7 +1933,7 @@ def render_widget(snap: dict) -> str:
     out += rows or ['<div class="s">No agents.</div>']
     if locks:
         out.append('<div class="s" style="margin-top:1rem">'
-                   + "<br>".join(e(f"lock {lk['kind']} {lk['repo']} — {lk['owner_name']}, until {(lk['until'] or '')[5:16].replace('T', ' ')}")
+                   + "<br>".join(e(f"lock {lk['kind']} {lk['repo']}{lock_home(snap, lk)} — {lk['owner_name']}, until {(lk['until'] or '')[5:16].replace('T', ' ')}")
                                  for lk in locks) + '</div>')
     # No buttons and no scripts: in the Claude Code desktop tab sendPrompt() from a widget reaches nothing,
     # so the widget names the commands instead.

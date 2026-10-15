@@ -296,9 +296,41 @@ export function parseCard(stdout: string, dirName: string, fetchedAt: number): C
 
 export type CommandArgs = { role: string | null; stages: string[]; isAll: boolean }
 
-/** `/agent-top [role] [--stage S]... [--all]` (also `--stage=S`). Unknown flags are ignored. */
+/**
+ * The words of a command line as a shell reads them: split at whitespace, except inside '…' or "…" (a label from a repository
+ * directory with a space, a path with spaces) and after a backslash (`alpha@my\\ repo`); the quotes are dropped. An unclosed
+ * quote runs to the end of the text.
+ */
+export function splitWords(text: string): string[] {
+  const words: string[] = []
+  let cur = ''
+  let has = false
+  let quote: '"' | "'" | null = null
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i] ?? ''
+    if (quote !== null) {
+      if (c === quote) quote = null
+      else if (c === '\\' && quote === '"' && (text[i + 1] === '"' || text[i + 1] === '\\')) cur += text[(i += 1)] ?? ''
+      else cur += c
+    } else if (c === '"' || c === "'") {
+      quote = c
+      has = true
+    } else if (c === '\\' && i + 1 < text.length) {
+      cur += text[(i += 1)] ?? ''
+      has = true
+    } else if (/\s/.test(c)) {
+      if (has || cur !== '') words.push(cur)
+      cur = ''
+      has = false
+    } else cur += c
+  }
+  if (has || cur !== '') words.push(cur)
+  return words
+}
+
+/** `/agent-top [role] [--stage S]... [--all]` (also `--stage=S`); S may be quoted. Unknown flags are ignored. */
 export function parseArgs(text: string): CommandArgs {
-  const words = text.split(/\s+/).filter(Boolean)
+  const words = splitWords(text)
   const out: CommandArgs = { role: null, stages: [], isAll: false }
   for (let i = 0; i < words.length; i += 1) {
     const w = words[i] ?? ''
@@ -483,16 +515,27 @@ export type StageIdentity = { name: string; home: string | null; label: string |
 
 /** `NAME` (that stage in every home), `NAME@LABEL` or `NAME@/path/of/home` (in one home); `name · label` as displayed too. */
 export function parseSelector(sel: string): { name: string; qual: string | null } {
-  const at = sel.indexOf('@')
-  if (at >= 0) return { name: sel.slice(0, at), qual: sel.slice(at + 1) }
-  const dot = sel.indexOf(' · ')
-  if (dot >= 0) return { name: sel.slice(0, dot), qual: sel.slice(dot + 3) }
-  return { name: sel, qual: null }
+  // a stage name has neither '@' nor ' · ': whichever comes first ends the name, and a label or a path may hold either
+  const m = /@| · /.exec(sel)
+  return m === null ? { name: sel, qual: null } : { name: sel.slice(0, m.index), qual: sel.slice(m.index + m[0].length) }
+}
+
+/** A path as the filter compares it: slashes collapsed, `.` and `..` segments resolved, no trailing slash (not the CLI's realpath). */
+export function normPath(p: string): string {
+  const out: string[] = []
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') out.pop()
+    else out.push(seg)
+  }
+  return (p.startsWith('/') ? '/' : '') + out.join('/')
 }
 
 export function stageMatches(sel: string, id: StageIdentity): boolean {
   const { name, qual } = parseSelector(sel)
-  return id.name === name && (qual === null || id.label === qual || id.home === qual)
+  if (id.name !== name) return false
+  if (qual === null || id.label === qual || id.home === qual) return true
+  return qual.includes('/') && id.home !== null && normPath(id.home) === normPath(qual)
 }
 
 /** The identity of a stage id of the snapshot: its `stage_info` row, else (an older CLI, a closed stage left out) the id's own words. */

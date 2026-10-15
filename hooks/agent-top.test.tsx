@@ -24,6 +24,9 @@ import {
   remember,
   ringTarget,
   inStages,
+  normPath,
+  parseSelector,
+  splitWords,
   stageCols,
   stageMatches,
   stageSelector,
@@ -1826,4 +1829,37 @@ test('a card is asked for by `name@home`, so its stage is the one that was opene
 test('parseArgs takes a qualified selector without spaces: --stage alpha@proj', async () => {
   expect(parseArgs('--stage alpha@proj --stage=beta@/work/p worker')).toEqual({ role: 'worker', stages: ['alpha@proj', 'beta@/work/p'], isAll: false })
   expect(onceArgs(parseArgs('--stage alpha@proj'))).toContain('alpha@proj')
+})
+
+test('parseArgs reads quotes and backslash-spaces like a shell: a label or a path with spaces stays one selector', async () => {
+  expect(splitWords(`a "b c" 'd e' f\\ g "h\\"i" ''`)).toEqual(['a', 'b c', 'd e', 'f g', 'h"i', ''])
+  expect(parseArgs('--stage "alpha@space repo" worker')).toEqual({ role: 'worker', stages: ['alpha@space repo'], isAll: false })
+  expect(parseArgs("--stage 'alpha@/work/my repo/.agent-hub/local' --all").stages).toEqual(['alpha@/work/my repo/.agent-hub/local'])
+  expect(parseArgs('--stage=alpha@"my repo" worker')).toEqual({ role: 'worker', stages: ['alpha@my repo'], isAll: false })
+  expect(parseArgs('--stage alpha@my\\ repo').stages).toEqual(['alpha@my repo'])
+  expect(parseArgs('--stage "alpha@unclosed repo').stages).toEqual(['alpha@unclosed repo'])
+  expect(parseArgs('--stage alpha@proj worker').role).toBe('worker') // unquoted words split as before
+  expect(onceArgs(parseArgs('--stage "alpha@space repo"'))).toContain('alpha@space repo') // and reach the CLI as one argument
+})
+
+test('a path selector matches the way the CLI normalises it (trailing slash, ., .., //); a label or path with @ is split at the first @ or " · "', async () => {
+  const id = { name: 'alpha', home: '/work/repo/.agent-hub/local', label: 'repo' }
+  for (const q of ['/work/repo/.agent-hub/local', '/work/repo/.agent-hub/local/', '/work//repo/./.agent-hub/local', '/work/x/../repo/.agent-hub/local/'])
+    expect(stageMatches(`alpha@${q}`, id)).toBe(true)
+  expect(stageMatches('alpha@/work/other/.agent-hub/local/', id)).toBe(false)
+  expect(normPath('/a//b/./c/../d/')).toBe('/a/b/d')
+  expect(normPath('/')).toBe('/')
+
+  expect(parseSelector('alpha@repo@branch')).toEqual({ name: 'alpha', qual: 'repo@branch' })
+  expect(parseSelector('alpha · repo@branch')).toEqual({ name: 'alpha', qual: 'repo@branch' }) // the displayed form, with an '@' in its label
+  expect(parseSelector('alpha@a · b')).toEqual({ name: 'alpha', qual: 'a · b' })
+  expect(parseSelector('alpha')).toEqual({ name: 'alpha', qual: null })
+  const at = { name: 'alpha', home: '/w/repo@branch/.agent-hub/local', label: 'repo@branch' }
+  expect(stageMatches('alpha · repo@branch', at)).toBe(true)
+  expect(stageMatches('alpha@repo@branch', at)).toBe(true)
+  expect(stageMatches('alpha@/w/repo@branch/.agent-hub/local/', at)).toBe(true)
+  expect(stageMatches('alpha@repo', at)).toBe(false)
+  const rows = [{ stage: 'alpha · repo@branch', stage_name: 'alpha', home: at.home, home_label: 'repo@branch' }, { stage: 'alpha', stage_name: 'alpha', home: '/h', home_label: '' }]
+  expect(inStages(rows, ['alpha · repo@branch'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
+  expect(inStages(rows, ['alpha@/w/repo@branch/.agent-hub/local/'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
 })

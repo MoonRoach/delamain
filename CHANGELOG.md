@@ -26,7 +26,10 @@
   gaining a stage of the same name cannot redirect a pending confirmation. `--stage` takes `NAME` (every home),
   `NAME@label` or `NAME@/path` (one home), also in `/agent-top`, whose filter keeps `alpha · repo` for `--stage alpha`. A
   child tool's registration (its pinned `AGENT_HUB_HOME` reads as `env`) never downgrades a project entry. The limit-pace
-  advice reads a stage's settings in its home and the logs of every home. Tests never touch the real HOME or registry
+  advice reads a stage's settings in its home and the logs of every home. The Locks list reads the board of every home
+  whose stages are shown (a lock of another home carries its label). `/agent-top --stage "alpha@my repo"` accepts quotes;
+  a label or path may hold `@` or spaces (the name ends at the first `@` or ` · `), and the pane normalises a path selector
+  like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
   (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
   Found by @Cartograf666 in #76.
 

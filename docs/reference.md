@@ -511,7 +511,10 @@ the pane (stop, send, close, a card) is bound to that pair when it is armed, so 
 name never redirects it. In `--json` the same name is the stage's `stage`, `stage_info[<id>]` gains `name`, `home` and
 `home_label`, every agent `stage_name`, `home` and `home_label`, and the top level `homes` (path, label, layer, repo, stages)
 and `multi_home`. `--stage` (and `/agent-top --stage`) takes `NAME` (that stage in every home that has it), `NAME@LABEL` or
-`NAME@/path/of/home` (one home's; `NAME@` is the `~/agent-hub` one) — a selector with no spaces — and the displayed `name · label`.
+`NAME@/path/of/home` (one home's; `NAME@` is the `~/agent-hub` one) — a selector with no spaces — and the displayed `name · label`. The name ends at the first `@` or ` · `, so a label or a path
+may hold `@`, spaces or `·`; in `/agent-top` quote a selector with spaces (`--stage "alpha@my repo"`, or `my\ repo`). The pane
+compares a path selector after normalising it (`//`, `.`, `..`, trailing `/`); the CLI also resolves symlinks. The Locks
+section shows the boards of every home whose stages are shown, a lock of another home with its label.
 The plan-limit advice reads the logs of every known home, and, for one stage in view, that stage's settings in its home.
 A registration never replaces a more specific provenance by a less specific one (a child tool pins `AGENT_HUB_HOME`, so it
 sees a project home as `env`): the entry keeps `project` and its repository. `tell`, `agent`, `hub` and the other tools still address the resolved

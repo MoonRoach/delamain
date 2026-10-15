@@ -1,6 +1,6 @@
 #!/bin/bash
 # Limit pace (bin/limit_pace.py): the pace model over fixture logs (Codex rollouts, Claude headless logs), the advice in
-# the owner's order (waste, move at an equivalent class, sequence, tell the owner), the one hard stop and its --reason
+# launch's engine/model/effort, remaining-room comparisons, practical exhaustion and its --reason
 # override, an owner-locked stage, stale data, one journal line per crossing (spawn and watchdog R6), the digest line and
 # agent-top. Stand-in CLIs only; no model is called.
 . "$(dirname "$0")/lib.sh"
@@ -43,112 +43,119 @@ check(P["codex"]["7d"].level == "unknown" and P["claude"]["7d"].level == "unknow
 a = lp.advise("codex", "gpt-6.1-sol", "high", "stage-a", P)
 check(a.lines == [] and a.refuse is None, "unknown data: no advice, no refusal")
 
-# on pace: no advice at all
-fx("codex", "10,12"); fx("claude", "20,21")
-P = read()
-check(P["codex"]["7d"].level == "ok" and P["claude"]["7d"].level == "ok", "on pace: both ok")
-check(abs(P["codex"]["7d"].expected - 100 * 40 / 168) < 0.5, "elapsed share from resets_at and the window length")
-check(P["claude"]["7d"].burn_recent is not None, "Claude burn rate from several logs' mtimes")
-a = lp.advise("codex", "gpt-6.1-sol", "high", "stage-a", P)
-check(a.lines == [] and a.refuse is None, "on pace: no advice even for Sol high")
+# Public advice seam: the matrix is symmetric across engines and independent of task class.
+import shlex
 
-# over pace on Codex, Claude on pace: move at the equivalent class, no refusal, no weaker model
-fx("clear"); fx("codex", "60,75"); fx("claude", "20,21")
-P = read()
+def pair(engine, used, other_used, elapsed=40):
+    fx("clear")
+    fx(engine, str(used), "--elapsed-h", str(elapsed), "--span-h", "0")
+    fx(lp.other(engine), str(other_used), "--elapsed-h", str(elapsed), "--span-h", "0")
+    return read()
+
+for engine in lp.ENGINES:
+    for cls, model in (("mechanical", "luna"), ("bounded", "sol"), ("judgement", "astra")):
+        for used, alternate, move, stop in ((4, 75, False, False), (75, 21, False, False),
+                                            (85, 21, True, False), (85, 90, False, False),
+                                            (90, 85, True, False), (98, 21, True, True),
+                                            (98, 97, True, True), (98, 99, False, True),
+                                            (99, 98, True, True), (97, 21, True, False),
+                                            (80, 21, False, False), (85, 85, False, False)):
+            P = pair(engine, used, alternate)
+            a = lp.advise(engine, model, "medium", "stage-a", P, task_class=cls)
+            text = "\n".join(a.lines)
+            label = f"{engine}/{cls} {used}% vs {alternate}%"
+            check(any("run this as" in l for l in a.lines) == move, label + ": move only this launch to more room")
+            if move:
+                check(lp.equivalent(engine, cls) in text, label + ": names equivalent model and effort")
+            check(bool(a.refuse) == stop and a.stop == stop, label + ": practical exhaustion only")
+            if used > 80 and alternate > 80:
+                check("may run out before the reset" in text, label + ": both short, warn and run")
+            surfaces = [text, a.refuse or "", lp.summary(engine, P), lp.compact(engine, P),
+                        lp.ask_command("stage-a", P[engine]["7d"], None, P[lp.other(engine)]["7d"], cls)]
+            check(not any(term in " ".join(surfaces).lower() for term in
+                          ("defer", "after the reset", "urgent only", "night queue", "nice-to-have", "sequence:", "work that can wait")),
+                  label + ": no scheduling advice on any surface")
+            if stop:
+                check(lp.advise(engine, model, "medium", "stage-a", P, cls, reason="incident").refuse is None,
+                      label + ": --reason passes")
+                os.environ["AGENT_HUB_LIMIT_PACE"] = "warn"
+                check(lp.advise(engine, model, "medium", "stage-a", P, cls).refuse is None,
+                      label + ": warn never refuses")
+                del os.environ["AGENT_HUB_LIMIT_PACE"]
+
+# Forecast alone, including the actual 4%-after-one-hour regression, never redirects or refuses.
+for elapsed in (1, 5.99, 6, 40):
+    P = pair("codex", 4, 21, elapsed)
+    a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
+    check(a.refuse is None and not any("run this as" in l for l in a.lines), f"{elapsed}h: burn alone cannot move/refuse")
+    if elapsed < 6:
+        check("low-confidence" in lp.describe(P["codex"]["7d"]), f"{elapsed}h: early forecast labelled")
+        early = P["codex"]["7d"]
+        check(lp.note_crossing(f"early-{int(elapsed * 100)}", early, write=False) is None,
+              f"{elapsed}h: no early dry-run alarm")
+        check(lp.note_crossing(f"early-{int(elapsed * 100)}", early) is None and lp.note_crossing("*owner", early, journal=False) is None,
+              f"{elapsed}h: no early journal alarm or owner notification crossing")
+        check(not (lp.hc.state_dir() / "limit-pace" / "crossings.json").exists(),
+              f"{elapsed}h: early observations do not consume crossing state")
+    else:
+        check("low-confidence" not in lp.describe(P["codex"]["7d"]), f"{elapsed}h: confidence boundary")
+        if elapsed == 6:
+            check(lp.note_crossing("early-boundary", P["codex"]["7d"]) is not None,
+                  "6h: crossing is announced when the confidence boundary is reached")
+
+P = pair("codex", 75, 21)
 p = P["codex"]["7d"]
-check(p.level == "exhaust" and p.confirmed, "Codex 60→75% in 6 h at 24% of the week: exhaustion confirmed")
-check(p.eta is not None and p.eta < p.resets_at, "…projected before the reset")
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-move = [l for l in a.lines if l.startswith("2. move")]
-check(a.refuse is None, "over pace with headroom elsewhere: no refusal")
-check(len(move) == 1 and "Claude Sonnet high" in move[0], "bounded Sol → Claude Sonnet high")
-a = lp.advise("codex", "gpt-6-astra", "high", "stage-a", P)
-move = [l for l in a.lines if l.startswith("2. move")][0]
-check("Claude Opus high" in move and "Sonnet" not in move and "Haiku" not in move, "judgement Astra → Claude Opus, never a weaker class")
-# the same numbers with the engines swapped: Claude over pace, Codex with headroom
-SW = {"claude": {"7d": dataclasses.replace(p, engine="claude")}, "codex": {"7d": dataclasses.replace(P["claude"]["7d"], engine="codex")}}
-a = lp.advise("claude", "opus", "high", "stage-a", SW)
-move = [l for l in a.lines if l.startswith("2. move")][0]
-check("Codex Astra high" in move and "Luna" not in move, "judgement Opus → Codex Astra, never Luna")
+check(p.level == "exhaust" and p.confirmed and p.eta < p.resets_at, "forecast remains visible, separate from launch decision")
 a = lp.advise("codex", "gpt-6.1-sol", "high", "stage-a", P)
-check(any("routine bounded work runs at medium (asked: high)" in l for l in a.lines), "waste first: Sol high → medium for routine work")
-check([l[:2] for l in a.lines if l[:2] in ("1.", "2.", "3.")] == ["1.", "2.", "3."], "advice in the owner's order: waste, move, sequence")
-a = lp.advise("codex", "gpt-6.1-sol", "high", "stage-a", P, task_class="judgement")
-check(not any("asked: high" in l for l in a.lines), "--task-class judgement: no effort-lowering advice")
-a = lp.advise("claude", "sonnet", "xhigh", "stage-a", SW)
-check(any("runs at high (asked: xhigh)" in l for l in a.lines), "waste: Sonnet xhigh → high")
+check(any("routine bounded work runs at medium (asked: high)" in l for l in a.lines), "effort waste advice retained with room")
+check(not any("asked: high" in l for l in lp.advise("codex", "sol", "high", "stage-a", P, "judgement").lines),
+      "judgement class keeps effort")
 
-# owner-locked stage: ask add with the numbers, never a move, refusal (no cheaper path)
+# Engine locks offer an owner permission for this launch, defaulting to running on the locked engine.
 os.environ["AGENT_HUB_STAGE_ENGINES"] = '{"stage-a": {"engine": "codex", "decision": "Q-T-1"}}'
 lock = lp.stage_lock("stage-a")
-check(lock == {"engine": "codex", "decision": "Q-T-1"}, "AGENT_HUB_STAGE_ENGINES read")
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P, lock=lock)
-text = "\n".join(a.lines)
-check("ask add --stage stage-a" in text and "Q-T-1" in text and "75% used" in text, "locked stage: an ask add with the numbers")
-check("run this as" not in text, "locked stage: no switch proposed")
-check(a.refuse is not None, "locked stage over pace: refused without --reason")
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P, reason="hotfix", lock=lock)
-check(a.refuse is None and a.stop, "…--reason passes, the stop is still known (journalled)")
-check(lp.stage_lock("stage-b") is None, "another stage is not locked")
+check(lock == {"engine": "codex", "decision": "Q-T-1"}, "stage lock read")
+for used, stop in ((85, False), (98, True)):
+    P = pair("codex", used, 21)
+    a = lp.advise("codex", "sol", "medium", "stage-a", P, lock=lock)
+    text = "\n".join(a.lines)
+    check("ask add --stage stage-a" in text and "Q-T-1" in text and "run this as" not in text,
+          f"locked {used}%: ask owner, no move")
+    cmd = shlex.split(lp.ask_command("stage-a", P["codex"]["7d"], lock, P["claude"]["7d"], "bounded"))
+    check(cmd[cmd.index("--default") + 1] == "run this launch on the locked engine Codex", "locked default runs the work")
+    check(bool(a.refuse) == stop, "lock does not turn extrapolation into refusal")
 del os.environ["AGENT_HUB_STAGE_ENGINES"]
 
-# exhaustion before the reset on both engines: the one hard stop
-fx("clear"); fx("codex", "60,75"); fx("claude", "60,75")
-P = read()
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(a.refuse is not None and "--reason" in a.refuse, "both engines run out: refusal naming --reason")
-check(any(l.startswith("4.") and "ask add" in l for l in a.lines), "…and the owner question with the numbers")
-check(lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P, reason="prod incident").refuse is None, "--reason passes")
-check(lp.advise("codex", "gpt-6-luna", "low", "stage-a", P).refuse is None, "mechanical work (Luna) is never refused")
-os.environ["AGENT_HUB_LIMIT_PACE"] = "warn"
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(a.refuse is None and a.stop and a.lines, "AGENT_HUB_LIMIT_PACE=warn: advice, no refusal")
-del os.environ["AGENT_HUB_LIMIT_PACE"]
+# Unknown/stale observations never establish refusal or a move, including practically exhausted requests.
+for alternate in ("unknown", "stale"):
+    P = pair("codex", 99, 21)
+    P["claude"]["7d"] = dataclasses.replace(P["claude"]["7d"], level=alternate)
+    a = lp.advise("codex", "sol", "medium", "stage-a", P)
+    check(not a.stop and not a.refuse and not any("run this as" in l for l in a.lines), alternate + ": alternative unverified")
+    P["codex"]["7d"] = dataclasses.replace(P["codex"]["7d"], level="stale")
+    check(lp.advise("codex", "sol", "medium", "stage-a", P).refuse is None, "stale requested engine never refuses")
 
-# below the floor (less than half the week used): advice, no refusal
-fx("clear"); fx("codex", "30,40", "--elapsed-h", "10"); fx("claude", "60,75")
-P = read()
-check(P["codex"]["7d"].level == "exhaust" and P["codex"]["7d"].confirmed, "40% at 6% of the week: exhaustion confirmed")
-check(lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P).refuse is None, "…under the 50% floor: no refusal")
+# Practical exhaustion with an unverified alternative is an explicit warning, never a quota gate.
+for engine in lp.ENGINES:
+    for alternate in ("unknown", "stale"):
+        P = pair(engine, 99, 21)
+        qengine = lp.other(engine)
+        P[qengine]["7d"] = dataclasses.replace(P[qengine]["7d"], level=alternate)
+        a = lp.advise(engine, "sol", "medium", "stage-a", P)
+        for label, text in (("spawn", " ".join(a.lines)), ("summary", lp.summary(engine, P)),
+                            ("compact", lp.compact(engine, P))):
+            check("practically exhausted" in text and "probe" in text and "--reason" in text,
+                  f"{engine}/{alternate}/{label}: probe or explicitly launch despite exhaustion")
+            check(not any(term in text for term in ("launch: run on", "this launch: keep", "keep this launch")),
+                  f"{engine}/{alternate}/{label}: no unconditional go advice")
+        check(not a.stop and not a.refuse, f"{engine}/{alternate}: unknown data still creates no gate")
 
-# a recent burst on a calm week: ahead, not exhaust; no refusal
-fx("clear"); fx("codex", "10,25", "--elapsed-h", "100"); fx("claude", "60,75")
-P = read()
-p = P["codex"]["7d"]
-check(p.level == "ahead" and p.burst and not p.confirmed, "a burst the window average does not confirm: ahead")
-check(lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P).refuse is None, "…never refused")
-
-# stale data: said so, never refused
-fx("clear"); fx("codex", "60,75", "--age-m", "240"); fx("claude", "60,75")
-P = read()
-check(P["codex"]["7d"].level == "stale", "a 4 h old sample is stale")
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(a.refuse is None and any("stale" in l for l in a.lines), "stale: says so, does not refuse")
-fx("clear"); fx("codex", "60,75", "--elapsed-h", "170"); fx("claude", "60,75")
-P = read()
-check(P["codex"]["7d"].level == "stale" and "reset" in P["codex"]["7d"].why_stale, "a window that reset since the sample is stale")
-check(lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P).refuse is None, "…not refused")
-
-# the other engine stale: no verified headroom, so no move is proposed, but no refusal either: the path is unchecked
-fx("clear"); fx("codex", "60,75"); fx("claude", "20,21", "--age-m", "240")
-P = read()
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(not any("run this as" in l for l in a.lines) and a.refuse is None and not a.stop, "other engine stale: no move, advice, no refusal")
-check(any("headroom on Claude is not verified" in l and "--reason" in l for l in a.lines), "…says the headroom is not verified")
-check(any(l.startswith("4.") and "ask add" in l for l in a.lines), "…and gives the ready ask add")
-
-# the other engine unknown (no log in 12 h): advice, not refusal
-fx("clear"); fx("codex", "60,75")
-P = read()
-check(P["claude"]["7d"].level == "unknown", "no Claude log: unknown")
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P)
-check(a.refuse is None and not a.stop and any("headroom on Claude is not verified" in l for l in a.lines),
-      "other engine unknown → advice, not refusal")
-check(any(l.startswith("4.") and "ask add" in l for l in a.lines), "…with the ready ask add")
-os.environ["AGENT_HUB_STAGE_ENGINES"] = '{"stage-a": {"engine": "codex", "decision": "Q-T-1"}}'
-a = lp.advise("codex", "gpt-6.1-sol", "medium", "stage-a", P, lock=lp.stage_lock("stage-a"))
-check(a.refuse is not None, "…a pinned stage is still refused: its cheaper path is the owner's to open")
-del os.environ["AGENT_HUB_STAGE_ENGINES"]
+# Five-hour forecasts report the window, not a schedule for work.
+P = pair("codex", 21, 25)
+P["codex"]["5h"] = dataclasses.replace(P["codex"]["7d"], window="5h", level="exhaust")
+a = lp.advise("codex", "sol", "medium", "stage-a", P)
+check(not a.refuse and not any(t in " ".join(a.lines) for t in ("work that can wait", "starts after", "a pause")),
+      "5h forecast has no waiting advice")
 
 # parallel Claude logs: the log's mtime is not its event's time, so the points of one instant disagree by a point
 for order in ("51,52", "52,51"):
@@ -178,6 +185,8 @@ P = read()
 p = P["codex"]["7d"]
 first = lp.note_crossing("stage-x", p)
 check(first is not None and first.startswith("@hub LIMIT"), "first crossing: an @hub LIMIT line")
+check("choose engine/model/effort for this launch" in first and "after the reset" not in first,
+      "alarm directs per-launch choice, not scheduling")
 check(lp.note_crossing("stage-x", p) is None, "…the second time: nothing (no spam)")
 check(lp.note_crossing("stage-y", p) is not None, "…another stage is told on its own")
 calm = lp.Pace("codex", "7d", level="ahead", used=30, expected=20, resets_at=p.resets_at, seen_at=p.seen_at, age_s=1)
@@ -213,26 +222,26 @@ grep -q 'limit pace' $R/p1.out; check $? 1 "…and prints no advice"
 grep -q 'dry run: p1 would start on codex' $R/p1.out; check $? 0 "--dry-run says what it would start"
 [ ! -e $R/stage-a/agents/p1 ]; check $? 0 "…and starts nothing"
 
-FX clear; FX codex 60,75; FX claude 20,21
+FX clear; FX codex 75,85; FX claude 20,21
 dry p2 --engine codex --model gpt-6.1-sol --effort medium; check $? 0 "Codex over pace, Claude has headroom: no refusal"
 grep -q '2. move: .*run this as Claude Sonnet high' $R/p2.out; check $? 0 "…the advice moves the work to the equivalent class"
 grep -q 'would journal \[pace\] @hub LIMIT Codex 7d' $R/p2.out; check $? 0 "…a dry run names the crossing line"
 [ ! -s $J ] || ! grep -q 'LIMIT' $J; check $? 0 "…and does not write it"
 
 AGENT_HUB_STAGE_ENGINES='{"stage-a": {"engine": "codex", "decision": "Q-T-1"}}' dry p3 --engine codex --model gpt-6.1-sol --effort medium
-check $? 1 "owner-locked stage over pace: refused"
+check $? 0 "owner-locked stage with room: allowed"
 grep -q "ask add --stage stage-a" $R/p3.out && grep -q 'Q-T-1' $R/p3.out; check $? 0 "…with the owner question"
 grep -q 'run this as' $R/p3.out; check $? 1 "…and no switch"
 
-FX clear; FX codex 60,75; FX claude 60,75
+FX clear; FX codex 97,98; FX claude 98,99
 dry p4 --engine codex --model gpt-6.1-sol --effort medium; check $? 1 "both engines run out before the reset: refused"
 grep -q 'limit pace: Codex 7d' $R/p4.out && grep -q -- '--reason' $R/p4.out; check $? 0 "…saying why and how to pass"
 [ ! -e $R/stage-a/agents/p4 ]; check $? 0 "…nothing was created"
-dry p5 --engine codex --model gpt-6-luna --effort low; check $? 0 "mechanical work is not refused"
+dry p5 --engine codex --model gpt-6-luna --effort low; check $? 1 "practically exhausted mechanical work also needs --reason"
 dry p6 --engine codex --model gpt-6.1-sol --effort medium --reason "prod incident fix"; check $? 0 "--reason passes"
 $B/agent spawn --role p7 --cwd $W --brief $W/b.md --engine codex --model gpt-6.1-sol --effort medium \
   --reason "prod incident fix" > $R/p7.out 2>&1; check $? 0 "a real launch with --reason"; wait_dead p7
-grep -q 'started headless agent p7 .*reason: prod incident fix, over the limit-pace stop (Codex 7d 75% used' $J; check $? 0 "…journalled as over the stop, with the numbers"
+grep -q 'started headless agent p7 .*reason: prod incident fix, over the limit-pace stop (Codex 7d 98% used' $J; check $? 0 "…journalled as over the stop, with the numbers"
 check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $J)" 1 "…one crossing line"
 $B/agent spawn --role p8 --cwd $W --brief $W/b.md --engine codex --model gpt-6.1-sol --effort medium \
   --reason "second fix" > $R/p8.out 2>&1; wait_dead p8
@@ -244,15 +253,25 @@ grep -q 'data stale' $R/p9.out; check $? 0 "…and said to be stale"
 AGENT_HUB_LIMIT_PACE=off dry p10 --engine claude --model sonnet; check $? 0 "AGENT_HUB_LIMIT_PACE=off: spawn goes on"
 grep -q 'limit pace' $R/p10.out; check $? 1 "…with no advice"
 
+# Early extrapolation and refusal overrides also pass through the actual CLI.
+FX clear; FX codex 4 --elapsed-h 1 --span-h 0; FX claude 20,21
+dry early --engine codex --model gpt-6.1-sol --effort medium; check $? 0 "early 4%: CLI allows launch"
+grep -q 'low-confidence' $R/early.out; check $? 0 "…early forecast is labelled"
+grep -q 'run this as' $R/early.out; check $? 1 "…forecast alone never moves launch"
+FX clear; FX codex 97,98; FX claude 20,21
+dry exhausted --engine codex --model gpt-6.1-sol --effort medium; check $? 1 "exhausted requested engine with alternative: CLI refuses"
+AGENT_HUB_LIMIT_PACE=warn dry warn --engine codex --model gpt-6.1-sol --effort medium
+check $? 0 "warn allows exhausted CLI launch"
+
 # ---- 3. the digest line, agent-top, watchdog R6
-FX clear; FX codex 60,75; FX claude 20,21
+FX clear; FX codex 75,85; FX claude 20,21
 python3 - "$B" > $R/digest.out <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("hubmod", sys.argv[1] + "/hub")
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", loader)); loader.exec_module(m)
 print(m.pace_digest("stage-a"))
 PY
-grep -q '^Codex week 75% used at 24% elapsed, runs out .* — over pace: routine at Sol medium; new work to Claude at the same class' $R/digest.out
+grep -q '^Codex week 85% used .*this launch.*Claude' $R/digest.out
 check $? 0 "digest: Codex line with the action"
 grep -q '^Claude week 21% used at 24% elapsed — on pace$' $R/digest.out; check $? 0 "digest: Claude line on pace, no advice"
 [ "$(wc -c < $R/digest.out)" -lt 480 ]; check $? 0 "digest: the block fits its budget"
@@ -268,7 +287,7 @@ print(m.pace_digest("stage-a"))
 PY
 check "$(cat $R/digest-broken.out)" "Limit pace: unavailable (RuntimeError)" "digest: a broken advisor says so, not an empty line"
 $B/agent-top --once --width 200 --stage stage-a > $R/top.out 2>&1; check $? 0 "agent-top --once"
-grep -q 'Limit pace' $R/top.out && grep -q 'Codex 7d 75% used .* over pace. Advice' $R/top.out; check $? 0 "agent-top --once: an advisor line per engine"
+grep -q 'Limit pace' $R/top.out && grep -q 'Codex 7d 85% used .* over pace. Advice' $R/top.out; check $? 0 "agent-top --once: an advisor line per engine"
 $B/agent-top --json --stage stage-a | python3 -c "import json,sys; d=json.load(sys.stdin)['limit_pace']; assert d['codex']['level']=='exhaust' and d['claude']['level']=='ok', d"
 check $? 0 "agent-top --json: limit_pace levels"
 
@@ -287,4 +306,12 @@ check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…th
 $B/watchdog run --stage stage-w > $R/wd2.out 2>&1
 check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $JW)" 1 "a second tick: no new line"
 check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…and no new notification"
+# The actual watchdog must neither journal nor notify on the first hour's extrapolation.
+FX clear; FX codex 4 --elapsed-h 1 --span-h 0; FX claude 20,21
+mkdir -p $R/stage-early/coordinator/work
+$B/roles set --stage stage-early hub 55555555-5555-4555-8555-555555555555 --kind cli --tag hub-1 > /dev/null
+JE=$R/stage-early/coordinator/work/journal-$(today).md
+$B/watchdog run --stage stage-early > $R/wd-early.out 2>&1; check $? 0 "early watchdog tick"
+[ ! -f "$JE" ] || ! grep -q '@hub LIMIT' "$JE"; check $? 0 "early watchdog: no journal alarm"
+check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "early watchdog: no owner notification after positive control"
 exit $fail

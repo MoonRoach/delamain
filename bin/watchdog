@@ -990,7 +990,7 @@ def rule_r6(tick: Tick, stage: str) -> None:
                 tick.say(stage, "R6", f"journal: {first_line(text)}")
             if p.level == "exhaust" and limit_pace.note_crossing("*owner", p, write=not tick.dry, journal=False):
                 tick.notify(stage, "R6", f"delamain: {limit_pace.ENGINE_NAME[engine]} plan week projected to run out "
-                                         "before its reset")
+                                         "before its reset; choose engine/model/effort per launch (agent spawn --dry-run)")
     except Exception as e:  # noqa: BLE001
         tick.say(stage, "R6", f"limit pace skipped: {type(e).__name__}: {first_line(str(e))}")
 

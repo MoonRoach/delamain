@@ -62,6 +62,11 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
 
 ## Executors, in full
 
+- **Per-launch quota choice.** Read [limit pace](../../../docs/reference.md#limit-pace) before choosing this launch's
+  engine, model and effort. Compare fresh remaining weekly percentages; propose an equivalent class when the other
+  engine has more room and the requested one is short. For an engine lock, ask whether to allow the other engine
+  for this launch; default to running the locked engine. Apply the reference's quota refusal rules, keep model
+  changes explicit and keep ready work moving; forecast and five-hour context do not schedule work after reset.
 - Work that commits, pushes or waits (a merge steward, a rehearsal, a CI wait — see "Choosing how to launch work") is
   a headless agent, not an in-session sub-agent:
   `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.

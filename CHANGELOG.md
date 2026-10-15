@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`hub grill open` can start from an untrusted hub home.** After Claude explicitly refuses workspace trust,
+  it tries the hub's registered worktree, then other checkouts of the stage's project. A trusted calling directory
+  stays unchanged; trust records are never modified, and an uncertain launch is never retried.
+
 - **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by

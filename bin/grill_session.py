@@ -312,6 +312,10 @@ def run_cli(cli: str, argv: list, cwd: Path, timeout: int) -> subprocess.Complet
         return subprocess.CompletedProcess(argv, 127, "", str(e))
 
 
+class Untrusted(hc.Failure):
+    """The CLI explicitly refused trust: no session started, so another cwd may be tried."""
+
+
 class Unsure(hc.Failure):
     """`claude --bg` gave no clear answer: a session may exist all the same, so the launch stays recorded."""
 
@@ -357,7 +361,7 @@ def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
     out = autopilot.clean(res.stdout + "\n" + res.stderr)
     if res.returncode not in (0, 124):
         if "not trusted" in out.lower():
-            raise hc.Failure(f"{cwd} is not trusted by the claude CLI — run `claude` there once and accept the trust "
+            raise Untrusted(f"{cwd} is not trusted by the claude CLI — run `claude` there once and accept the trust "
                              f"prompt, then `hub grill` again")
         raise hc.Failure(f"`claude --bg` exited {res.returncode}: {autopilot.tail(out, 300) or 'no output'}")
     m = autopilot.BG_ID_RE.search(out) if res.returncode == 0 else None
@@ -390,6 +394,27 @@ def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
         if time.monotonic() >= deadline:
             return full_id, ""
         time.sleep(1)
+
+
+def fallback_cwds(stage: str, original: Path) -> list:
+    """Existing checkouts of this stage's project, registered hub first. The CLI decides their trust."""
+    registered = hc.registered_worktree(stage)
+    repo = hc.stage_project(stage)
+    candidates = [registered] if registered else []
+    if repo:
+        result = hc._git(repo, "worktree", "list", "--porcelain", "-z")
+        if result is not None and result.returncode == 0:
+            candidates += [Path(field[len("worktree "):]) for field in result.stdout.split("\0")
+                           if field.startswith("worktree ")]
+    seen = {original.resolve()}
+    out = []
+    for path in candidates:
+        path = path.resolve()
+        if path in seen or not path.is_dir() or (repo and hc.main_tree(path) != repo):
+            continue
+        seen.add(path)
+        out.append(path)
+    return out
 
 
 # ---------------------------------------------------------------- commands
@@ -458,7 +483,22 @@ def cmd_open(a) -> int:
         save_state(stage, state)
         if host == "bg":
             try:
-                bg_id, link = start_bg(cli.path, argv, cwd, (f"{stage}-{ROLE}", title_text(stage)))
+                alternatives = None
+                while True:
+                    try:
+                        bg_id, link = start_bg(cli.path, argv, cwd, (f"{stage}-{ROLE}", title_text(stage)))
+                        break
+                    except Untrusted:
+                        # Retry only a definite trust refusal, never a timeout or an uncertain launch.
+                        if alternatives is None:
+                            alternatives = iter(fallback_cwds(stage, cwd))
+                        next_cwd = next(alternatives, None)
+                        if next_cwd is None:
+                            raise
+                        cwd = next_cwd
+                        argv = bg_argv(stage, prompt, cwd, a.model, a.effort)
+                        pend["cwd"] = str(cwd)
+                        save_state(stage, state)  # a session may join before the start returns
             except Unsure:
                 raise
             except hc.Failure:

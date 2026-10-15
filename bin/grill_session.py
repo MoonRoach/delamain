@@ -306,23 +306,33 @@ class Unsure(hc.Failure):
     """`claude --bg` gave no clear answer: a session may exist all the same, so the launch stays recorded."""
 
 
-def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int) -> Optional[str]:
-    """The id of a background session with one of `names` that `claude agents --json` lists as started since
-    `since_ms` (a same-named one of an earlier launch is not this one)."""
+def bg_rows(cli: str, cwd: Path, names: tuple) -> Optional[list]:
+    """Background sessions with one of `names` that `claude agents --json` lists; None when it cannot be read."""
     try:
         rows = json.loads(run_cli(cli, ["agents", "--json"], cwd, 30).stdout)
     except ValueError:
         return None
-    hits = sorted((r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)
-                   and r.get("kind") == "background" and r.get("name") in names
+    return [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)
+            and r.get("kind") == "background" and r.get("name") in names]
+
+
+def row_id(r: dict) -> str:
+    return r.get("id") or r.get("sessionId") or ""
+
+
+def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int, before: set) -> Optional[str]:
+    """The id of the session this start made: named so, started since `since_ms`, and not listed before the start (a
+    launch replaced a moment ago has the same name and may have started within the clock slack)."""
+    hits = sorted((r for r in bg_rows(cli, cwd, names) or [] if row_id(r) not in before
                    and isinstance(r.get("startedAt"), (int, float)) and r["startedAt"] >= since_ms),
                   key=lambda r: r["startedAt"])
-    return (hits[-1].get("id") or hits[-1].get("sessionId")) if hits else None
+    return row_id(hits[-1]) if hits else None
 
 
 def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
     """(background session id, Remote Control link or "") of a `claude --bg` start. Failure when it surely did not
     start; Unsure when it hung or printed no id and `claude agents` does not list it either."""
+    before = {row_id(r) for r in bg_rows(cli, cwd, names) or []}
     since_ms = int(time.time() * 1000) - 2000  # a little slack for the daemon's clock
     res = run_cli(cli, argv, cwd, autopilot.BG_TIMEOUT_S)
     out = autopilot.clean(res.stdout + "\n" + res.stderr)
@@ -332,7 +342,7 @@ def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
                              f"prompt, then `hub grill` again")
         raise hc.Failure(f"`claude --bg` exited {res.returncode}: {autopilot.tail(out, 300) or 'no output'}")
     m = autopilot.BG_ID_RE.search(out) if res.returncode == 0 else None
-    bg_id = m.group(1) if m else listed_bg(cli, cwd, names, since_ms)
+    bg_id = m.group(1) if m else listed_bg(cli, cwd, names, since_ms, before)
     if not bg_id:
         what = "did not return" if res.returncode == 124 else "printed no session id"
         raise Unsure(f"`claude --bg` {what} and `claude agents` lists no session \"{names[0]}\" yet: it may still come up "
@@ -379,7 +389,8 @@ def cmd_open(a) -> int:
     brief = hc.work_dir(stage) / f"grill-{hc.now():%Y%m%d-%H%M%S}-brief.md"
     prompt = prompt_text(stage, brief, launch_id)
     tag = hc.caller_tag(stage) or ""
-    stages = list(dict.fromkeys(q["stage"] for q in questions))
+    # the questions' stages, and this stage always: the brief records new questions and decisions here
+    stages = list(dict.fromkeys([stage] + [q["stage"] for q in questions]))
     launch = {"title": title_text(stage), "prompt": prompt}
     with state_lock(stage):
         state = load_state(stage)

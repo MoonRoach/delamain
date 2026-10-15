@@ -150,6 +150,10 @@ grep -q "ended by hub-1: the session window was closed" $O/adm.out; check $? 0 "
 grep -q "ask list --pending --stage stage-a; ask list --pending --stage stage-b" $O/adm.out; check $? 0 "…names the pending answers of every stage grilled over"
 grep -q "\[hub-1\] @hub GRILLED" "$(journal)"; check $? 0 "…signed by the hub, not by the grill tag"
 $B/roles --stage stage-a get grill >/dev/null 2>&1; check $? 1 "…the role is retired"
+grill --stage stage-a --host desktop --questions "$QB" > /dev/null 2>&1; check $? 0 "a launch over another stage's question only"
+python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["stages"]==["stage-a","stage-b"], p' $R/stage-a/grill.json
+check $? 0 "…keeps the launching stage in its stages (new questions are recorded there)"
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
 
 # ---- question selection: --questions, --also-stage
 grill --stage stage-a --host desktop --questions "$D1,$QB" --dry-run > $O/sel.out 2>&1; check $? 0 "--questions: exit 0"
@@ -227,8 +231,14 @@ check $? 0 "bg: the session joins with AGENT_HUB_ENGINE=codex set"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]["grill"]; assert r["session"]==sys.argv[2] and r["engine"]=="claude" and r["launched"]=="bg", r' $R/stage-a/roles.json $G1
 check $? 0 "…registered by its Claude id, engine claude"
 CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill done --stage stage-a --summary "x" >/dev/null 2>&1; check $? 0 "…and reports"
-FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill grill --stage stage-a --host bg > $O/bgn.out 2>&1; check $? 0 "bg printed no id, \`claude agents\` lists it: exit 0"
+printf 'none\nlate\n' > $O/seq
+FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgn.out 2>&1; check $? 0 "bg printed no id, \`claude agents\` lists it: exit 0"
 grep -q "bg-from-list" $O/bgn.out; check $? 0 "…the session id is taken from \`claude agents\`"
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+# a session of the same name listed before this start (a launch replaced a moment ago) is not taken for this one
+printf 'late\nlate\n' > $O/seq
+FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgp.out 2>&1; check $? 1 "bg: only a session listed before the start: not taken, exit 1"
+grep -q "bg-from-list" $O/bgp.out; check $? 1 "…its id is not recorded"
 HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
 FAKE_BG=noid FAKE_AGENTS=none grill --stage stage-a --host bg > $O/bgu.out 2>&1; check $? 1 "bg printed no id and nothing is listed: exit 1"
 grep -q "may still come up" $O/bgu.out; check $? 0 "…says the session may still come up"

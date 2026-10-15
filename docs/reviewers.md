@@ -58,7 +58,7 @@ Rules the tool enforces:
 ## Choosing
 
 ```
-hub reviewer [--for CLASS] [--stage STAGE] [--json] [--all]
+hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage STAGE] [--json] [--all]
 ```
 
 It walks the list in order and stops at the first entry that is available now: not past its `until`, serving the
@@ -94,9 +94,50 @@ carries `--stage S`, so the reviewer joins that stage whatever the shell's `HUB_
 runs, so a second review at the same time takes another `--role`. For a `skill` reviewer the hub loads the skill and
 gives it the four inputs of the contract.
 
-`--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
+`--author` names who wrote the change, so the reviewer is chosen by that and not by the engine of the hub that runs
+the command (see [the author](#the-author-of-the-change)). `--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
 invalid), with the output of each `check`. `--json` prints the same as JSON (`chosen`, `start`, `entries`,
 `invalid`). Exit 0 with a choice, 1 when none is available, 2 on a usage error. Nothing is written.
+
+## The author of the change
+
+A reviewer must come from who *wrote* the change, and the hub's host says nothing about that: a Claude hub reviews
+Codex-written changes and the other way round. So `hub reviewer` takes the author as an argument:
+
+| `--author` | The author is |
+|---|---|
+| `claude`, `codex` | that engine, model unknown |
+| `claude/opus`, `codex/gpt-6.1-sol` | that engine and model (the model: letters, digits and `. _ : @ [ ] / -`) |
+| a role, e.g. `fix-parser` | the agent of that role in `--stage` (else `$HUB_STAGE`): its `engine` (absent means Claude) and its `resolved_model`, else `model`, from `agents/<role>/meta.json` |
+
+An author that is none of these (an unknown engine, a role with no `meta.json`, a role and no stage) is a usage error,
+exit 2: a mistyped author must not quietly turn into the host. The output names the author and where it came from
+(`author: codex/gpt-6.1-sol (role fix-parser)`); `--json` has `author` (`engine`, `model`, `source`).
+
+**Without `--author`** the author is unknown. `hub reviewer` assumes the host engine wrote the change, says so on
+stderr (`author unknown: assuming the host engine (claude) …`) and prints `author: unknown, host engine … assumed`;
+`--json` has `author: null` and `assumed_author_engine`. A hub that knows the author always passes it.
+
+**For check authors.** Every `check` runs with two more environment variables:
+
+| Variable | Value |
+|---|---|
+| `AGENT_HUB_REVIEW_AUTHOR_ENGINE` | `claude` or `codex` |
+| `AGENT_HUB_REVIEW_AUTHOR_MODEL` | the author's model, empty when `--author` gave only an engine |
+
+Without `--author` both are *removed* from the check's environment, even if the caller's shell has them: absent means
+"unknown", and a check then falls back to its own guess (the host engine, `engines.selected()`). A check that rules an
+entry in or out by the author's engine — "a Claude reviewer only for a Codex author" — reads the variable instead of
+guessing the host. The variables are also the place for the rule above ("a different model from the author").
+
+**The built-in default** (no valid list) follows the author as well: for a Codex author it is a Claude reviewer
+(`opus`), for a Claude author a Codex reviewer (`gpt-6-astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`),
+otherwise Claude as before. Without `--author` it stays the host engine's.
+
+**A check should be forgiving about missing limit data.** Limits choose the engine for a launch; they rule an engine out
+only when it is practically exhausted. A check that sees no observation, or one too old to trust, should report the
+engine as available (exit 0) and refuse only on a known window above the threshold — otherwise a hub that has no recent
+data of the other engine silently falls back to a reviewer of the author's own engine.
 
 ## Change classes
 
@@ -115,7 +156,7 @@ author cannot tell whether a change needs a review at all, it reviews and says w
 
 ## The reviewer is a different model from the author
 
-Recommended rule: whoever wrote a change does not review it, and a reviewer from the same model family as the author
+Recommended rule: whoever wrote a change does not review it — `--author` is how `hub reviewer` knows who that was — and a reviewer from the same model family as the author
 tends to read the code the way it was written. Pick `AGENT_HUB_REVIEW_MODEL` (and the `model` of `agent` entries)
 different from the model your executors write with, or list a reviewer skill that runs another vendor's model.
 *Why:* a weaker or identical reader returns a confident summary of the diff, which reads like agreement.

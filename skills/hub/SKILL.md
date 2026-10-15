@@ -141,7 +141,7 @@ Decide from what is visible before the start — what the work does and who must
 launch to use. When no row applies (a small change, nothing to wait on, nobody else to reach it) the hub may write it
 itself: one line with the reason, and `ask decided`.
 
-1. **A review** → `hub reviewer --for <class>`, then start what it prints (`references/launch-and-executors.md`, *Reviews*).
+1. **A review** → `hub reviewer --for <class> --author <role>`, then start what it prints (`references/launch-and-executors.md`, *Reviews*).
 2. **The owner should talk to it** → an interactive session in their chosen host.
 3. **It commits or pushes, waits on CI, a deploy or another party, touches production, or must be reachable by someone
    other than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.

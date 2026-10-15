@@ -644,7 +644,8 @@ worker subagents.
              Agent|Task|Workflow ─ delegation.py pre-tool   deny by level rules and subagent effort rules
              * ───────── context_budget.py             past the block threshold deny Agent/Task/SendMessage
                                                        (a handoff still passes)
- PostToolUse * ───────── context_budget.py             warn once per step above the warn threshold
+ PostToolUse * ───────── context_budget.py             warn once per step above the warn threshold; mark a
+                                                       hub's grilling when its skill loads (no handoff meanwhile)
  agent spawn (CLI) ───── bin/subagent_rules.py         the same effort rules for headless agents
 ```
 

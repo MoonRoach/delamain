@@ -13,6 +13,8 @@
   in the hub home's `config.json` (or a repository's `.agent-hub/config.json`), or pass `--mcp inherit`. A resumed
   agent keeps the choice of its launch, the headless hub successor still inherits, Codex has no equivalent switch.
 
+## 1.0.10 — 2026-10-15
+
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
   the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
   the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner

@@ -203,10 +203,10 @@ configuration and other agents' inboxes stay read-only. Keep that cwd outside an
 For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
 commit/merge messages and pseudorefs), their own logs and common objects.
 `commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
-refs/reflogs are limited to the worktree's initial branch and its lock files. For nested branch names, their first
-namespace directory is granted so Git can recreate it after pack-refs; sibling refs in that namespace are also
-writable. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
-A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
+refs/reflogs are limited to the worktree's initial branch and its lock files. Nested branch names also receive only leaf files, so sibling branches and reflogs stay read-only.
+If pack-refs prunes a leaf's parent directory, branch writes fail closed until that directory is restored outside
+the sandbox; no namespace directory is granted. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+Git root discovery ignores inherited `GIT_*` environment variables. A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
 `reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
 
 These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.

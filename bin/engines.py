@@ -168,12 +168,14 @@ WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported 
 
 def worktree_git_roots(cwd):
     """Grant operation state and this branch's refs, leaving Git config/pointers read-only."""
+    # Discover cwd's repository, never a repository selected by the hub's Git environment.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-            cwd=cwd, capture_output=True, text=True, timeout=5)
+            cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
         branch = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
-                                cwd=cwd, capture_output=True, text=True, timeout=5)
+                                cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return []
     paths = result.stdout.strip().splitlines()
@@ -190,14 +192,10 @@ def worktree_git_roots(cwd):
         name = branch.stdout.strip()
         if not name.startswith("refs/heads/") or any(p in (".", "..") for p in Path(name).parts):
             raise hc.UsageError("cannot grant sandbox roots for an invalid worktree branch")
-        if len(Path(name).parts) > 3:
-            # pack-refs prunes empty namespace directories; allow recreating the first one.
-            namespace = Path(*Path(name).parts[:3])
-            refs = [common / namespace, common / "logs" / namespace]
-        else:
-            ref = common / name
-            log = common / "logs" / name
-            refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
+        # Keep leaf grants even if pack-refs prunes the parent: fail closed, never widen.
+        ref = common / name
+        log = common / "logs" / name
+        refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
     state = [gitdir / name for name in (*WORKTREE_STATE_FILES, *WORKTREE_STATE_DIRS)]
     return [str(p) for p in [*state, common / "objects", *refs]]
 

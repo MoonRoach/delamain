@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
+  and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
+  discovery ignores inherited `GIT_*` selectors. The review brief directs Codex temporary copies into its cwd.
+
 - **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by

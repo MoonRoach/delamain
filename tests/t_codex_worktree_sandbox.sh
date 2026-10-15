@@ -59,7 +59,8 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     common = repo/'.git'
     gitdir = Path(git('rev-parse', '--absolute-git-dir', cwd=wt))
     required = {str(home), str(common/'objects')}
-    branch_roots = {str(common/'refs/heads/nested'), str(common/'logs/refs/heads/nested')}
+    branch_roots = {str(common/p) for p in ('refs/heads/nested/task', 'refs/heads/nested/task.lock',
+                                          'logs/refs/heads/nested/task', 'logs/refs/heads/nested/task.lock')}
     forbidden = {str(gitdir), str(common), str(repo), str(common/'refs/heads'),
                  str(common/'logs/refs/heads'), str(common/'packed-refs'), str(common/'packed-refs.lock')}
     state_files = {'HEAD', 'HEAD.lock', 'ORIG_HEAD', 'ORIG_HEAD.lock', 'index', 'index.lock', 'COMMIT_EDITMSG',
@@ -74,6 +75,29 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
             path=Path(root)
             if path.is_relative_to(gitdir):
                 assert str(path.relative_to(gitdir)) in state_files|state_dirs,root
+    sys.path.insert(0, str(bins))
+    import engines
+    from unittest.mock import patch
+    expected = set(engines.worktree_git_roots(wt))
+    # A namespace grant would include a neighbour even when no explicit neighbour root appears.
+    def granted(path, rs):
+        return any(path == Path(root) or Path(root) in path.parents for root in rs)
+    verify('N1 nested refs grant leaf files without sibling branches or reflogs', lambda: require(
+        branch_roots <= expected and
+        not any(granted(common/p, expected) for p in
+                ('refs/heads/nested/neighbour', 'logs/refs/heads/nested/neighbour')), expected))
+    with patch.dict(os.environ, {'GIT_DIR': str(common), 'GIT_COMMON_DIR': str(common),
+                                 'GIT_WORK_TREE': str(repo), 'GIT_NAMESPACE': 'foreign'}):
+        verify('L3 Git discovery ignores inherited repository selectors', lambda: require(
+            set(engines.worktree_git_roots(wt)) == expected, 'inherited Git environment changed roots'))
+    # Git prunes empty nested ref directories; the recalculated policy must never widen.
+    git('pack-refs', '--all', '--prune', cwd=repo)
+    assert not (common/'refs/heads/nested').exists()
+    verify('N1 packed nested refs stay leaf-only with missing parent', lambda: require(
+        set(engines.worktree_git_roots(wt)) == expected and branch_roots <= expected and
+        not granted(common/'refs/heads/nested/neighbour', expected), 'packed refs widened roots'))
+    # Restore the loose leaf for the spawn/resume controls below.
+    git('update-ref', 'refs/heads/nested/task', git('rev-parse', 'HEAD', cwd=wt), cwd=repo)
     brief = home/'brief.md'
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,

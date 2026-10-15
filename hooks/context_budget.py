@@ -730,7 +730,7 @@ def handle(data, hc, state_dir, key, writable=True):
         """At the ceiling mid-grilling the procedure runs only on the owner's yes, and says so in its commands."""
         if not at_ceiling:
             return text
-        return text.replace("Hand over now", "On the owner's yes, hand over", 1).replace(
+        return text.replace("Hand over now", "On the owner's yes, hand over").replace(
             " succeed --stage ", " succeed --owner-asked --stage ")
 
     policy = [configured_budget(hc, name, hub_stage) for name in BUDGET_KEYS]
@@ -828,6 +828,13 @@ def handle(data, hc, state_dir, key, writable=True):
             successor_engine = hc.setting("AGENT_HUB_SUCCESSOR_ENGINE")
             engine = ap.engines.selected(successor_engine or ("codex" if hook_codex else None), cwd)
             desktop = engine == "codex" and ap.engines.codex_desktop()
+            if engine != "codex":
+                # Keep the shared Claude Remote Control/fallback paragraph authoritative.
+                shared = ap.instruction(hub_stage, model, mode, cwd, due or tokens >= block,
+                                        fmt(block), effort)
+                return (prefix + f"The canonical operation is `hub succeed --stage {hub_stage}`; use the installed "
+                        "command below. " + shared.replace("your own effort could not be read here",
+                                                         "Your own effort could not be read here"))
             if engine == "codex":
                 context = ap.codex_context(sid, path)
                 model = ap.codex_model(None, context, Path(cwd or os.getcwd()))
@@ -943,7 +950,8 @@ def handle(data, hc, state_dir, key, writable=True):
                 return
             diagnostic(hc, data, hub_stage, "gate_denied", reason="handoff_due", phase=phase, request_id=request)
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-                f"Durable handoff is due from the first warning ({fmt(state['due_since_tokens'])} tokens). {plan()}"))
+                (f"Session context is {fmt(tokens)} tokens, at or above {limit_text}. {plan()}" if at_ceiling else
+                 f"Durable handoff is due from the first warning ({fmt(state['due_since_tokens'])} tokens). {plan()}")))
             return
         if mentions(data.get("tool_input"), escape):
             return
@@ -954,6 +962,17 @@ def handle(data, hc, state_dir, key, writable=True):
         return
 
     if due:
+        if at_ceiling and tokens is not None and tokens < warn:
+            # A low grilling ceiling keeps the upstream once-per-bucket note, even on owner prompts.
+            bucket = max(0, (tokens - warn) // step)
+            if bucket <= state.get("bucket", -1):
+                return
+            state.update(bucket=bucket, tokens=tokens)
+            if writable:
+                save_state(state_dir, key, state)
+            diagnostic(hc, data, hub_stage, "instruction_emitted", reason="handoff_due", phase=phase, request_id=request)
+            emit(event, additionalContext=f"Context budget: {fmt(tokens)} tokens now. {plan()}")
+            return
         if tokens is not None and tokens < warn:
             # Re-arm only the informational bucket. The obligation and continuation counters survive.
             state["bucket"] = -1

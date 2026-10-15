@@ -220,6 +220,9 @@ class CodexHooks(unittest.TestCase):
         out = self.hook('context_budget.py', 'Bash', {'command': 'git status'}, transcript_path=str(transcript))
         self.assertTrue(self.denied(out))
         self.assertIn('carry the grilling', out['hookSpecificOutput']['permissionDecisionReason'])
+        self.assertIn('at or above the 90k grilling ceiling', out['hookSpecificOutput']['permissionDecisionReason'])
+        self.hook('context_budget.py', event='UserPromptSubmit', transcript_path=str(transcript))
+        self.assertEqual(self.hook('context_budget.py', event='UserPromptSubmit', transcript_path=str(transcript)), {})
         self.assertEqual(self.stop(transcript), {})
         self.assertFalse((stage / 'auto-handoff.json').exists())
 

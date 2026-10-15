@@ -1176,13 +1176,15 @@ def cli_version(path: str, cwd=None, persist: bool = True) -> Optional[tuple]:
 
 def desktop_cli() -> Optional[tuple]:
     """(version, path) of the newest CLI bundled with Claude Desktop on macOS (the directory name is the version);
-    None when there is none."""
+    None when there is none. Both layouts: <version>/claude.app and <version>/<build hash>/claude.app (Desktop since
+    2.1.29x)."""
     base = Path.home() / "Library/Application Support/Claude/claude-code"
     found = []
-    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
-        v = parse_version(d.parents[3].name)
-        if v:
-            found.append((v, str(d)))
+    for pattern in ("*/claude.app/Contents/MacOS/claude", "*/*/claude.app/Contents/MacOS/claude"):
+        for d in base.glob(pattern):
+            v = parse_version(d.relative_to(base).parts[0])
+            if v and os.access(d, os.X_OK):
+                found.append((v, str(d)))
     return max(found) if found else None
 
 

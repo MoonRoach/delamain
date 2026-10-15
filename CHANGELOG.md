@@ -4,6 +4,12 @@
 
 ## 1.0.13 — 2026-10-15
 
+- **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level
+  deeper, under `claude-code/<version>/<build hash>/claude.app`; the lookup read only `claude-code/<version>/claude.app`,
+  found nothing and started an older `claude` from PATH instead. A user's worker died on it: Homebrew's 2.1.231 answered
+  400 to Opus 5.5, and agent-top showed the error. Both layouts are searched now; the version still comes from the
+  directory under `claude-code`.
+
 - **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
   and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
   discovery ignores inherited `GIT_*` selectors. Spawn/resume restores pruned leaf parents outside the sandbox;

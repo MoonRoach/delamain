@@ -1022,6 +1022,36 @@ $streamed=@(Invoke-DelamainWsl -Arguments $arguments)
                 self.assertEqual(list(Path(scratch).iterdir()),[],"Failed Popen left private request/ack files")
 
     @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_completion_ack_can_remain_open_while_windows_owner_releases_lease(self):
+        # Force the real cross-filesystem interleaving: Windows observes done
+        # while Linux still holds the acknowledgement's descriptor open.
+        transport=(ROOT/'windows/process_transport.ps1').read_text()
+        publish="try: os.write(fd,b'done')"
+        self.assertEqual(transport.count(publish),1)
+        transport=transport.replace(publish,"try:\n            os.write(fd,b'done')\n            time.sleep(.6)")
+        source=r"""
+param($Transport,$Fixture)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Fixture
+$arguments=@('--distribution','Ubuntu','--exec','/bin/true')
+$captured=Invoke-DelamainWsl -Arguments $arguments -Capture
+$streamed=@(Invoke-DelamainWsl -Arguments $arguments)
+if ($captured.ExitCode -ne 0 -or $LASTEXITCODE -ne 0) { throw 'Delayed acknowledgement close changed command status' }
+"""
+        for shell in self.native_shells():
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                directory=Path(scratch)
+                fixture=directory/'delayed-ack.ps1'
+                fixture.write_text(transport,encoding='utf-8-sig')
+                controls=directory/'controls'; controls.mkdir()
+                result=self.run_transport_script(shell,source,fixture,env={**self.env,'TEMP':str(controls),'TMP':str(controls)})
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+                deadline=time.monotonic()+2
+                while list(controls.iterdir()) and time.monotonic()<deadline: time.sleep(.02)
+                self.assertEqual(list(controls.iterdir()),[],"Delayed acknowledgement close retained a leased path")
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
     def test_owned_wsl_normal_unicode_input_exit_codes_and_control_file_cleanup(self):
         source=r"""
 param($Transport)

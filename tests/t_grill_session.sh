@@ -12,7 +12,9 @@ G1=22222222-2222-4222-8222-222222222222
 G2=33333333-3333-4333-8333-333333333333
 LOC=44444444-4444-4444-8444-444444444444      # a Desktop hub: its local_ id …
 LOCCLI=55555555-5555-4555-8555-555555555555   # … and its CLI session
-grill(){ (cd "$O" && "$B/hub" grill "$@"); }
+grill(){ (cd "$O" && CLAUDE_CODE_SESSION_ID=${CLAUDE_CODE_SESSION_ID:-$HUB} "$B/hub" grill "$@"); }
+pendingid(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pending"]["launch"])' "$R/stage-a/grill.json"; }
+bindlaunch(){ CLAUDE_CODE_SESSION_ID=$HUB $B/hub grill bind --stage stage-a --launch "$1" --session "$2" >/dev/null; }
 launchid(){ sed -n 's/^launch: //p' "$1"; }
 statusre(){ python3 -c 'import re,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; sys.exit(0 if re.search(hc.status_pattern(), sys.stdin.read()) else 1)' "$B"; }
 
@@ -89,6 +91,7 @@ CLAUDE_CODE_SESSION_ID=$G2 $B/hub grill join --stage stage-a --session self > /d
 $B/roles --stage stage-a get grill >/dev/null 2>&1; check $? 1 "…nothing registered"
 
 # ---- join: the new session registers as role grill
+bindlaunch "$LB" "$G1"; check $? 0 "bind desktop launch result before join"
 CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill join --stage stage-a --launch $LB --session self > $O/j.out 2>&1; check $? 0 "join: exit 0"
 check "$($B/roles --stage stage-a get grill)" $G1 "join: role grill holds the session's full id"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]["grill"]; assert r["tag"]=="grill" and r["questions"]==[sys.argv[2],sys.argv[3]] and r["brief"].endswith("-brief.md") and r["launched"]=="desktop", r' \
@@ -132,7 +135,7 @@ CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill done --stage stage-a > $O/d2.out 2>&1; c
 
 # ---- done by the hub drops a launch that never joined
 grill --stage stage-a --host desktop > $O/ld.out 2>&1; check $? 0 "a new launch after done"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "the owner went away" > $O/drop.out 2>&1; check $? 0 "done --why drops a pending launch"
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "the owner went away" > $O/drop.out 2>&1; check $? 0 "done --why drops a pending launch"
 python3 -c 'import json,sys; assert "pending" not in json.load(open(sys.argv[1]))' $R/stage-a/grill.json 2>/dev/null || test ! -e $R/stage-a/grill.json
 check $? 0 "…the pending launch is gone"
 grep "pending grilling launch is dropped — the owner went away" "$(journal)" | statusre; check $? 1 "…its journal line wakes nobody"
@@ -142,6 +145,7 @@ CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill join --stage stage-a --launch $(launchid
 grill --stage stage-a --host desktop --also-stage stage-b --questions "$Q2,$Q2,$QB" > $O/lm.out 2>&1; check $? 0 "a launch over two stages"
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["questions"]==[sys.argv[2],sys.argv[3]] and p["stages"]==["stage-a","stage-b"], p' $R/stage-a/grill.json $Q2 $QB
 check $? 0 "--questions: a repeated id counts once; the stages are recorded"
+bindlaunch "$(launchid $O/lm.out)" "$G1"
 CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill join --stage stage-a --launch $(launchid $O/lm.out) --session self >/dev/null 2>&1; check $? 0 "join"
 $B/ask close $QB --answer "b answered" >/dev/null
 HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "the session window was closed" > $O/adm.out 2>&1; check $? 0 "done --why by the hub ends the registered session"
@@ -153,7 +157,7 @@ $B/roles --stage stage-a get grill >/dev/null 2>&1; check $? 1 "…the role is r
 grill --stage stage-a --host desktop --questions "$QB" > /dev/null 2>&1; check $? 0 "a launch over another stage's question only"
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["stages"]==["stage-a","stage-b"], p' $R/stage-a/grill.json
 check $? 0 "…keeps the launching stage in its stages (new questions are recorded there)"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 
 # ---- question selection: --questions, --also-stage
 grill --stage stage-a --host desktop --questions "$D1,$QB" --dry-run > $O/sel.out 2>&1; check $? 0 "--questions: exit 0"
@@ -191,6 +195,7 @@ assert "list_projects" in a["target"]["projectId"] and d["project_root"], d
 PY
 check $? 0 "codex-app: create_thread arguments with the project to look up"
 grep -q "list_projects" $O/c.out && grep -q "once" $O/c.out; check $? 0 "codex-app: the procedure (list_projects, create_thread once)"
+CODEX_THREAD_ID=$G2 $B/hub grill bind --stage stage-a --launch $(launchid $O/c.out) --session $G2 >/dev/null
 CODEX_THREAD_ID=$G2 $B/hub grill join --stage stage-a --launch $(launchid $O/c.out) --session self >/dev/null 2>&1; check $? 0 "codex: the thread joins by CODEX_THREAD_ID"
 python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]["grill"]; assert r["session"]==sys.argv[2] and r["engine"]=="codex" and r["launched"]=="codex-app", r' $R/stage-a/roles.json $G2
 check $? 0 "codex: registered with engine codex"
@@ -199,13 +204,33 @@ CODEX_THREAD_ID=$G2 $B/hub grill done --stage stage-a --summary "x" >/dev/null 2
 # ---- manual (a Codex terminal hub)
 CODEX_THREAD_ID=$G2 grill --stage stage-a > $O/m.out 2>&1; check $? 0 "manual: exit 0"
 grep -q "codex 'You are the grilling session of stage stage-a" $O/m.out; check $? 0 "manual: the command for the owner"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 
 # ---- another Claude host: claude --bg --remote-control through the stand-in CLI
-export CLAUDE_BIN=$T/fake_claude_bg.py FAKE_BG_LOG=$O/bg.log
+# Supply a full sessionId as real `claude agents` does, without changing the shared fake used by other tests.
+cat > "$O/grill-claude" <<'FAKE'
+#!/usr/bin/env python3
+import json, os, subprocess, sys, time
+p = subprocess.run([os.environ["GRILL_BASE_FAKE"]] + sys.argv[1:], capture_output=True, text=True)
+if sys.argv[1:2] == ["agents"] and p.returncode == 0:
+    rows = json.loads(p.stdout)
+    for row in rows:
+        if row.get("id") == "bg-from-list":
+            row["sessionId"] = os.environ["GRILL_FULL_ID"]
+    if os.environ.get("FAKE_BG", "ok") != "noid":
+        rows.append({"kind":"background", "id":"bg-1234abcd", "sessionId":os.environ["GRILL_FULL_ID"],
+                     "name":"stage-a-grill", "startedAt":int(time.time()*1000)})
+    print(json.dumps(rows))
+else:
+    sys.stdout.write(p.stdout)
+sys.stderr.write(p.stderr)
+sys.exit(p.returncode)
+FAKE
+chmod +x "$O/grill-claude"
+export CLAUDE_BIN=$O/grill-claude FAKE_BG_LOG=$O/bg.log GRILL_BASE_FAKE=$T/fake_claude_bg.py GRILL_FULL_ID=$G1
 AGENT_HUB_ENGINE=codex CLAUDE_CODE_SESSION_ID=$HUB grill --stage stage-a --host bg --model opus --effort high > $O/bg.out 2>&1; check $? 0 "bg: exit 0"
 grep -q "https://claude.ai/code/session_01AbC-xyz" $O/bg.out; check $? 0 "bg: prints the Remote Control link for the owner"
-grep -q "bg-1234abcd" $O/bg.out; check $? 0 "bg: names the background session"
+grep -q "$G1" $O/bg.out; check $? 0 "bg: names the background session"
 python3 - $O/bg.log "$R" <<'PY'
 import json, sys
 calls = [json.loads(l) for l in open(sys.argv[1])]
@@ -224,7 +249,7 @@ assert bg["env"]["AGENT_HUB_HOME"] == sys.argv[2], bg["env"]
 assert any(c["argv"][:2] == ["logs", "bg-1234abcd"] for c in calls), calls
 PY
 check $? 0 "bg: --remote-control <stage>-grill, the settings allow ask/hub grill, no idle compaction, the hub's identity stripped"
-python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["host"]=="bg" and p["bg_id"]=="bg-1234abcd" and p["link"].startswith("https://"), p' $R/stage-a/grill.json
+python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["host"]=="bg" and p["bg_id"]==sys.argv[2] and p["link"].startswith("https://"), p' $R/stage-a/grill.json $G1
 check $? 0 "bg: the pending launch keeps the session id and the link"
 AGENT_HUB_ENGINE=codex CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill join --stage stage-a --launch $(launchid $O/bg.out) --session self >/dev/null 2>&1
 check $? 0 "bg: the session joins with AGENT_HUB_ENGINE=codex set"
@@ -233,27 +258,27 @@ check $? 0 "…registered by its Claude id, engine claude"
 CLAUDE_CODE_SESSION_ID=$G1 $B/hub grill done --stage stage-a --summary "x" >/dev/null 2>&1; check $? 0 "…and reports"
 printf 'none\nlate\n' > $O/seq
 FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgn.out 2>&1; check $? 0 "bg printed no id, \`claude agents\` lists it: exit 0"
-grep -q "bg-from-list" $O/bgn.out; check $? 0 "…the session id is taken from \`claude agents\`"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+grep -q "$G1" $O/bgn.out; check $? 0 "…the session id is taken from \`claude agents\`"
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 # a session of the same name listed before this start (a launch replaced a moment ago) is not taken for this one
 printf 'late\nlate\n' > $O/seq
 FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgp.out 2>&1; check $? 1 "bg: only a session listed before the start: not taken, exit 1"
 grep -q "bg-from-list" $O/bgp.out; check $? 1 "…its id is not recorded"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 printf 'fail\nlate\n' > $O/seq
 FAKE_BG=noid FAKE_AGENT_NAME=stage-a-grill FAKE_AGENTS_SEQ=$O/seq grill --stage stage-a --host bg > $O/bgf.out 2>&1; check $? 1 "bg: the list before the start unreadable: no id recovered, exit 1"
 grep -q "bg-from-list" $O/bgf.out; check $? 1 "…no id is recorded"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 FAKE_BG=noid FAKE_AGENTS=none grill --stage stage-a --host bg > $O/bgu.out 2>&1; check $? 1 "bg printed no id and nothing is listed: exit 1"
 grep -q "may still come up" $O/bgu.out; check $? 0 "…says the session may still come up"
 python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p["host"]=="bg" and not p.get("bg_id"), p' $R/stage-a/grill.json
 check $? 0 "…and the launch stays recorded"
 grill --stage stage-a --host bg > /dev/null 2>&1; check $? 2 "…so a second launch is refused, not started beside it"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 FAKE_LOGS=none AGENT_HUB_GRILL_LINK_WAIT_S=0 grill --stage stage-a --host bg > $O/bg2.out 2>&1; check $? 0 "bg without a link yet: exit 0"
 grep -q "claude attach bg-1234abcd" $O/bg2.out; check $? 0 "…and says how to reach it"
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --why "test" >/dev/null 2>&1
+HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 FAKE_BG=untrusted FAKE_TRUSTED=/nowhere grill --stage stage-a --host bg > $O/bg3.out 2>&1; check $? 1 "bg in an untrusted folder: exit 1"
 grep -q "not trusted" $O/bg3.out; check $? 0 "…and says what to do"
 python3 -c 'import json,sys; assert "pending" not in json.load(open(sys.argv[1]))' $R/stage-a/grill.json 2>/dev/null || test ! -e $R/stage-a/grill.json

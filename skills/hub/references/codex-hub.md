@@ -91,7 +91,8 @@ The Codex side of *Grilling in a session of its own* (`owner-and-planning.md`). 
 owner's request to be grilled, in the current turn, is the explicit human authority for this one thread (pass their
 words with `--owner-words`); it grants nothing else. Then, as the app agent: native `list_projects`, take the one saved
 project whose path, normalized to its Git main checkout, is `project_root`, put its projectId into `target`, and call
-native `create_thread` once. An unknown result is not retried — the new thread announces itself with a `grill join`
+native `create_thread` once, then bind its full returned thread id with `hub grill bind --stage <S> --launch <id>
+--session <thread id>`. Join and bind may arrive in either order; only a match registers the role. An unknown result is not retried — the new thread announces itself with a `grill join`
 line in the journal; no matching project: tell the owner and run `hub grill --stage <S> --host manual --again`. In a
 terminal Codex hub `hub grill` prints the command the owner runs in a terminal of their own. Either way the new thread
 joins as role `grill` with its CODEX_THREAD_ID and reports with `@hub GRILLED …`.

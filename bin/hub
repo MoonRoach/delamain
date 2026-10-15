@@ -19,6 +19,7 @@
   hub reviewer [--for CLASS] [--stage stage-a] [--json] [--all]
   hub grill    [open] --stage stage-a [--questions ID,…] [--also-stage S] [--topic T] [--owner-words T]
                [--host auto|desktop|codex-app|bg|manual] [--model M] [--effort E] [--again] [--dry-run]
+  hub grill    bind --stage stage-a --launch ID --session FULL_ID
   hub grill    join --stage stage-a --launch ID --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
@@ -173,7 +174,7 @@ grill launches a separate interactive session that grills the owner over the sta
 in the `ask` register and reports to the hub with one line "@hub GRILLED …" (bin/grill_session.py has the details):
 open (default) writes the brief and launches by host — Claude Desktop: start_session arguments with initiation user_asked
 for the hub to call; Codex app: create_thread arguments; another Claude host: `claude --bg --remote-control` and its link;
-another Codex host: the command for the owner. join registers the new session as role `grill`; done reports and retires it.
+another Codex host: the command for the owner. bind records the full native launch result; join registers the new session as role `grill`; done reports and retires it.
 grilling marks that the stage's hub is grilling the owner (bin/grilling.py): start, run by the hub before the first round
 (in Claude Code the budget hook also marks it when the grilling skill loads), end once the topic's frontier is empty or
 the owner stops it, status to show it. --session: the hub's session (default this one; the owner at a terminal: the

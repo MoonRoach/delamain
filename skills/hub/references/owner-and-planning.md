@@ -61,13 +61,20 @@ journal. The Codex-only delivery rules are in [codex-hub.md](codex-hub.md#talkin
   - Claude in a terminal or a background session: it starts `claude --bg --remote-control <S>-grill` itself; give the
     owner the Remote Control link it prints.
   - Codex: `references/codex-hub.md` (*Grilling session on Codex*).
+  After a native launch returns, run `hub grill bind --stage <S> --launch <id> --session <full returned id>`.
+  The launcher result and the new session's own join must match; either may arrive first. A waiting join cannot grill
+  until registered (repeat join after binding). An unknown result stays pending until verified; never guess an id.
+  Background launches resolve their handle to a full sessionId themselves. Every generated command pins the hub's
+  absolute `AGENT_HUB_HOME`, including in a fresh native session. A successful open clears the calling hub's grilling
+  marker; failed launches and dry runs preserve it. The interactive role is not an autopilot hub and has no automatic
+  successor, so it does not need a hub grilling marker.
   The new session registers as role `grill` (`hub grill join` with the launch id of its brief), grills with the companion skill, records every answer
   in the register (`ask close`, `ask withdraw`, `ask add --by grill`, `ask decided` only when the owner delegates)
   and ends with `hub grill done`, which writes one line `@hub GRILLED <answered, withdrawn, open, new> — <summary>` and
   retires the role. That line wakes your `jwait`; act on the answers (the `ask list --pending` it names, then `ask
   done`). One grilling session per stage: `hub grill` refuses while one is registered or a launch has not joined yet
   (30 min; `--again` replaces a launch that never joined; `hub grill done --stage <S> --why "…"` ends one that went
-  away). A grilling about a new topic the owner raises in the hub stays in the hub, unless the owner says otherwise.
+  away; cancelling a pending launch also needs its matching `--launch <id>`). A grilling about a new topic the owner raises in the hub stays in the hub, unless the owner says otherwise.
 
 ## Planning a stage, in full
 

@@ -15,6 +15,10 @@
   GRILLED <answered, withdrawn, open, new> — <summary>` counted from the register, then the role is retired. `GRILLED`
   is a wake word of `jwait --hub-events`; the hub acts on `ask list --pending`. A grilling about a new topic the owner
   raises in the hub still runs in the hub. The hub skill, its references and the grilling note of the prompt hook say so.
+  Generated commands always carry the absolute hub home. Native launch results bind to the joining session's full
+  identity (in either order); bg handles resolve to full sessionIds. Administrative registration needs a journaled
+  reason; pending cancellation needs its launch id and a reason. Delegation clears the hub's grilling marker so its
+  automatic handoff can proceed.
 
 - **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling
   the owner, and the successor lost the thread of questions and answers. A hub's grilling is now marked when the

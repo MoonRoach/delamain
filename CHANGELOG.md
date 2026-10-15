@@ -7,8 +7,8 @@
   brief outside writable roots. Reviewers receive only their cwd, not home config or other agents' inboxes; wider
   roots are refused. A read-only review role/tag warns that it cannot write its report or journal.
   Linked worktree executors receive individual Git operation-state files/directories, shared objects and their own
-  branch refs/reflogs (or the shared reftable store), pinned on spawn and reused on resume. The private gitdir,
-  commondir/config.worktree pointers, other branches and packed-refs are not granted. The review docs, skill and brief
+  branch refs/reflogs (a namespace directory for nested branches, or the shared reftable store), pinned on spawn and
+  reused on resume. The private gitdir, commondir/config.worktree and packed-refs are not granted. The review docs, skill and brief
   template describe the same boundary; macOS sandbox probes cover report/journal writes and Git operations.
 
 ## 1.0.10 — 2026-10-15

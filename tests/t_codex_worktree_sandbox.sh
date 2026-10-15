@@ -59,18 +59,17 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     common = repo/'.git'
     gitdir = Path(git('rev-parse', '--absolute-git-dir', cwd=wt))
     required = {str(home), str(common/'objects')}
-    branch_roots = {str(common/p) for p in ('refs/heads/nested/task', 'refs/heads/nested/task.lock',
-                                          'logs/refs/heads/nested/task', 'logs/refs/heads/nested/task.lock')}
+    branch_roots = {str(common/'refs/heads/nested'), str(common/'logs/refs/heads/nested')}
     forbidden = {str(gitdir), str(common), str(repo), str(common/'refs/heads'),
                  str(common/'logs/refs/heads'), str(common/'packed-refs'), str(common/'packed-refs.lock')}
     state_files = {'HEAD', 'HEAD.lock', 'ORIG_HEAD', 'ORIG_HEAD.lock', 'index', 'index.lock', 'COMMIT_EDITMSG',
-                   'MERGE_HEAD', 'MERGE_HEAD.lock', 'MERGE_MSG', 'MERGE_MODE', 'MERGE_RR', 'MERGE_AUTOSTASH',
+                   'MERGE_HEAD', 'MERGE_HEAD.lock', 'MERGE_MSG', 'MERGE_MSG.lock', 'MERGE_MODE', 'MERGE_RR', 'MERGE_AUTOSTASH',
                    'AUTO_MERGE', 'AUTO_MERGE.lock', 'REBASE_HEAD', 'REBASE_HEAD.lock',
                    'CHERRY_PICK_HEAD', 'CHERRY_PICK_HEAD.lock', 'REVERT_HEAD', 'REVERT_HEAD.lock', 'SQUASH_MSG',
                    'FETCH_HEAD', 'FETCH_HEAD.lock'}
     state_dirs = {'logs', 'rebase-merge', 'rebase-apply', 'sequencer', 'refs/rewritten', 'refs/worktree'}
     def safe_gitdir(rs):
-        assert str(gitdir/'HEAD') in rs and str(gitdir/'index.lock') in rs,rs
+        assert {str(gitdir/p) for p in ('HEAD','index.lock','MERGE_MSG.lock')}<=rs,rs
         for root in rs:
             path=Path(root)
             if path.is_relative_to(gitdir):

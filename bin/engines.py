@@ -156,7 +156,7 @@ def is_review_role(meta):
 # Paths are relative to the linked worktree's private Git directory, never its config/pointers.
 WORKTREE_STATE_FILES = (
     "HEAD", "HEAD.lock", "ORIG_HEAD", "ORIG_HEAD.lock", "index", "index.lock", "COMMIT_EDITMSG",
-    "MERGE_HEAD", "MERGE_HEAD.lock", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH",
+    "MERGE_HEAD", "MERGE_HEAD.lock", "MERGE_MSG", "MERGE_MSG.lock", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH",
     "AUTO_MERGE", "AUTO_MERGE.lock", "REBASE_HEAD", "REBASE_HEAD.lock",
     "CHERRY_PICK_HEAD", "CHERRY_PICK_HEAD.lock", "REVERT_HEAD", "REVERT_HEAD.lock", "SQUASH_MSG",
     "FETCH_HEAD", "FETCH_HEAD.lock",
@@ -188,9 +188,14 @@ def worktree_git_roots(cwd):
         name = branch.stdout.strip()
         if not name.startswith("refs/heads/") or any(p in (".", "..") for p in Path(name).parts):
             raise hc.UsageError("cannot grant sandbox roots for an invalid worktree branch")
-        ref = common / name
-        log = common / "logs" / name
-        refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
+        if len(Path(name).parts) > 3:
+            # pack-refs prunes empty namespace directories; allow recreating the first one.
+            namespace = Path(*Path(name).parts[:3])
+            refs = [common / namespace, common / "logs" / namespace]
+        else:
+            ref = common / name
+            log = common / "logs" / name
+            refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
     state = [gitdir / name for name in (*WORKTREE_STATE_FILES, *WORKTREE_STATE_DIRS)]
     return [str(p) for p in [*state, common / "objects", *refs]]
 

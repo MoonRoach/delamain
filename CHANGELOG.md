@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Codex reviewers can write reports; sandboxed worktree executors can commit.** `hub reviewer` recommends
+  `workspace-write` with cwd in the stage's `coordinator/work` under the hub home, and the repository path in the
+  brief outside writable roots. Reviewers receive only their cwd, not home config or other agents' inboxes; wider
+  roots are refused. A read-only review role/tag warns that it cannot write its report or journal.
+  Linked worktree executors receive individual Git commit/merge state files, their logs, shared objects and their own
+  branch refs/reflogs (a namespace directory for nested branches, or the shared reftable store), pinned on spawn and
+  reused on resume. The private gitdir, commondir/config.worktree and packed-refs are not granted. The review docs, skill and brief
+  template describe the same boundary; macOS sandbox probes cover report/journal writes and Git operations.
+  Rebase state roots are excluded: sandboxed worktree rebase is unsupported and can move HEAD before failing with
+  `--apply`. Spawn and the worker brief warn about this; use a merge commit from the prepared base ref instead.
+
 - **`hub reviewer --author` chooses the reviewer by who wrote the change, not by the hub's host.** `--author` takes a
   role of the stage (engine and model are read from the agent's `meta.json`) or `claude|codex[/model]`. Every
   reviewer `check` gets `AGENT_HUB_REVIEW_AUTHOR_ENGINE` and `AGENT_HUB_REVIEW_AUTHOR_MODEL` (removed from its
@@ -10,6 +21,7 @@
   (`author: null`, `assumed_author_engine`). Before, a Claude hub gave a Codex-written change a Codex reviewer, and a
   Codex hub, which has no fresh Claude limit observation, gave it Codex Astra. The hub skill's *Reviews* tells the hub to
   pass `--author`. See [Reviewers](docs/reviewers.md#the-author-of-the-change).
+
 - **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
   replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
   more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%

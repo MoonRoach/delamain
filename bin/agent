@@ -648,6 +648,9 @@ def cmd_spawn(a) -> int:
                 raise hc.UsageError("--permission-mode and --sandbox-policy type disagree")
         else:
             sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
+        if sandbox == "workspace-write" and engines.is_review_role({"role": a.role, "tag": a.tag}):
+            engines.workspace_write_roots({"role": a.role, "tag": a.tag, "cwd": str(cwd),
+                                           "sandbox_policy": policy})
         engines.hook_args(cwd)
     elif a.sandbox or a.sandbox_policy:
         raise hc.UsageError("--sandbox and --sandbox-policy are only supported by the Codex engine")
@@ -714,13 +717,22 @@ def cmd_spawn(a) -> int:
     if reason:
         meta["reason"] = reason
     if engine == "codex":
+        if sandbox == "read-only" and is_review_role(meta):
+            hc.warn("Codex read-only reviewer cannot write its report or journal; "
+                    "use workspace-write with --cwd in the hub home")
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
+        if sandbox == "workspace-write" and not is_review_role(meta):
+            meta["sandbox_git_roots"] = engines.worktree_git_roots(cwd)
+            if meta["sandbox_git_roots"]:
+                hc.warn(engines.WORKTREE_SANDBOX_NOTE)
         if policy:
             meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
+    if meta.get("sandbox_git_roots"):
+        prompt += "\n" + engines.WORKTREE_SANDBOX_NOTE + "\n"
     save_meta(stage, a.role, meta)
     try:
         pid = launch(meta, prompt, resume=False)
@@ -932,7 +944,7 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
                 exit_marker(stage, fresh).unlink(missing_ok=True)  # not written: the next observer may try
                 raise
     except OSError:
-        # A read-only sandbox (a reviewer running `agent status`): no lock file, marker or journal line can be written. The
+        # A read-only sandbox (an agent running `agent status`): no lock file, marker or journal line can be written. The
         # observation is skipped; whatever the caller prints (a status line) is unaffected.
         return None
 
@@ -1183,13 +1195,10 @@ def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
     return False
 
 
-REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE)
-
-
 def is_review_role(meta: dict) -> bool:
     """A review role by its name or tag: `review-pr34`, `desktop-review`, `reviewer2` (the plugin's own reviewers are
-    `review-<name>`), not `preview` or `reviewfix`. Such an agent often cannot journal at all (a read-only sandbox)."""
-    return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
+    `review-<name>`), not `preview` or `reviewfix`. Legacy read-only reviewers cannot journal their verdict."""
+    return engines.is_review_role(meta)
 
 
 def cmd_exit_note(a) -> int:

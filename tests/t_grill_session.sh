@@ -322,16 +322,43 @@ check $? 0 "trusted calling worktree: launches there"
 checkcwd "$OTHER" "[\"$OTHER\"]" "trusted cwd unchanged, no second launch"
 clearlaunch
 : > "$O/bg.log"
-FAKE_BG=untrusted FAKE_TRUSTED="$OTHER" fromcwd "$R" > "$O/trust-other.out" 2>&1
-check $? 0 "untrusted registered worktree: finds another trusted checkout of this project"
-python3 - "$R/stage-a/grill.json" "$OTHER" <<'PYOTHER'
-import json, os, sys
-assert json.load(open(sys.argv[1]))["pending"]["cwd"] == os.path.realpath(sys.argv[2])
-PYOTHER
-check $? 0 "other trusted worktree recorded"
+FAKE_BG=untrusted FAKE_TRUSTED="$REPO" fromcwd "$R" > "$O/trust-main.out" 2>&1
+check $? 0 "untrusted registered worktree: falls back to the main checkout"
+checkcwd "$REPO" "[\"$R\",\"$WT\",\"$REPO\"]" "only registered worktree and main checkout tried"
 clearlaunch
+: > "$O/bg.log"
+FAKE_BG=untrusted FAKE_TRUSTED="$OTHER" fromcwd "$R" > "$O/trust-other.out" 2>&1
+check $? 1 "extra trusted agent worktree is never selected"
+test ! -e "$R/stage-a/grill.json"; check $? 0 "extra trusted worktree: no pending launch"
+python3 - "$O/bg.log" "$O/trust-other.out" "$R" "$WT" "$REPO" <<'PYTRIED'
+import json, os, sys
+expected = [os.path.realpath(p) for p in sys.argv[3:]]
+calls = [r["cwd"] for r in map(json.loads, open(sys.argv[1])) if "--bg" in r["argv"]]
+assert calls == expected, calls
+message = open(sys.argv[2]).read()
+assert all(p in message for p in expected), message
+assert f"run `claude` in {expected[1]} once" in message, message
+PYTRIED
+check $? 0 "failure lists every attempted cwd and recommends trusting registered worktree"
+# Without a registered worktree the guidance points to the main checkout.
+python3 - "$R/stage-a/roles.json" <<'PYUNREGISTER'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["roles"]["hub"].pop("worktree")
+open(p, "w").write(json.dumps(d))
+PYUNREGISTER
+: > "$O/bg.log"
 FAKE_BG=untrusted FAKE_TRUSTED=/nowhere fromcwd "$R" > "$O/trust-none.out" 2>&1
 check $? 1 "no trusted checkout: fails with guidance"
+python3 - "$O/bg.log" "$O/trust-none.out" "$R" "$REPO" <<'PYNONE'
+import json, os, sys
+expected = [os.path.realpath(p) for p in sys.argv[3:]]
+calls = [r["cwd"] for r in map(json.loads, open(sys.argv[1])) if "--bg" in r["argv"]]
+assert calls == expected, calls
+message = open(sys.argv[2]).read()
+assert all(p in message for p in expected), message
+assert f"run `claude` in {expected[1]} once" in message, message
+PYNONE
+check $? 0 "no registered worktree: lists attempts and recommends trusting main checkout"
 test ! -e "$R/stage-a/grill.json"; check $? 0 "all refused: no pending launch"
 
 exit $fail

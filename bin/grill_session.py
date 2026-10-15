@@ -397,15 +397,12 @@ def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
 
 
 def fallback_cwds(stage: str, original: Path) -> list:
-    """Existing checkouts of this stage's project, registered hub first. The CLI decides their trust."""
+    """Only the hub's registered worktree and the project's main checkout. The CLI decides trust."""
     registered = hc.registered_worktree(stage)
     repo = hc.stage_project(stage)
     candidates = [registered] if registered else []
     if repo:
-        result = hc._git(repo, "worktree", "list", "--porcelain", "-z")
-        if result is not None and result.returncode == 0:
-            candidates += [Path(field[len("worktree "):]) for field in result.stdout.split("\0")
-                           if field.startswith("worktree ")]
+        candidates.append(repo)
     seen = {original.resolve()}
     out = []
     for path in candidates:
@@ -484,17 +481,23 @@ def cmd_open(a) -> int:
         if host == "bg":
             try:
                 alternatives = None
+                tried = []
+                trust_cwd = cwd
                 while True:
                     try:
                         bg_id, link = start_bg(cli.path, argv, cwd, (f"{stage}-{ROLE}", title_text(stage)))
                         break
                     except Untrusted:
                         # Retry only a definite trust refusal, never a timeout or an uncertain launch.
+                        tried.append(str(cwd))
                         if alternatives is None:
                             alternatives = iter(fallback_cwds(stage, cwd))
+                            trust_cwd = hc.registered_worktree(stage) or hc.stage_project(stage) or cwd
                         next_cwd = next(alternatives, None)
                         if next_cwd is None:
-                            raise
+                            raise Untrusted(f"Workspace not trusted; tried: {', '.join(tried)} — run `claude` in "
+                                            f"{trust_cwd.resolve()} once and accept the trust prompt, then "
+                                            "`hub grill` again") from None
                         cwd = next_cwd
                         argv = bg_argv(stage, prompt, cwd, a.model, a.effort)
                         pend["cwd"] = str(cwd)

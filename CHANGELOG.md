@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.13 — 2026-10-15
+
 - **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level
   deeper, under `claude-code/<version>/<build hash>/claude.app`; the lookup read only `claude-code/<version>/claude.app`,
   found nothing and started an older `claude` from PATH instead. A user's worker died on it: Homebrew's 2.1.231 answered

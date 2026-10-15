@@ -1169,6 +1169,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             data = load_state(stage)
             if (data.get("pending") or {}) != existing:
                 raise hc.Failure("desktop request changed before retry; inspect it again")
+            existing = data["pending"]
             if existing.get("taken_over"):
                 raise hc.Failure("desktop successor already took over")
             if not again:

@@ -174,6 +174,48 @@ setup; skill mattpocock-skills:grilling > /dev/null
 CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --owner-asked > $R/t4.out 2>&1; check $? 0 "takeover: \`hub succeed --owner-asked\` starts a successor mid-grilling"
 CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/t5.out 2>&1; check "$?:$($B/roles --stage stage-a get hub)" "0:$HUB2" "takeover: …and its automatic takeover goes ahead"
 
+# A Desktop request made before grilling must persist permission when explicitly retried by the owner.
+setup
+python3 - "$B" "$H" "$W" "$HUB1" "$HUB2" > $R/desktop-retry.out 2>&1 <<'PY'
+import json, os, pathlib, subprocess, sys
+bin_dir, handoff, cwd = map(pathlib.Path, sys.argv[1:4])
+old, successor = sys.argv[4:]
+sys.path.insert(0, str(bin_dir))
+import autopilot as ap
+env = dict(os.environ, AGENT_HUB_ENGINE='codex', CODEX_THREAD_ID=old,
+           CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop', CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
+for key in ('AGENT_ROLE', 'CLAUDE_CODE_SESSION_ID', 'AGENT_SESSION_ID'):
+    env.pop(key, None)
+os.environ.clear(); os.environ.update(env)
+assert ap.prepare_desktop('stage-a', 1, 2, handoff, cwd, None, None,
+                          {'type': 'danger-full-access'}, 'never', None, False) == 0
+request = ap.load_state('stage-a')['pending']['request_id']
+def hub(*args, session=old):
+    return subprocess.run([str(bin_dir/'hub'), *map(str, args)], cwd=cwd,
+                          env=dict(env, CODEX_THREAD_ID=session), capture_output=True, text=True)
+def succeeds(result):
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+succeeds(hub('grilling', 'start', '--stage', 'stage-a'))
+succeeds(hub('succeed', '--stage', 'stage-a', '--handoff', handoff, '--cwd', cwd,
+             '--engine', 'codex', '--surface', 'desktop', '--again', '--owner-asked'))
+pending = ap.load_state('stage-a')['pending']
+assert pending['request_id'] == request and ap.load_state('stage-a')['chain'] == 1
+assert pending.get('grilling_owner_asked'), 'successful Desktop retry did not persist owner permission'
+succeeds(hub('desktop-request', '--stage', 'stage-a', '--request', request,
+             '--project-id', 'fixture-project', '--project-path', cwd))
+rollouts = pathlib.Path(env['CODEX_HOME'])/'sessions'; rollouts.mkdir(exist_ok=True)
+(rollouts/f'rollout-{successor}.jsonl').write_text(
+    json.dumps({'type': 'session_meta', 'payload': {'id': successor}}) + '\n' +
+    json.dumps({'type': 'turn_context', 'payload': {'model': 'gpt-6.1-sol', 'effort': 'medium',
+        'approval_policy': 'never', 'sandbox_policy': {'type': 'danger-full-access'}}}) + '\n')
+succeeds(hub('takeover', '--stage', 'stage-a', '--session', 'self', '--auto-handoff',
+             '--handoff', handoff, '--desktop-request', request, session=successor))
+assert ap.hc.roles_load('stage-a')['roles']['hub']['session'] == successor
+assert ap.load_state('stage-a')['pending']['taken_over']
+PY
+desktop_rc=$?; if [ "$desktop_rc" != 0 ]; then cat $R/desktop-retry.out; fi
+check "$desktop_rc" 0 "Desktop retry: --again --owner-asked persists permission in the same request and allows its takeover"
+
 # ================================================================== hub succeed / hub handoff
 # A refused request for a newer handoff must never release the already waiting successor with the old one.
 setup

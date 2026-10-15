@@ -111,7 +111,7 @@ agent spawn --engine claude --role builder --cwd ~/code/webapp --model sonnet --
 #    above the default needs --reason "…" (AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_*)
 
 # 3. watch it
-agent status builder                          # alive?, last event, turns, last line, worktree
+agent status builder                          # engine/model, alive?, last event, turns, last line, worktree
 agent-top                                     # live console; agent-top --once for a text snapshot
 
 # 4. message it — alive: into its inbox; finished: the session resumes with the message

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
+  (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
+  needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by
+  @Cartograf666 in #76.
+
 ## 1.0.12 — 2026-10-15
 
 - **The lock hook no longer stalls on long heredoc-like input with no closing delimiter.** `board_locks` now uses

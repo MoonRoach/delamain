@@ -1032,7 +1032,8 @@ def status_line(stage: str, role: str) -> str:
                   f"agent send {role} [text] resumes with them")
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
     wt = meta.get("worktree")
-    return (f"{role} [{meta['tag']}] {model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
+    engine = meta.get("engine", "claude")
+    return (f"{role} [{meta['tag']}] {engine}/{model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
             f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
             + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 

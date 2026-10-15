@@ -26,7 +26,9 @@ class CodexHooks(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        # macOS temporary roots can use /var, an alias of /private/var. Real
+        # lifecycle producers require a canonical hub root with no symlink ancestors.
+        self.home = Path(self.temp.name).resolve()
         self.cwd = self.home / 'repo'
         self.cwd.mkdir()
         (self.cwd / '.git').mkdir()
@@ -840,9 +842,18 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
         for command in queries[:4]:
             out = self.hook('context_budget.py', 'Bash', {'command': command}, transcript_path=str(transcript))
             self.assertTrue(self.denied(out), command)
-        # Absolute trusted commands remain available despite the shadowing PATH.
-        for command in ('/bin/cat /h/HANDOFF-a.md', '/usr/bin/cat /h/HANDOFF-a.md',
-                        f'{shlex.quote(str(ROOT / "bin/ask"))} list --stage stage-a',
+        # Only installed system cat paths remain available despite the shadowing
+        # PATH: macOS has /bin/cat, while Linux also commonly has /usr/bin/cat.
+        for executable in ('/bin/cat', '/usr/bin/cat'):
+            command = f'{executable} /h/HANDOFF-a.md'
+            out = self.hook('context_budget.py', 'Bash', {'command': command}, transcript_path=str(transcript))
+            self.assertEqual(self.denied(out), not os.access(executable, os.X_OK), command)
+        missing = self.cwd / 'missing' / 'cat'
+        self.assertFalse(missing.exists())
+        command = f'{shlex.quote(str(missing))} /h/HANDOFF-a.md'
+        self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': command},
+                                             transcript_path=str(transcript))), command)
+        for command in (f'{shlex.quote(str(ROOT / "bin/ask"))} list --stage stage-a',
                         f'{shlex.quote(str(ROOT / "bin/hub"))} effort --json'):
             out = self.hook('context_budget.py', 'Bash', {'command': command}, transcript_path=str(transcript))
             self.assertFalse(self.denied(out), command)

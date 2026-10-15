@@ -27,7 +27,10 @@ class NoCompactionTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.hub = self.home / 'hub'
         self.hub.mkdir()
-        self.env = {'PATH': os.defpath, 'HOME': str(self.home),
+        # The isolated PATH can omit CI's Python (notably setup-python on macOS).
+        # Keep the real registered command and bind its supported runtime override.
+        self.env = {'PATH': os.defpath, 'DELAMAIN_PYTHON': sys.executable,
+                    'HOME': str(self.home),
                     'AGENT_HUB_HOME': str(self.hub), 'PLUGIN_ROOT': str(ROOT)}
         self.config = json.loads((ROOT / 'hooks/codex-hooks.json').read_text())
 

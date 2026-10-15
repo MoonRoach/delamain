@@ -71,8 +71,10 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    or you leave stages running while you are away; off otherwise.
    Codex app wake requires a reachable CLI runtime or a separately configured app-native heartbeat; the native
    automation consumer may use model calls. `watchdog install` alone does not install that native consumer.
-10. MCP servers of headless agents — `AGENT_HUB_SPAWN_MCP` in `config.json`: `inherit` (the default) or `none`?
-   *Recommended:* `inherit` if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json`, else `none`.
+10. MCP servers of headless agents — `AGENT_HUB_SPAWN_MCP` in `config.json`: the default is `none` (no server); do the
+   project's agents need MCP servers (a browser, docs, GitLab or DB server), so that `inherit` is the project's default?
+   *Recommended:* `inherit` if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json` and its
+   agents use them, else leave the default `none`. A single task can still ask for servers with `agent spawn --mcp`.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or
@@ -102,7 +104,8 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
 - if `hub home` showed the legacy `~/.claude/agent-hub`, say so and mention `hub home migrate` (a dry run first, then
   `--apply`).
 
-For question 10, add `"AGENT_HUB_SPAWN_MCP": "none"` to the repository's `.agent-hub/config.json`, not the hub home's.
+For question 10, when the answer is yes, add `"AGENT_HUB_SPAWN_MCP": "inherit"` to the repository's `.agent-hub/config.json`,
+not the hub home's; when it is no, write nothing (`none` is the default).
 
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.

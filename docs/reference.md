@@ -205,14 +205,17 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
   with `claude --version` (5 s at most; the line `<version> (Claude Code)`) and remembered by path, size and modification
   time in `<hub home>/.state/cli-version/`. If you must hold a model, pin it with
   `AGENT_HUB_MODEL_MAP`.
-- **An agent loads every MCP server unless told otherwise.** A Claude agent inherits the servers of your config, your
-  enabled plugins and your claude.ai connectors, as an interactive session does; their tool names, instructions and
-  "needs authentication" notes sit in every turn's context (about 3.5k tokens on one machine with a dozen servers,
-  mostly unauthenticated, and about a second of startup). `agent spawn --mcp none` starts the agent with no MCP server
-  (`--strict-mcp-config`), `--mcp FILE[,FILE]` with only the servers of those MCP config files (`{"mcpServers": {…}}`,
-  the format of `claude --mcp-config`); `AGENT_HUB_SPAWN_MCP` sets the default. The choice is kept for the agent's
-  resumes. `none` drops the servers of the project's own `.mcp.json` too: a repository whose agents need them sets
-  `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. Codex has no switch for its plugins' servers: the flag is refused there and the setting does not apply.
+- **A Claude agent loads no MCP server unless the task needs one.** An interactive session inherits the servers of
+  your config, your enabled plugins and your claude.ai connectors; their tool names, instructions and "needs
+  authentication" notes sit in every turn's context (about 3.5k tokens on one machine with a dozen servers, mostly
+  unauthenticated, and about a second of startup). `agent spawn` starts the agent with no MCP server by default
+  (`--strict-mcp-config`); `--mcp inherit` gives it the servers of your config, plugins and connectors (the behaviour
+  before 1.0.10), `--mcp FILE[,FILE]` only the servers of those MCP config files (`{"mcpServers": {…}}`, the format of
+  `claude --mcp-config`); `AGENT_HUB_SPAWN_MCP` sets the default. The choice is kept for the agent's resumes. `none`
+  drops the servers of the project's own `.mcp.json` too: a repository whose agents need them sets `inherit` in its
+  `.agent-hub/config.json`, which wins over a hub home's `none`. The hub chooses per task (browser checks, docs lookup,
+  a GitLab or DB server need one). Codex has no switch for its plugins' servers: the flag is refused there (except
+  `--mcp inherit`) and the setting does not apply.
 - **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
   agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
 
@@ -513,7 +516,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_CODEX_DEFAULT_MODEL` | CLI configured model | Optional Codex model pin when spawn omits `--model`. |
 | `AGENT_HUB_CODEX_MODEL_MAP` | none | Explicit Codex model aliases; Claude aliases are not translated automatically. |
 | `AGENT_HUB_CODEX_HOOK_TRUST` | `bypass` | Detached Codex hook trust policy: bypass runs all enabled hooks without persisted review; `reviewed` requires Codex trust. |
-| `AGENT_HUB_SPAWN_MCP` | `inherit` | MCP servers of a Claude agent without `agent spawn --mcp`: `inherit` (your config, enabled plugins and claude.ai connectors), `none` (no server: `--strict-mcp-config`), or absolute paths of MCP config files, comma-separated (only their servers: `--strict-mcp-config --mcp-config …`). A repository may set `inherit` or `none` only (in its `.agent-hub/config.json`, or in a hub home inside it: `AGENT_HUB_HOME` `project`) — a file's servers are commands the CLI would start without the approval a project's `.mcp.json` needs. `none` and files drop the project's own `.mcp.json` servers too; a repository that needs them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice; a headless autopilot successor always inherits; Codex agents ignore it. |
+| `AGENT_HUB_SPAWN_MCP` | `none` | MCP servers of a Claude agent without `agent spawn --mcp`: `none` (the default: no server, `--strict-mcp-config`), `inherit` (your config, enabled plugins and claude.ai connectors; the behaviour before 1.0.10), or absolute paths of MCP config files, comma-separated (only their servers: `--strict-mcp-config --mcp-config …`). A repository may set `inherit` or `none` only (in its `.agent-hub/config.json`, or in a hub home inside it: `AGENT_HUB_HOME` `project`) — a file's servers are commands the CLI would start without the approval a project's `.mcp.json` needs. `none` and files drop the project's own `.mcp.json` servers too; a repository that needs them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice; a headless autopilot successor always inherits; Codex agents ignore it. |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | the git repository you run in (a worktree: its main repository), else `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes; `*` (every repository) only outside a git checkout or with an explicit `--repo '*'`. The name is the checkout directory's; when it differs from the remote's (`gh … -R owner/name` is matched by the name it gives), set the variable or pass `--repo`. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub start` and `hub takeover` take the hub repository's main-merge when it is free (absent or expired), and `hub takeover` also when an earlier hub of the same stage holds it, as if `--take-main-merge` were given. A lock held by anyone else (another stage's hub, a steward) is left alone with the hint to use `--take-main-merge`, whatever this says; so is any held lock on `hub start`. The explicit flag takes it from anyone and prints an `ATTENTION` line with the holder's stage and the age of its latest journal line. Without the setting, a free main-merge of a configured hub repository is reported in the digest. |

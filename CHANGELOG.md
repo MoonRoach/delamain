@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.9 — 2026-10-15
+
 - **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling
   the owner, and the successor lost the thread of questions and answers. A hub's grilling is now marked when the
   grilling skill loads (a Skill call in Claude Code, a read of its `SKILL.md` in Codex, a prompt invoking it;

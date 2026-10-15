@@ -6,7 +6,7 @@
   `workspace-write` with cwd in the stage's `coordinator/work` under the hub home, and the repository path in the
   brief, outside writable roots. A Codex review role/tag spawned with `read-only` warns that it cannot write its
   report or journal. Workspace-write workers in linked Git worktrees also receive write access to their own Git
-  directory, shared objects and branch refs/reflogs (or reftable), on spawn and resume, without granting the entire
+  directory, shared objects and branch refs/reflogs plus the packed-refs file and lock (or reftable), on spawn and resume, without granting the entire
   common Git directory. The review guide, launch skill and review brief template describe the same boundary.
 >>>>>>> 0fecb0d (Разрешить отчёты Codex-ревьюеров и коммиты в sandbox worktree)
 

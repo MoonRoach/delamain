@@ -47,7 +47,8 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     common = repo/'.git'
     gitdir = Path(git('rev-parse', '--absolute-git-dir', cwd=wt))
     expected = {str(home), str(gitdir), str(common/'objects'),
-                str(common/'refs/heads'), str(common/'logs/refs/heads')}
+                str(common/'refs/heads'), str(common/'logs/refs/heads'),
+                str(common/'packed-refs'), str(common/'packed-refs.lock')}
     brief = home/'brief.md'
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,
@@ -67,6 +68,23 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
         row = json.loads((cwd/'codex-argv.jsonl').read_text().splitlines()[-1])
         assert roots(row) == [str(home)], roots(row)
     print('PASS ordinary checkout and non-repository cwd do not gain Git roots')
+    # Exercise the alternative backend where Git supports it (older CI Git may not).
+    rt, rwt = base/'reftable-main', base/'reftable-worktree'
+    init = subprocess.run(['git', 'init', '--ref-format=reftable', str(rt)], capture_output=True, text=True)
+    if init.returncode == 0:
+        git('config', 'user.name', 'Sandbox Test', cwd=rt)
+        git('config', 'user.email', 'sandbox@example.invalid', cwd=rt)
+        git('commit', '--allow-empty', '-m', 'initial', cwd=rt)
+        git('worktree', 'add', '-b', 'rt-task', rwt, cwd=rt)
+        nested = rwt/'nested'
+        nested.mkdir()
+        spawn('reftable', nested, '--sandbox', 'workspace-write')
+        row = json.loads((nested/'codex-argv.jsonl').read_text().splitlines()[-1])
+        assert set(roots(row)) == {str(home), str(rt/'.git/objects'), str(rt/'.git/reftable'),
+                                  git('rev-parse', '--absolute-git-dir', cwd=rwt)}, roots(row)
+        print('PASS reftable worktree from nested cwd uses only its own metadata, objects and ref store')
+    else:
+        print('SKIP reftable backend is unavailable in this Git')
     r = spawn('review-readonly', wt, '--sandbox', 'read-only')
     assert r.stderr.count('cannot write its report or journal') == 1, r.stderr
     assert 'use workspace-write with --cwd in the hub home' in r.stderr, r.stderr

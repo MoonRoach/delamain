@@ -168,7 +168,8 @@ def worktree_git_roots(cwd):
         return []
     # Reftable stores refs and reflogs together; the files backend keeps them apart.
     refs = [common / "reftable"] if (common / "reftable").is_dir() else [
-        common / "refs" / "heads", common / "logs" / "refs" / "heads"]
+        common / "refs" / "heads", common / "logs" / "refs" / "heads",
+        common / "packed-refs", common / "packed-refs.lock"]
     return [str(p) for p in [gitdir, common / "objects", *refs]]
 
 

@@ -43,8 +43,8 @@ DEFAULT_CEILING = 900_000
 CEILING_SHARE = 0.95
 SERVICE_TAG = "autopilot"  # the tag of the plugin's own journal lines: wakes no `jwait --tag hub`
 # a command that reads the file (a reader at the head of a shell segment), not one that only names it (ls, test, git)
-SKILL_FILE_RE = re.compile(r"(?:^|[;&|\n(]\s*)(?:cat|sed|head|tail|nl|less|more|bat|awk|grep|rg)\b[^;&|\n]*?"
-                           r"skills/([^/\s'\"`]+)/SKILL\.md")
+SKILL_FILE_RE = re.compile(r"(?:^|[;&|\n(])\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?(?:cat|sed|head|tail|nl|less|more|bat)"
+                           r"\s[^;&|\n]*?skills/([^/\s'\"`]+)/SKILL\.md")
 PROMPT_SKILL_RE = re.compile(r"^\s*/([\w.:-]+)|(?:^|\s)\$([\w.:-]+)")
 SID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,120}")
 
@@ -205,6 +205,15 @@ def active(sid: str) -> Optional[dict]:
     data = _load(sid) if sid else None
     if data is None:
         return None
+    idle = time.time() - float(data.get("touched") or 0)
+    if idle >= stale_seconds():  # first: whatever the registry says, a mark past its bound lapses
+        try:
+            _path(sid).unlink()
+        except OSError:
+            pass
+        _journal(data["stage"], f"grilling marker of hub session {sid[:8]} lapsed: the owner has not spoken for "
+                                f"{int(idle // 60)} min (AGENT_HUB_GRILLING_STALE_MIN) — automatic handoffs resume")
+        return None
     ids = hub_sessions(data["stage"])
     if ids is None:  # the registry cannot be read now: unknown is not a takeover, the mark keeps holding
         return data
@@ -213,15 +222,6 @@ def active(sid: str) -> Optional[dict]:
             _path(sid).unlink()
         except OSError:
             pass
-        return None
-    idle = time.time() - float(data.get("touched") or 0)
-    if idle >= stale_seconds():
-        try:
-            _path(sid).unlink()
-        except OSError:
-            pass
-        _journal(data["stage"], f"grilling marker of hub session {sid[:8]} lapsed: the owner has not spoken for "
-                                f"{int(idle // 60)} min (AGENT_HUB_GRILLING_STALE_MIN) — automatic handoffs resume")
         return None
     return data
 

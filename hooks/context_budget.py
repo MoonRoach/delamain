@@ -125,10 +125,10 @@ def observe_grilling(gr, ap, event: str, data: dict, sid: str) -> None:
             gr.start(stage, sid, f"{skill}, {source}")
 
 
-def handover_command(command) -> bool:
+def handover_command(command, also=()) -> bool:
     """True when every command of the Bash line is `hub handoff`, `hub succeed`, `hub grilling`, `hub desktop-*`, `jlog` or `jwait` (a leading VAR=value
     and redirections allowed). Anything the hook cannot read with certainty — a substitution, a subshell, unbalanced
-    quotes — is not a handover command."""
+    quotes — is not a handover command. `also`: more command names that pass (`ask` at a grilling's ceiling)."""
     if not isinstance(command, str) or not command.strip() or "$(" in command or "`" in command:
         return False
     for line in command.splitlines():
@@ -162,7 +162,7 @@ def handover_command(command) -> bool:
             if not seg:
                 continue
             name = os.path.basename(seg[0])
-            if not (name in ("jlog", "jwait") or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed", "grilling", "desktop-request", "desktop-bind", "desktop-fail", "desktop-status"))):
+            if not (name in ("jlog", "jwait", *also) or (name == "hub" and len(seg) > 1 and seg[1] in ("handoff", "succeed", "grilling", "desktop-request", "desktop-bind", "desktop-fail", "desktop-status"))):
                 return False
     return True
 
@@ -419,6 +419,13 @@ def main() -> None:
              if at_ceiling else "")
     holding = bool(grill) and not at_ceiling  # the grilling holds the handoff back
 
+    def asked(text: str) -> str:
+        """At the ceiling mid-grilling the procedure runs only on the owner's yes, and says so in its commands."""
+        if not at_ceiling:
+            return text
+        return text.replace("Hand over now", "On the owner's yes, hand over", 1).replace(
+            " succeed --stage ", " succeed --owner-asked --stage ")
+
     if event == "PreToolUse":
         if tokens < block:
             return
@@ -434,7 +441,7 @@ def main() -> None:
         if hub_stage:
             tin = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
             if tool == "Bash":
-                passes = handover_command(tin.get("command"))
+                passes = handover_command(tin.get("command"), ("ask",) if at_ceiling else ())
             elif tool == "apply_patch":
                 paths = patch_paths(tin.get("command"))
                 passes = bool(paths) and all(AUTOPILOT_FILE.search(p) for p in paths)
@@ -445,7 +452,7 @@ def main() -> None:
             if passes:
                 return
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {carry}{plan(True)}"))
+                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {carry}{asked(plan(True))}"))
             return
         if mentions(data.get("tool_input"), escape):
             return
@@ -477,7 +484,7 @@ def main() -> None:
              "marker handoff-ok." if tokens >= block
              else f" At {fmt(block)} new {gated} calls will be denied (except a handoff).")
     if hub_stage:
-        emit(event, additionalContext=f"{head}{plan(tokens >= block or at_ceiling)}")
+        emit(event, additionalContext=f"{head}{asked(plan(tokens >= block or at_ceiling))}")
         return
     emit(event, additionalContext=f"{head}{todo}{extra}")
 

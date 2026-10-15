@@ -1602,11 +1602,10 @@ def cmd_succeed(a) -> int:
     pend = autopilot.load_state(stage).get("pending") or {}
     # --fallback starts a successor too; --replace swaps one that already took over (the grilling hub is gone by then)
     grill = None if a.replace else grilling.active_stage(stage)
-    if grill and autopilot.enabled():
-        if not a.owner_asked:  # the ceiling does not lift it: the owner says whether the grilling moves on
-            raise hc.UsageError(grilling.refusal("succeed", stage, grill))
-        if not a.dry_run:
-            grilling.mark_owner_asked(stage)  # the successor's automatic takeover may go ahead
+    if grill and autopilot.enabled() and not a.owner_asked:  # the ceiling does not lift it: the owner decides
+        raise hc.UsageError(grilling.refusal("succeed", stage, grill))
+    # recorded once the caller is known to be the registered hub: then the successor's automatic takeover may go ahead
+    owner_asked = bool(grill) and autopilot.enabled() and not a.dry_run
     if a.fallback or (a.replace and not a.handoff):
         # the handoff the pending successor was started from: the numbers come out as they did then
         handoff = pend.get("handoff")
@@ -1641,6 +1640,8 @@ def cmd_succeed(a) -> int:
         notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
         succ = n + 1
     check_caller(stage, n)
+    if owner_asked:
+        grilling.mark_owner_asked(stage)
     if a.fallback:  # starts from the root the bg session was started in (pending.cwd): the shell's directory is no matter
         return autopilot.fallback(stage, n, a.why, succ)
     cwd, cwd_note = successor_cwd(stage, a.cwd)

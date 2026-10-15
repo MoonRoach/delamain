@@ -11,8 +11,8 @@
   all sessions) denies `find`, `bfs`, `fd`, `rg`, `grep -r`, `ag`, `ack`, `du`, `tree` and `ls -R` whose root is `~`,
   `$HOME`, the absolute home path, `/`, `/Users`, `~/Library`, `~/Library/Containers`, `~/Library/Group Containers` or a
   glob over them, and the same with no root while the working directory is the home (the session's, or after `cd ~`);
-  likewise the Grep and Glob tools with such a `path`. A named subdirectory, the hub home and a walk that stays on the
-  first level are not touched. The refusal says to search the project, `$AGENT_HUB_HOME` or a subdirectory, and names
+  likewise the Grep and Glob tools with such a `path`. A named subdirectory, the hub home, a walk that stays on the
+  first level and what `ssh`, `docker exec` or `kubectl exec` runs elsewhere are not touched. The refusal says to search the project, `$AGENT_HUB_HOME` or a subdirectory, and names
   `# scan-ok`, the marker for a walk the owner asked for. `AGENT_HUB_SCAN_GUARD=off` (environment or hub home) turns it
   off; a hook error fails open. Not caught: scripts (`python3 -c`), `cp -r`, `rsync`, `tar` and other tools that walk a
   tree on the side. `polling_guard.views` gained an optional `data` list for hooks that read a command's arguments.

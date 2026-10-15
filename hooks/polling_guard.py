@@ -89,6 +89,10 @@ _WRAPPER = (r"(?:(?:\S*/)?(?:sudo|env|nohup|exec|time|setsid|nice|ionice|stdbuf|
 _TIMEOUT = r"timeout(?:\s+(?:-[ks]\s+(?!-)\S+|-\S+))*\s+\S+"  # `timeout -k 5 600 bash`: flags, then the duration
 # What may stand before the command word: a group opener (`( bash …`, `{ bash …`), `VAR=x`, wrappers.
 _CMD_PREFIX = r"^\s*[({]?\s*(?:(?:\w+=\S+|" + _WRAPPER + r"|" + _TIMEOUT + r")\s+)*"
+# A command that runs its argument somewhere else — another machine, a container, a pod: the string after it is not a
+# command of this one (read only by callers that pass `data` to `views`).
+_REMOTE = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:ssh|mosh|telnet|tsh|docker|podman|nerdctl|ctr|kubectl|oc|lxc|incus|nsenter|chroot"
+                     r"|vagrant|multipass|limactl|colima|gcloud|aws|az|yc|doctl|fly|flyctl|heroku)(?![\w.-])")
 _SHELL_CONSUMER = re.compile(
     _CMD_PREFIX
     + rf"(?:{_SHELL}\b|eval\b|source\b|\.\s+/dev/stdin\b|xargs\b.*?\s{_SHELL}\s+-\w*c\b"
@@ -282,9 +286,9 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
         wait.append(seg[pos:m.start()])
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
-        if runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment):
+        if (runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment)) and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
             inner = views(_unquote(quoted), keep_seps, data)
-            wait.append(f";{inner[0]};")
+            wait.append(f";{inner[0]};" if data is None else f";({inner[0]});")  # a caller that reads `cd` needs the subshell
             ci.append(f";{inner[2]};")
         else:
             wait.append(_datum(data, quoted))
@@ -324,7 +328,9 @@ def views(cmd: str, keep_seps: bool = False, data: list = None):
     instead of `;`, so a pipeline stays a pipeline (hooks/kill_guard.py reads it). `data`, a list the caller passes in,
     makes the wait projection keep the data strings instead of `""`: each stands as a token `\\x01N\\x01` and is
     appended, quotes included, to the list as item N; a printing stage that nothing feeds to a shell is kept like any
-    other stage, with its own `$(…)` (hooks/scan_guard.py reads the arguments and the pipes of a command)."""
+    other stage, with its own `$(…)`; the string a shell runs stays in parentheses (its `cd` does not leave it), and
+    the string of a command that runs it elsewhere (`ssh`, `docker exec`, `kubectl exec` …) stays data (hooks/scan_guard.py
+    reads the arguments and the pipes of a command)."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
     cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
     protected, strings = _protect(cmd)

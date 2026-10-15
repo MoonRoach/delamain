@@ -19,8 +19,8 @@ Refused, when the walk root is `~`, `$HOME`, `${HOME}`, the absolute home path, 
 
 Not refused: a named subdirectory (`find ~/repos`, `rg foo ~/agent-hub`, `find ~/Library/LaunchAgents`), the project, a
 walk that stays on the first level (`find ~ -maxdepth 1`, `fd -d 1`, `tree -L 1`), `ls ~`, a file (`grep foo
-~/.zshrc`), quoted text no shell runs, a segment that starts with `ssh` (it walks another machine's disk), a word the
-hook cannot resolve without running something (`$(…)`, `$VAR`, `~user`), and a command that carries the marker
+~/.zshrc`), quoted text no shell runs, a command that runs its argument elsewhere (`ssh`, `docker exec`, `kubectl
+exec` … walk another disk), a word the hook cannot resolve without running something (`$(…)`, `$VAR`, `~user`), and a command that carries the marker
 `# scan-ok` (AGENT_HUB_SCAN_ESCAPE) — for a walk the owner asked for. The Grep and Glob tools have no marker.
 
 What it does not catch: arguments it cannot read — a script (`python3 -c "os.walk(…)"`, `node -e`), `cp -r`, `rsync`,
@@ -90,17 +90,25 @@ class _Ctx:
         self.home = _norm(env_home) if env_home.startswith("/") and _norm(env_home) != "/" else (self.homes[0] if self.homes else None)
         self.cwd = _norm(cwd) if isinstance(cwd, str) and cwd.startswith("/") else None
         self.data = []
-        # the refused roots, case-folded (the usual macOS volume is case-insensitive), and why each one is refused
-        self.targets = {"/": "the whole filesystem", "/users": "/Users, where every home lives"}
+        self.heredoc = False
+        # the refused roots and why each one is refused: by case-folded path for a plain word (the usual macOS volume is
+        # case-insensitive), by segments as typed for a glob (the shell matches names case-sensitively)
+        self.targets = {"/": "the whole filesystem"}
+        self.segments = []
+
+        def add(path, why):
+            self.targets[path.casefold()] = why
+            self.segments.append((path.split("/"), why))
+
+        add("/Users", "/Users, where every home lives")
         for h in self.homes:
-            self.targets[h.casefold()] = "your home directory"
+            add(h, "your home directory")
             for sub in ("Library", "Library/Containers", "Library/Group Containers"):
-                self.targets[(h + "/" + sub).casefold()] = f"~/{sub}, where other apps keep their data"
-        self.segments = [(k.split("/"), why) for k, why in self.targets.items()]
-        # a glob in /Users reaches the home of every user, this machine's or not: a stand-in name that any glob matches
-        for sub in ("", "Library", "Library/Containers", "Library/Group Containers"):
-            self.segments.append((["", "users", "user"] + (sub.casefold().split("/") if sub else []),
-                                  f"~/{sub} of every user" if sub else "every user's home"))
+                add(h + "/" + sub, f"~/{sub}, where other apps keep their data")
+        # a glob in /Users reaches the home of every user, this machine's or not: a stand-in name any glob matches
+        for sub in ("", "/Library", "/Library/Containers", "/Library/Group Containers"):
+            self.segments.append((["", "Users", "user"] + (sub[1:].split("/") if sub else []),
+                                  f"~{sub} of every user" if sub else "every user's home"))
 
     def text(self, token: str) -> str:
         """A token's string with its quotes, or "" for a token that is not one of ours."""
@@ -246,20 +254,33 @@ def _hit(ctx: _Ctx, word_raw: str, cwd, shell: bool = True):
     if not res:
         return None
     pattern, glob = res
-    key = pattern.casefold()
     if not glob:
-        return ctx.targets.get(key)
-    parts = key.split("/")
+        return ctx.targets.get(pattern.casefold())
+    parts = pattern.split("/")
+    if len(parts) > 64 or pattern.count("[") > 32:
+        return None  # fnmatch is quadratic on a pile of brackets: not a path anyone types
     for segs, why in ctx.segments:
         if len(segs) == len(parts) and all(fnmatch.fnmatchcase(s, p) for s, p in zip(segs, parts)):
             return why + ", through a glob"
+    # `.*` also expands to `.` and `..`: the directory itself and its parent
+    head, _, last = pattern.rpartition("/")
+    if last.startswith(".") and not any(c in _GLOB_CHARS for c in head):
+        for dots, where in (".", head or "/"), ("..", os.path.dirname(head) or "/"):
+            why = ctx.targets.get(_norm(where).casefold()) if fnmatch.fnmatchcase(dots, last) else None
+            if why:
+                return why + ", through a glob"
     return None
 
 
 # -- commands ------------------------------------------------------------------------------------------------------
 
-_KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "time", "exec", "nohup", "setsid", "eval",
-             "builtin", "noglob", "nocorrect", "caffeinate", "unbuffer", "coproc"}
+_KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "eval", "coproc"}
+# wrappers that run the rest of the command, and the options of each that take a value
+_WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T"), "doas": ("-u", "-C"),
+             "env": ("-u", "-C", "-S", "-P"), "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"),
+             "time": ("-f", "-o"), "exec": ("-a",), "stdbuf": (), "setsid": (), "nohup": (), "command": (), "builtin": (),
+             "unbuffer": (), "noglob": (), "nocorrect": ()}
+_INFO = {"--version", "--help", "-V", "--list-file-types", "--help-types", "--man"}  # prints and exits: no walk
 
 
 def _skip_flags(words, i: int, valued=()) -> int:
@@ -289,31 +310,26 @@ def _strip_redirects(words):
 def _command(words):
     """(name, arguments, via xargs) of the command a stage runs: assignments, keywords and wrappers are skipped. None
     for a stage that runs nothing a walk could come from."""
-    # a group opener glued to the command word: `(find ~ …`
-    if words and words[0].startswith("(") and len(words[0]) > 1:
-        head = _W(words[0].lstrip("("))
-        head.raw = words[0].raw.lstrip("(")
-        words = [head] + words[1:]
+    words = list(words)
     n, i, xargs = len(words), 0, False
     while i < n:
         w = words[i]
-        if w in _KEYWORDS or _ASSIGN.match(w):
+        base = str(w).rsplit("/", 1)[-1]
+        if w.startswith("(") and len(w) > 1:  # a group opener glued to the word: `(find ~ …`, `do (cd …`
+            head = _W(w.lstrip("("))
+            head.raw = w.raw.lstrip("(")
+            words[i] = head
+        elif w in _KEYWORDS or _ASSIGN.match(w):
             i += 1
-        elif w in ("sudo", "doas"):
-            i = _skip_flags(words, i + 1, ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T"))
-        elif w == "env":
-            i = _skip_flags(words, i + 1, ("-u", "-C", "-S", "-P"))
-        elif w == "timeout":
+        elif base in _WRAPPERS:
+            if base == "command" and i + 1 < n and words[i + 1] in ("-v", "-V"):
+                return None  # only looks the name up
+            i = _skip_flags(words, i + 1, _WRAPPERS[base])
+        elif base in ("timeout", "gtimeout"):
             i = _skip_flags(words, i + 1, ("-k", "-s")) + 1
-        elif w in ("nice", "ionice", "stdbuf"):
-            i = _skip_flags(words, i + 1, ("-n", "-c", "-p"))
-        elif w == "xargs":
+        elif base == "xargs":
             xargs = True
             i = _skip_flags(words, i + 1, ("-I", "-J", "-L", "-n", "-P", "-s", "-d", "-E", "-a", "-R", "-S"))
-        elif w == "command":
-            if i + 1 < n and words[i + 1] in ("-v", "-V"):
-                return None  # only looks the name up
-            i += 1
         else:
             break
     if i >= n:
@@ -514,7 +530,7 @@ def _parse_stage(ctx: _Ctx, stage: str, closing: int):
 def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
     """Why a stage is a walk of the home or `/`, or None."""
     parse = _WALKERS.get(st.name)
-    walk = parse(st.args) if parse else None
+    walk = parse(st.args) if parse and not any(a in _INFO for a in st.args) else None
     if walk is None or (walk.depth is not None and walk.depth <= 1):
         return None  # not a walk, or one that never leaves the first level
     if walk.base:
@@ -526,7 +542,7 @@ def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
             if why:
                 return why
         return None
-    if st.xargs or (walk.stdin_default and (piped_in or st.stdin)):
+    if st.xargs or (walk.stdin_default and (piped_in or st.stdin or ctx.heredoc)):
         return None  # the roots come from stdin, which cannot be read here
     why = ctx.targets.get(cwd.casefold()) if cwd else None
     return f"the current directory, which is {why.split(',')[0]}" if why else None
@@ -576,6 +592,9 @@ def check(command: str, cwd=None):
     """The reason of a denial for a Bash command, or None."""
     ctx = _Ctx(cwd)
     command = command.replace("\x01", "")
+    ctx.heredoc = "<<" in command.replace("<<<", "")
+    if command.count("<<") > 100:
+        return None  # polling_guard's heredoc pattern is quadratic in the openers; the answer would come too late
     executed = pg.views(kg._drop_ssh(command), True, ctx.data)[0]
     found = _scan(ctx, executed, ctx.cwd)
     if not found:
@@ -585,29 +604,44 @@ def check(command: str, cwd=None):
 
 
 def check_tool(name: str, ti: dict, cwd=None):
-    """The reason of a denial for a Grep or Glob call, or None."""
+    """The reason of a denial for a Grep or Glob call, or None. The walk starts at `path` (the session's directory when
+    there is none), then at the literal directories a relative Glob pattern names (`repos/**/*.py`); an absolute
+    pattern names its own root."""
     ctx = _Ctx(cwd)
-    path = ti.get("path")
+    path, pattern = ti.get("path"), ti.get("pattern")
     if path is not None and not isinstance(path, str):
         return None
-    if path:
-        why = _hit(ctx, path.replace("\x01", ""), ctx.cwd, shell=False)
-        if why:
-            return f"This is {name} with path `{path}` — it walks {why}."
-    elif ctx.cwd and ctx.targets.get(ctx.cwd.casefold()):
-        return f"This is {name} with no path: it searches the current directory, which is {ctx.targets[ctx.cwd.casefold()].split(',')[0]}."
-    pattern = ti.get("pattern")
-    if name == "Glob" and isinstance(pattern, str) and "**" in pattern and (pattern.startswith(("~", "/", "$"))):
+    glob = pattern.replace("\x01", "") if name == "Glob" and isinstance(pattern, str) else ""
+    if glob.startswith(("~", "/", "$")) and "**" in glob:
         literal = []
-        for seg in pattern.split("/"):
+        for seg in glob.split("/"):
             if any(ch in seg for ch in "*?[{"):
                 break
             literal.append(seg)
-        prefix = "/".join(literal) or "/"
-        why = _hit(ctx, prefix.replace("\x01", ""), ctx.cwd, shell=False)
+        why = _hit(ctx, "/".join(literal) or "/", ctx.cwd, shell=False)
         if why:
             return f"This is Glob with the pattern `{pattern}` — it walks {why}."
-    return None
+    if path:
+        res = _expand(ctx, path.replace("\x01", ""), ctx.cwd, shell=False)
+        base = res[0] if res and not res[1] else None
+    else:
+        base = ctx.cwd
+    if not base:
+        return None
+    root = base
+    if "/" in glob and not glob.startswith(("~", "/", "$")):  # anchored: the walk starts under the literal directories
+        literal = []
+        for seg in glob.split("/"):
+            if any(ch in seg for ch in "*?[{"):
+                break
+            literal.append(seg)
+        root = _norm(base + "/" + "/".join(literal))
+    why = ctx.targets.get(root.casefold())
+    if not why:
+        return None
+    if path:
+        return f"This is {name} with path `{path}` — it walks {why}."
+    return f"This is {name} with no path: it searches the current directory, which is {why.split(',')[0]}."
 
 
 def message(reason: str, escape_word: str, tool: bool = False) -> str:

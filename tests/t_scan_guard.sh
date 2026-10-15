@@ -102,6 +102,13 @@ REFUSED = [
     "cd ~ && rg foo", "cd $HOME; grep -r foo .", "cd; du -sh *", "cd \"$HOME\" && find . -name x", "cd @H@ && find -name x",
     "cd ~ && fd x", "cd ~ && tree", "cd ~ && ls -R", "cd ~/repos && cd ~ && find . -name x",
     "(cd ~ && find . -name x)", "pushd ~ && find . -name x", "cd ~ && find . -maxdepth 3 -name x",
+    # found by the review: dot-globs reach `.` and `..`, a `(` after a keyword, a cd that stays inside bash -c, wrappers by path
+    "du -sh ~/.*", "cd ~ && du -sh .*", "cd ~ && find .* -name x", "find ~/.* -name x", "cd ~ && rg foo .*",
+    "for d in a; do (cd ~ && find . -name x); done", "if (find ~ -name x); then echo; fi", "! (find ~ -name x)", "time (find ~ -name x)",
+    "( (find ~ -name x) )", "cd ~ && bash -c \"cd /tmp\" && find . -name x", "cd ~ && sh -c 'cd /tmp' && rg foo",
+    "/usr/bin/env find ~ -name x", "/usr/bin/env -i find ~ -name x", "/usr/bin/time find ~ -name x", "gtimeout 10 find ~ -name x",
+    "caffeinate -i find ~ -name x", "setsid -f find ~ -name x", "exec -a x find ~ -name x", "command -p find ~ -name x",
+    "find /Users/*/Library -name x", "du -sh /Users/*/Library/Containers", "find ~/Library/.. -name x",
 ]
 for c in REFUSED:
     check(verdict(bash(c)) == "deny", f"refused: {c!r}")
@@ -145,6 +152,10 @@ ALLOWED = [
     # other commands
     "git status", "ls", "echo hello", "python3 -c 'print(1)'", "tail -n 5 ~/.zshrc",
     # the per-command marker, for a walk the owner asked for
+    # ssh, a container and a pod run the string elsewhere; a case-sensitive glob does not reach Library
+    "x=$(ssh host \"find / -name x\")", "echo $(ssh host \"find / -name x\")", "docker exec c sh -c 'find / -name x'",
+    "kubectl exec pod -- sh -c 'du -sh /'", "sudo docker exec c bash -c \"cd ~ && grep -r foo .\"", "docker run --rm img find / -name x",
+    "find ~/[a-z]* -name x", "find ~/l* -name x", "bash -c 'cd ~ && ls'; find . -name x", "bash -c 'cd ~' && find . -name x",
     "find ~ -name x  # scan-ok: owner asked for this walk", "grep -r foo ~ # scan-ok", "cd ~ && find . -name x # scan-ok: owner asked",
     "du -sh ~/* # scan-ok", "find ~ -name x\n# scan-ok: owner asked",
 ]
@@ -156,6 +167,10 @@ check(verdict(bash("ls -R", cwd=HS + "/agent-hub")) == "pass", "allowed: ls -R i
 check(verdict(bash("find . -maxdepth 1 -name x", cwd=HS)) == "pass", "allowed: a one-level walk in the home")
 check(verdict(bash("cat x | rg foo", cwd=HS)) == "pass", "allowed: rg reading a pipe while the session is in the home")
 check(verdict(bash("find ~ -name x # scan-ok: asked", cwd=HS)) == "pass", "allowed: the marker with the session in the home")
+for c in ("fd --version", "find --version", "tree --help", "du --version", "rg --version", "ag --list-file-types", "ack --help-types", "grep -r -V",
+          "cd ~ && tree --version", "for d in */; do (cd \"$d\" && find . -name x); done", "cd repos && bash -c 'cd ~ && ls' && find . -name x",
+          "grep -r foo <<EOF\nfoo\nEOF", "rg foo <<-EOF\nfoo\nEOF", "cd repos && find . -name x", "ls -R repos"):
+    check(verdict(bash(c, cwd=HS)) == "pass", f"allowed with the session in the home: {c!r}")
 
 # ---- the marker is the configured word; the switch turns the guard off; both are read from the environment
 check(verdict(bash("find ~ -name x # kill-ok")) == "deny", "another guard's marker does not pass a walk")
@@ -198,11 +213,15 @@ TOOL_REFUSED = [
     ("Glob", dict(pattern="*.py", path="~")), ("Glob", dict(pattern="*", path="@H@")),
     ("Glob", dict(pattern="~/**/*.py")), ("Glob", dict(pattern="@H@/**/hive1.py")), ("Glob", dict(pattern="$HOME/**/x")),
 ]
-for name, ti in TOOL_REFUSED:
+TOOL_REFUSED += [("Glob", dict(pattern="../**/*.py"), "@H@/repos"), ("Glob", dict(pattern="**/x", path=".."), "@H@/repos"),
+                 ("Grep", dict(pattern="x", path=".."), "@H@/repos")]
+for name, ti in [x[:2] for x in TOOL_REFUSED if len(x) == 2]:
     check(verdict(tool(name, **ti)) == "deny", f"refused: {name} {ti}")
 for name, ti in (("Grep", dict(pattern="foo")), ("Glob", dict(pattern="**/*.py")), ("Grep", dict(pattern="foo", glob="*.py")),
                  ("Grep", dict(pattern="foo", path="."))):
     check(verdict(tool(name, cwd=HS, **ti)) == "deny", f"refused with the session in the home: {name} {ti}")
+for name, ti, cwd in [x for x in TOOL_REFUSED if len(x) == 3]:
+    check(verdict(tool(name, cwd=cwd.replace("@H@", HS), **ti)) == "deny", f"refused from a project under the home: {name} {ti}")
 TOOL_ALLOWED = [
     ("Grep", dict(pattern="foo")), ("Grep", dict(pattern="foo", path="~/repos")), ("Grep", dict(pattern="foo", path="@H@/agent-hub")),
     ("Grep", dict(pattern="foo", path="$HOME/repos/app/src")), ("Grep", dict(pattern="foo", path="~/.zshrc")),
@@ -214,6 +233,10 @@ TOOL_ALLOWED = [
 ]
 for name, ti in TOOL_ALLOWED:
     check(verdict(tool(name, **ti)) == "pass", f"allowed: {name} {ti}")
+for ti in (dict(pattern="repos/**/*.py"), dict(pattern="agent-hub/**/*.md"), dict(pattern="repos/*.py")):
+    check(verdict(tool("Glob", cwd=HS, **ti)) == "pass", f"allowed: Glob {ti} while the session is in the home: the walk starts in a subdirectory")
+check(verdict(tool("Glob", cwd=HS, pattern="repos/**/*.py", path="@H@")) == "pass", "allowed: Glob path=home with a pattern that names a subdirectory")
+check(verdict(tool("Glob", cwd=HS, pattern="**/*.py", path="@H@")) == "deny", "refused: Glob path=home with a pattern that names none")
 check(verdict(tool("Grep", cwd=HS + "/repos", pattern="foo")) == "pass", "allowed: Grep with no path in a project under the home")
 check(verdict(tool("Grep", cwd=HS + "/repos", pattern="foo", path="src")) == "pass", "allowed: Grep with a relative path under the home")
 check(verdict(tool("Grep", cwd=HS, pattern="foo", path="repos")) == "pass", "allowed: Grep with a relative subdirectory while the session is in the home")
@@ -280,7 +303,9 @@ import time
 for label, cmd in (("nested substitutions", "x=$(" * 800 + "find ~" + ")" * 800), ("deep $( chain", "$(a " * 500 + "find ~ -name x" + ")" * 500),
                    ("5000 pipes", "a | " * 5000 + "b"), ("long argument list", "find ~ " + "-name x -o " * 20000),
                    ("many stages", "cd ~; " * 20000 + "ls"), ("many words", "rg foo " + "a " * 100000),
-                   ("many quotes", "echo " + "'a' " * 30000 + "; find ~ -name x"), ("deep parentheses", "(" * 3000 + "find ~" + ")" * 3000)):
+                   ("many quotes", "echo " + "'a' " * 30000 + "; find ~ -name x"), ("deep parentheses", "(" * 3000 + "find ~" + ")" * 3000),
+                   ("20000 heredoc openers", "<<EOF " * 20000 + "find ~ -name x"), ("a pile of brackets", "find ~/" + "[" * 50000),
+                   ("many globs", "find ~/" + "*/" * 5000 + "x")):
     t0 = time.time()
     r = bash(cmd)
     check(verdict(r) != "broken" and time.time() - t0 < 6, f"pathological command ({label}): answered in {time.time() - t0:.1f} s, exit {r.returncode}")

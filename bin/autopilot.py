@@ -43,6 +43,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import grilling  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import session_effort  # noqa: E402
@@ -1103,6 +1104,8 @@ def _record(stage: str, succ: int, pend: dict, reservation: Optional[dict] = Non
                 pend = dict(pend, taken_over=previous["taken_over"])
             if previous.get("author") and not pend.get("author"):
                 pend = dict(pend, author=previous["author"])
+            if previous.get("grilling_owner_asked") and previous.get("handoff") == pend.get("handoff"):
+                pend = dict(pend, grilling_owner_asked=previous["grilling_owner_asked"])
             data["pending"] = pend
             save_state(stage, data)
 
@@ -1135,7 +1138,8 @@ def require_cli_handoff_permission():
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
             succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None,
-            replace: bool = False, force: bool = False, surface="auto", branch=None, desktop_worktree=False) -> int:
+            replace: bool = False, force: bool = False, surface="auto", branch=None, desktop_worktree=False,
+            owner_asked: bool = False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
     predecessor = hc.roles_load(stage)["roles"].get("hub") or {}
@@ -1159,17 +1163,25 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if (branch or desktop_worktree) and surface != "desktop":
         raise hc.UsageError("--branch/--desktop-worktree are only supported for desktop requests")
     # A desktop retry reuses its reservation, including an uncertain native launch. Never spawn a fallback.
-    existing = load_state(stage).get("pending") or {}
-    if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
-        if existing.get("taken_over"):
-            raise hc.Failure("desktop successor already took over")
-        if not again:
-            raise hc.Failure("desktop request already reserved; use --again to inspect/retry the same request")
-        if (surface != "desktop" or existing.get("n") != succ
-                or Path(existing["handoff"]).resolve() != handoff.resolve()):
-            raise hc.Failure("retry must keep the same desktop surface and handoff")
-        desktop_report(stage, existing)
-        return 0
+    with state_lock(stage):
+        data = load_state(stage)
+        existing = data.get("pending") or {}
+        if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
+            if existing.get("taken_over"):
+                raise hc.Failure("desktop successor already took over")
+            if not again:
+                raise hc.Failure("desktop request already reserved; use --again to inspect/retry the same request")
+            if (surface != "desktop" or existing.get("n") != succ
+                    or Path(existing["handoff"]).resolve() != handoff.resolve()):
+                raise hc.Failure("retry must keep the same desktop surface and handoff")
+            if owner_asked and not dry_run:
+                current = hc.roles_load(stage)["roles"].get("hub") or {}
+                if caller_sid not in (current.get("session"), current.get("cli_session_id")):
+                    raise hc.Failure("the registered predecessor changed before retry; request retained")
+                grilling.authorize_handoff(stage, existing, owner_asked)
+                save_state(stage, data)
+            desktop_report(stage, existing)
+            return 0
     approval, sandbox_policy, effort, effort_notes = "never", None, None, []
     if engine == "codex":
         context = codex_context()
@@ -1206,7 +1218,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         raise hc.UsageError(f"--model {model!r}: {problem}")
     if surface == "desktop":
         return prepare_desktop(stage, n, succ, handoff, cwd, model, effort, sandbox_policy,
-                               context.get("approval_policy"), branch, dry_run, desktop_worktree)
+                               context.get("approval_policy"), branch, dry_run, desktop_worktree, owner_asked=owner_asked)
     if again and not dry_run:
         drop_dead(stage, n, cwd, succ)
     def check_predecessor():
@@ -1252,6 +1264,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             data["pending"] = {"n": succ, "kind": "starting", "at": started, "handoff": str(handoff),
                                "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort,
                                "author": hc.session_id()}
+            grilling.authorize_handoff(stage, data["pending"], owner_asked)
             save_state(stage, data)
     if at_limit:
         line = (f"auto-handoff chain limit {limit} reached — waiting for the owner; handoff {handoff}. "
@@ -1370,7 +1383,8 @@ def desktop_report(stage, pend):
             "keep the predecessor active and retain the request while awaiting the owner. Never create another thread for an uncertain result.")
 
 
-def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
+def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False,
+                    owner_asked=False):
     root = main_checkout(cwd) or cwd.resolve()
     predecessor_cwd = str(cwd.resolve())
     authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
@@ -1443,6 +1457,7 @@ Owner questions use `ask`; consult the register, not copied decisions.
             # Brief precedes reservation: a write failure leaves no dispatchable incomplete request.
             hc.atomic_write(brief, prompt)
             data['chain'], data['pending'] = k, pend
+            grilling.authorize_handoff(stage, pend, owner_asked)
             save_state(stage, data)
             hc.journal_append(stage, f'hub-{n}',
                               f'auto-handoff {k}/{limit}: desktop request {req} prepared, handoff {handoff}')
@@ -1761,7 +1776,7 @@ def headless_or_owner(stage: str, s: Successor, why: str, replacing: bool = Fals
         raise
 
 
-def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None) -> int:
+def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None, owner_asked: bool = False) -> int:
     """The background successor did not take over in time: journal its log tail, stop it, start a headless one from
     the same handoff (the chain is not counted again). Only for this hub's own successor (hub-<succ>, default n + 1).
     Reserved under the lock like `hub succeed`, so a retry after a killed run is refused rather than doubled."""
@@ -1799,6 +1814,7 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
         effort = successor_effort(bg.get("effort"))
         reservation = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
         data["pending"] = reservation
+        grilling.authorize_handoff(stage, reservation, owner_asked)
         save_state(stage, data)
     timeout_s = takeover_timeout()
     try:

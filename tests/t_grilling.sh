@@ -99,6 +99,21 @@ grep -q '^5\. A grilling with the owner was in progress' $R/ceil.md; check $? 0 
 succeed > $R/c4.out 2>&1; check "$?:$(grep -c 'context ceiling is reached: write the handoff and ask the owner' $R/c4.out)" "2:1" "ceiling: \`hub succeed\` still refuses without the owner's word"
 succeed --owner-asked > $R/c5.out 2>&1; check $? 0 "ceiling: …and passes with --owner-asked"
 unset AGENT_HUB_GRILLING_CEILING
+# A configured ceiling can be lower than both ordinary budget thresholds.
+setup; usage 1000; skill mattpocock-skills:grilling > /dev/null
+export AGENT_HUB_GRILLING_CEILING=180000
+usage 190000
+cbh UserPromptSubmit > $R/low-ceiling.out
+grep -q 'The context ceiling 180k is reached mid-grilling' $R/low-ceiling.out && grep -q 'with --owner-asked added' $R/low-ceiling.out
+check $? 0 "ceiling below warn/block: the owner is told immediately, with the owner-only handoff procedure"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1])).get("ceiling")' "$(MK)"; check $? 0 "ceiling below warn/block: recorded in the mark"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub handoff --stage stage-a --out $R/low-ceiling.md > $R/low-handoff.out 2>&1
+check $? 0 "ceiling below warn/block: preparing the handoff passes immediately"
+cbh PreToolUse Bash "$(bash_in 'git status')" > $R/low-gate.out
+grep -q '"deny"' $R/low-gate.out && grep -q 'at or above the 180k grilling ceiling' $R/low-gate.out
+check $? 0 "ceiling below warn/block: the ceiling gate uses its own threshold"
+cbh UserPromptSubmit > $R/low-repeat.out; check "$(wc -c < $R/low-repeat.out | tr -d ' ')" 0 "ceiling below warn/block: the warning is not repeated in the same bucket"
+unset AGENT_HUB_GRILLING_CEILING
 # Codex: the ceiling defaults to 95% of the rollout's window
 setup; skill mattpocock-skills:grilling > /dev/null
 codex_usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":int(sys.argv[1])},"model_context_window":400000}}}))' "$1" >> $TR; }
@@ -160,6 +175,29 @@ CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff $H --cwd $
 CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/t5.out 2>&1; check "$?:$($B/roles --stage stage-a get hub)" "0:$HUB2" "takeover: …and its automatic takeover goes ahead"
 
 # ================================================================== hub succeed / hub handoff
+# A refused request for a newer handoff must never release the already waiting successor with the old one.
+setup
+OLD_H=$H; NEW_H=$R/stage-a/coordinator/HANDOFF-new.md
+cp "$OLD_H" "$NEW_H"
+printf '\nGrilling: pricing; owner answer Q-1: B; next round: rollout.\n' >> "$NEW_H"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff "$OLD_H" --cwd $W --model opus > $R/old-start.out 2>&1
+check $? 0 "owner-asked regression: a successor is pending with H1"
+skill mattpocock-skills:grilling > /dev/null
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff "$NEW_H" --cwd $W --model opus --owner-asked > $R/new-refused.out 2>&1
+check "$?:$(grep -c 'is already started' $R/new-refused.out)" "1:1" "owner-asked regression: request with current grilling in H2 is refused (already started)"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff "$OLD_H" > $R/old-takeover.out 2>&1
+check "$?:$($B/roles --stage stage-a get hub)" "2:$HUB1" "owner-asked regression: refused H2 request does not let the successor take over with H1"
+
+# Even an accepted request only permits its own handoff, not a different file with stale grilling state.
+setup; skill mattpocock-skills:grilling > /dev/null
+OTHER_H=$R/stage-a/coordinator/HANDOFF-other.md; cp "$H" "$OTHER_H"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff "$H" --cwd $W --model opus --owner-asked > $R/accepted.out 2>&1
+check $? 0 "owner-asked binding: the current handoff request is accepted"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff "$OTHER_H" > $R/wrong-handoff.out 2>&1
+check "$?:$($B/roles --stage stage-a get hub)" "2:$HUB1" "owner-asked binding: a different handoff cannot use the permission"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff "$H" > $R/right-handoff.out 2>&1
+check "$?:$($B/roles --stage stage-a get hub)" "0:$HUB2" "owner-asked binding: the accepted handoff can take over"
+
 setup; skill mattpocock-skills:grilling > /dev/null
 succeed > $R/h1.out 2>&1; rc=$?
 check "$rc:$(grep -c 'a grilling with the owner is in progress in the hub of stage stage-a' $R/h1.out)" "2:1" "succeed: refused while grilling, autopilot on (exit 2)"

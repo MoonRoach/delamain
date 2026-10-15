@@ -406,18 +406,21 @@ def main() -> None:
                               ap.hub_effort(data))
 
     grill, at_ceiling = None, False
-    if gr and tokens >= min(warn, block):
+    if gr:
         try:
             grill = gr.active(sid)
             at_ceiling = bool(grill) and tokens >= gr.ceiling(window)
             if at_ceiling:
-                gr.mark_ceiling(sid, tokens)  # `hub succeed` / `hub handoff` pass from now on
+                gr.mark_ceiling(sid, tokens)  # preparing a handoff passes; succeeding still needs the owner's yes
+                if auto and hub_stage is None:
+                    hub_stage = grill["stage"]
         except Exception:  # noqa: BLE001 — fail-open: as without a grilling
             grill, at_ceiling = None, False
     # at the ceiling mid-grilling: write the handoff, carrying the grilling, and leave the move to the owner
     carry = (f"The context ceiling {fmt(gr.ceiling(window))} is reached mid-grilling. {gr.ceiling_note(grill['stage'])} "
              if at_ceiling else "")
     holding = bool(grill) and not at_ceiling  # the grilling holds the handoff back
+    limit_text = f"the {fmt(gr.ceiling(window))} grilling ceiling" if at_ceiling else f"the {fmt(block)} limit"
 
     def asked(text: str) -> str:
         """At the ceiling mid-grilling the procedure runs only on the owner's yes, and says so in its commands."""
@@ -427,7 +430,7 @@ def main() -> None:
             " succeed --stage ", " succeed --owner-asked --stage ")
 
     if event == "PreToolUse":
-        if tokens < block:
+        if tokens < block and not at_ceiling:
             return
         if holding:
             # the owner is in the conversation: no handover gate on Bash/Write/Edit (answers still go to `ask`),
@@ -452,12 +455,12 @@ def main() -> None:
             if passes:
                 return
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {carry}{asked(plan(True))}"))
+                f"Session context is {fmt(tokens)} tokens, at or above {limit_text}. {carry}{asked(plan(True))}"))
             return
         if mentions(data.get("tool_input"), escape):
             return
         emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-            f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit: {gated} are closed, every "
+            f"Session context is {fmt(tokens)} tokens, at or above {limit_text}: {gated} are closed, every "
             f"turn here is expensive. {todo} Only handing the work over passes: a tool input that names a "
             f"HANDOFF-*.md file or carries the marker handoff-ok (pattern: {escape.pattern}). {carry}".rstrip()))
         return
@@ -465,11 +468,11 @@ def main() -> None:
     raw_state = hc.setting("AGENT_HUB_STATE_DIR")
     state_dir = (Path(raw_state).expanduser() if raw_state else hc.root() / ".state") / "context-budget"
     state = load_state(state_dir, key)
-    if tokens < warn:
+    if tokens < warn and not at_ceiling:
         if state.get("bucket", -1) >= 0:  # dropped below (compact / new chain): re-arm
             save_state(state_dir, key, {"bucket": -1, "tokens": tokens})
         return
-    bucket = (tokens - warn) // step
+    bucket = max(0, (tokens - warn) // step)
     # a grilling that starts, ends or reaches the ceiling changes what to do: say it at once, not one step later
     phase = "ceiling" if at_ceiling else ("grilling" if holding else None)
     if bucket <= state.get("bucket", -1) and phase == state.get("grilling"):

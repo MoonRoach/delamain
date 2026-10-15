@@ -11,7 +11,8 @@
   `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`; a successor started before the grilling began does
   not take over automatically. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`, 95% of a Codex window, else 900k)
   the hub writes the handoff with the grilling in its § 0 and asks the owner whether to hand over; the successor resumes
-  the grilling.
+  the grilling. The owner's permission belongs to an accepted successor request and its handoff: a refused request
+  grants nothing, and a different handoff cannot use it. The grilling ceiling also takes effect below warn/block.
 - **Headless agents can start without the MCP servers they never use.** A Claude agent loaded every server of the
   user's config, enabled plugins and claude.ai connectors; on the owner's machine (a dozen servers, eight of them
   unauthenticated) that is about 3,460 input tokens in every turn's context and about a second of startup per run,

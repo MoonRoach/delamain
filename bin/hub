@@ -1053,8 +1053,10 @@ def _cmd_takeover(a) -> int:
                             f"`hub start --stage {stage} --goal \"<what the stage delivers>\" --session <your session id>`")
     a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
+    handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
     grill = grilling.active_stage(stage) if a.auto_handoff and not starting else None
-    if grill and not grill.get("owner_asked") and grill.get("session") not in (session, cli):
+    if (grill and grill.get("session") not in (session, cli)
+            and not grilling.owner_asked_for(grill, autopilot.load_state(stage).get("pending") or {}, handoff)):
         # a successor started before the hub began grilling the owner: it waits until the grilling ends
         raise hc.UsageError(f"takeover: the hub of stage {stage} is grilling the owner (since "
                             f"{str(grill.get('since'))[11:16]}): an automatic takeover waits until it ends "
@@ -1063,7 +1065,6 @@ def _cmd_takeover(a) -> int:
     if env_sid and env_sid != cli:
         print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
               "the locks are recorded on it", file=sys.stderr)
-    handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
     if handoff is not None and not handoff.is_file():
         raise hc.UsageError(f"--handoff {handoff}: no such file")
     notes = []
@@ -1604,8 +1605,6 @@ def cmd_succeed(a) -> int:
     grill = None if a.replace else grilling.active_stage(stage)
     if grill and autopilot.enabled() and not a.owner_asked:  # the ceiling does not lift it: the owner decides
         raise hc.UsageError(grilling.refusal("succeed", stage, grill))
-    # recorded once the caller is known to be the registered hub: then the successor's automatic takeover may go ahead
-    owner_asked = bool(grill) and autopilot.enabled() and not a.dry_run
     if a.fallback or (a.replace and not a.handoff):
         # the handoff the pending successor was started from: the numbers come out as they did then
         handoff = pend.get("handoff")
@@ -1640,17 +1639,16 @@ def cmd_succeed(a) -> int:
         notes.append(f"the handoff names #{succ} as the successor of hub-{n} — taking #{n + 1}")
         succ = n + 1
     check_caller(stage, n)
-    if owner_asked:
-        grilling.mark_owner_asked(stage)
     if a.fallback:  # starts from the root the bg session was started in (pending.cwd): the shell's directory is no matter
-        return autopilot.fallback(stage, n, a.why, succ)
+        return autopilot.fallback(stage, n, a.why, succ, owner_asked=a.owner_asked)
     cwd, cwd_note = successor_cwd(stage, a.cwd)
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     if cwd_note:
         notes.append(cwd_note)
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree)
+                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree,
+                             owner_asked=a.owner_asked)
 
 
 # ---------------------------------------------------------------- grilling

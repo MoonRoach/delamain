@@ -767,7 +767,9 @@ hub runs it once the topic's frontier is empty or you stop the grilling, and you
 - `hub succeed` (a new successor, `--again` and `--fallback` too; not `--replace`, which swaps one that already took
   over) and `hub handoff` refuse with exit 2 unless `--owner-asked`: you asked for this handoff;
 - a successor started before the grilling began does not take over automatically (`hub takeover --auto-handoff`
-  refuses) until the grilling ends or `hub succeed --owner-asked` ran.
+  refuses) until the grilling ends or `hub succeed --owner-asked` accepts a request with that same handoff. Permission
+  is recorded under the request's lock only after its checks pass, belongs to that request and the current grilling,
+  and cannot be used with a different handoff; a refused request or a dry run grants nothing.
 
 The mark belongs to the hub's session (`<state>/grilling/<session id>.json`, under the CLI session id whichever alias
 named it) and counts only while that session is the stage's registered hub, so any takeover ends it; a registry that
@@ -775,7 +777,8 @@ cannot be read keeps it. Every prompt of yours in that session refreshes it; it 
 minutes (default 240) after you last spoke, journaled, so a forgotten mark does not hold handoffs for ever (the prompt
 that ends a longer pause does not revive it). At the context ceiling `AGENT_HUB_GRILLING_CEILING` (default 95% of a
 Codex rollout's context window, else 900k tokens — a 1M window) the session cannot go on for long: the hook records the
-ceiling in the mark and the autopilot gate returns (with `ask` let through, for your answer), but the hub does not
+ceiling in the mark and the autopilot gate returns (with `ask` let through, for your answer), even if a configured
+ceiling is below both warn and block, but the hub does not
 hand over by itself. It writes the handoff
 (`hub handoff` passes at the ceiling) with the grilling in § 0 — the topic, the questions asked with your answers (their
 `ask` ids), the open frontier and the next round — tells you the context is at its ceiling and asks whether to hand

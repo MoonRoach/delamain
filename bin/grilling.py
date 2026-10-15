@@ -167,13 +167,20 @@ def touch(sid: str) -> None:
         _save(sid, data)
 
 
-def mark_owner_asked(stage: str) -> None:
-    """`hub succeed --owner-asked` ran: the successor's automatic takeover may go ahead mid-grilling."""
-    for sid in hub_sessions(stage) or []:
-        data = _load(sid)
-        if data:
-            data["owner_asked"] = hc.now().isoformat(timespec="seconds")
-            _save(sid, data)
+def authorize_handoff(stage: str, pending: dict, owner_asked: bool) -> None:
+    """Bind the owner's permission to an accepted request, under the caller's autopilot state lock."""
+    data = active_stage(stage) if owner_asked else None
+    if data:
+        pending["grilling_owner_asked"] = {"session": data["session"], "since_ts": data["since_ts"],
+                                           "handoff": str(Path(pending["handoff"]).resolve())}
+
+
+def owner_asked_for(data: dict, pending: dict, handoff: Optional[Path]) -> bool:
+    """A different request, handoff or grilling cannot use an earlier permission."""
+    grant = pending.get("grilling_owner_asked") or {}
+    return bool(handoff and pending.get("handoff") and isinstance(grant, dict)
+                and grant.get("session") == data.get("session") and grant.get("since_ts") == data.get("since_ts")
+                and str(handoff.resolve()) == grant.get("handoff") == str(Path(pending["handoff"]).resolve()))
 
 
 def mark_ceiling(sid: str, tokens: int) -> None:

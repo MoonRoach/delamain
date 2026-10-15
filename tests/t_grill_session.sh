@@ -275,9 +275,8 @@ python3 -c 'import json,sys; p=json.load(open(sys.argv[1]))["pending"]; assert p
 check $? 0 "…and the launch stays recorded"
 grill --stage stage-a --host bg > /dev/null 2>&1; check $? 2 "…so a second launch is refused, not started beside it"
 HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
-HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 FAKE_LOGS=none AGENT_HUB_GRILL_LINK_WAIT_S=0 grill --stage stage-a --host bg > $O/bg2.out 2>&1; check $? 0 "bg without a link yet: exit 0"
-grep -q "claude attach bg-1234abcd" $O/bg2.out; check $? 0 "…and says how to reach it"
+grep -q "claude attach $G1" $O/bg2.out; check $? 0 "…and says how to reach it"
 HUB_TAG=hub-1 $B/hub grill done --stage stage-a --launch "$(pendingid)" --why "test" >/dev/null 2>&1
 FAKE_BG=untrusted FAKE_TRUSTED=/nowhere grill --stage stage-a --host bg > $O/bg3.out 2>&1; check $? 1 "bg in an untrusted folder: exit 1"
 grep -q "not trusted" $O/bg3.out; check $? 0 "…and says what to do"

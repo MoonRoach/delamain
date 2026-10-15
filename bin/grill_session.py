@@ -339,7 +339,12 @@ def listed_bg(cli: str, cwd: Path, names: tuple, since_ms: int, before: Optional
     hits = sorted((r for r in bg_rows(cli, cwd, names) or [] if row_id(r) not in before
                    and isinstance(r.get("startedAt"), (int, float)) and r["startedAt"] >= since_ms),
                   key=lambda r: r["startedAt"])
-    return row_id(hits[-1]) if hits else None
+    if not hits:
+        return None
+    hit = hits[-1]
+    # Keep the full identity from this observation; a later listing may already have dropped the row.
+    sid = hit.get("sessionId") or ""
+    return sid if roles_module().UUID_RE.fullmatch(sid) else row_id(hit)
 
 
 def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
@@ -365,7 +370,8 @@ def start_bg(cli: str, argv: list, cwd: Path, names: tuple) -> tuple:
     full_id = bg_id if roles_module().UUID_RE.fullmatch(bg_id) else None
     if not full_id:
         hits = {r.get("sessionId") for r in bg_rows(cli, cwd, names) or []
-                if r.get("id") == bg_id and roles_module().UUID_RE.fullmatch(str(r.get("sessionId") or ""))}
+                if (r.get("id") == bg_id or str(r.get("sessionId") or "").startswith(bg_id))
+                and roles_module().UUID_RE.fullmatch(str(r.get("sessionId") or ""))}
         full_id = next(iter(hits)) if len(hits) == 1 else None
     if not full_id:
         raise Unsure(f"background session {bg_id} started, but its full sessionId cannot be verified; the launch "
@@ -637,7 +643,11 @@ def cmd_join(a) -> int:
                 if not expected.get("session"):
                     pend["bound"] = identity
             if not expected_session(pend).get("session") and pend.get("host") != "manual":
-                pend.setdefault("joins", {})[identity["session"]] = identity
+                joins = pend.setdefault("joins", {})
+                if identity["session"] not in joins:
+                    hc.journal_append(stage, ROLE, f"grill join: session {identity['session']} waiting for launch "
+                                                   f"{a.launch} to bind; not registered yet")
+                joins[identity["session"]] = identity
                 save_state(stage, state)
                 print("grill join: waiting for the hub to bind the launch result; do not grill yet. "
                       "Repeat this join after binding to confirm registration.")

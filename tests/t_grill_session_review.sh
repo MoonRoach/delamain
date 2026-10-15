@@ -77,6 +77,8 @@ for host in ('desktop', 'codex-app', 'manual', 'bg'):
     if host in ('desktop','codex-app'):
         key = 'start_session' if host == 'desktop' else 'create_thread'
         prompt = next(json.loads(l)[key]['prompt'] for l in out.stdout.splitlines() if l.startswith('{"'+key+'"'))
+    elif host == 'manual':
+        prompt = shlex.split(next(l for l in out.stdout.splitlines() if l.startswith('  cd ')))[-1]
     else:
         prompt = out.stdout
     commands = [c for c in re.findall(r'`([^`\n]+)`', brief+'\n'+prompt)
@@ -145,6 +147,20 @@ p = f.grill('join','--launch',launch,'--session','self',sid=OTHER)
 check(p.returncode == 2 and not f.role(), 'bg wrong identity is rejected',p.stderr)
 p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
 check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD, 'bg expected full identity joins',p.stderr)
+
+# A native candidate that arrives early cannot capture a launch later bound to another full identity.
+f = Fixture(); launch,_ = f.open()
+f.grill('join','--launch',launch,'--session','self',sid=OTHER)
+p = f.grill('bind','--launch',launch,'--session',CHILD,sid=OTHER)
+check(p.returncode == 2 and not f.role(), 'only launcher binds without administrative reason',p.stderr)
+p = f.grill('bind','--launch',launch,'--session',CHILD)
+check(p.returncode == 0 and not f.role(), 'binding ignores a different early candidate',p.stderr)
+p = f.grill('join','--launch',launch,'--session','self',sid=CHILD)
+check(p.returncode == 0 and (f.role() or {}).get('session') == CHILD, 'expected native child wins over early candidate',p.stderr)
+p = f.grill('done','--launch',launch,sid=CHILD)
+check(p.returncode == 0, 'expected child reports after native binding',p.stderr)
+p = f.run('hub','handoff','--stage','stage-a','--out',str(f.root/'HANDOFF-review.md'))
+check(p.returncode == 0, 'hub handoff proceeds after GRILLED',p.stderr)
 
 # M3: stale cleanup cannot remove a new pending launch, even with an administrative reason.
 for args in ((),('--why','owner stopped'),('--launch','CURRENT'),

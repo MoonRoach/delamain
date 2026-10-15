@@ -135,7 +135,13 @@ def normalize_event(event: dict, payload: dict) -> dict:
             if payload.get("hook") in ("board_locks", "polling_guard", "kill_guard") and payload.get("command_projection"):
                 # Each bridge invocation starts a fresh process. Its Bash cd
                 # affects that program only, never the next native/bridge call.
-                commands = guard_events(event, payload["command_projection"])
+                projection = []
+                for item in payload["command_projection"]:
+                    if item["kind"] == "pipeline":
+                        projection.extend(kill_pipeline_views(item, payload))
+                    else:
+                        projection.append(item)
+                commands = guard_events(event, projection)
                 event["_desktop_commands"] = commands
                 tin["command"] = commands[0]["tool_input"]["command"] if commands else ""
             else:
@@ -149,6 +155,44 @@ def normalize_event(event: dict, payload: dict) -> dict:
             tin["command"] = re.sub(r"^(\*\*\* (?:Add File|Update File|Delete File|Move to): )([^\r\n]+)",
                                     lambda match: match[1] + linux_path(match[2]), tin["command"], flags=re.M)
     return event
+
+
+def kill_pipeline_views(pipeline: dict, payload: dict) -> list[dict]:
+    """Preserve native stdin edges using the original guard's executed views.
+
+    Shell bodies are separate programs: a trailing comment or semicolon must
+    not capture/rebind the next native stage. Only actual PipelineAst stages
+    share this lookup context; no recognizer or escape policy is copied here.
+    """
+    sys.path.insert(0, str(Path(linux_path(payload["pluginroot"])) / "hooks"))
+    import kill_guard
+    upstream = []
+    result = []
+    for stage in pipeline["stages"]:
+        replacements = [dict(change, start=change["start"] - stage["start"],
+                             end=change["end"] - stage["start"])
+                        for change in payload.get("command_replacements", [])
+                        if stage["start"] <= change["start"] and change["end"] <= stage["end"]]
+        body = translated_command(stage["script"], replacements)
+        executed = kill_guard.pg.views(kill_guard._drop_ssh(body), True)[0]
+        levels = list(kill_guard._levels(executed))
+        if kill_guard._has_source(upstream):
+            # The original hook scans raw source for its escape marker. Keep
+            # this sink's scope, never an upstream bridge's marker. Commenting
+            # every line prevents quoted display data from becoming an action.
+            scope = "\n".join("# " + line for line in body.splitlines())
+            for level in levels:
+                for pipe in kill_guard._pipelines(level):
+                    start = pipe[0][0]
+                    # A later statement can still read native stdin (notably
+                    # while-read followed by kill). Retain the complete suffix.
+                    suffix = "".join(text + separator for text, separator in level[start:])
+                    result.append({"kind": "shell", "script":
+                                   "pgrep __desktop_pipeline_source__ | " + suffix + "\n" + scope})
+        # ps in one native stage followed by grep in another is also an original
+        # name-lookup source. Retain prior executed stages for its recognizer.
+        upstream.extend(text for level in levels for text, _ in level)
+    return result
 
 
 def guard_events(event: dict, projection: list[dict]) -> list[dict]:

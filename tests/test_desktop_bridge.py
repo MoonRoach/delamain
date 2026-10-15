@@ -280,6 +280,42 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertTrue(self.denied(self.payload([self.shell(dangerous+" -P 1 # kill-ok: fixture")],hook="kill_guard")))
         self.assertFalse(self.denied(self.payload([{"kind":"argv","argv":["Write-Output",dangerous]}],hook="kill_guard")))
 
+    def test_kill_guard_keeps_only_real_pipeline_dependencies(self):
+        command="lookup | consumer"
+        pipeline={"kind":"pipeline","stages":[{"script":"lookup","start":0,"end":6},
+                                              {"script":"consumer","start":9,"end":17}]}
+        payload=self.payload([pipeline,self.shell("pgrep sleep"),self.shell("xargs kill")],hook="kill_guard")
+        payload["event"]["tool_input"]["command"]=command
+        payload["command_replacements"]=[{"kind":"shell","script":"pgrep sleep","start":0,"end":6},
+                                         {"kind":"shell","script":"xargs kill","start":9,"end":17}]
+        self.assertTrue(self.denied(payload))
+        for first,second,denied in (
+                ("pgrep sleep # trailing comment","xargs kill",True),
+                ("pgrep sleep; echo 1","xargs kill",True),
+                ("pgrep sleep","true; xargs kill",True),
+                ("pgrep sleep",'while read p; do kill "$p"; done',True),
+                ("pgrep sleep",'true; while read p; do kill "$p"; done',True),
+                ("pgrep sleep # kill-ok: source only","xargs kill",True),
+                ("pgrep sleep","xargs kill # kill-ok: sink owns it",False),
+                ("printf 12345","xargs kill",False)):
+            with self.subTest(first=first,second=second):
+                variant=json.loads(json.dumps(payload))
+                for index,body in enumerate((first,second)):
+                    variant["command_replacements"][index]["script"]=body
+                    variant["command_projection"][index+1]["script"]=body
+                self.assertEqual(self.denied(variant),denied)
+        self.assertFalse(self.denied(self.payload([self.shell("pgrep sleep"),self.shell("xargs kill")],hook="kill_guard")))
+        for source in ("pgrep sleep | sort -n","kill 12345","printf '%s' 'pkill -f sleep'"):
+            self.assertFalse(self.denied(self.payload([self.shell(source)],hook="kill_guard")))
+        self.assertTrue(self.denied(self.payload([self.shell("pgrep sleep | xargs kill")],hook="kill_guard")))
+        payload["command_projection"].insert(0,{"kind":"location","path":str(self.b)})
+        normalized=runtime.normalize_event(payload["event"],payload)
+        self.assertEqual([item["cwd"] for item in normalized["_desktop_commands"]],[str(self.b)]*3)
+        # The original hook currently exposes this switch through environment;
+        # its config keys are not registered by hubcore. Preserve that contract.
+        payload["env"]["AGENT_HUB_KILL_GUARD"]="off"
+        self.assertFalse(self.denied(payload))
+
     def test_explicit_native_comments_preserve_escape_without_cross_bridge_escape(self):
         action = self.shell("git push origin HEAD:main")
         self.assertFalse(self.denied(self.payload([action, {"kind": "comment", "script": "# lock-ok: fixture"}])))
@@ -713,6 +749,41 @@ class NativeBridgeTests(unittest.TestCase):
                 self.assertEqual(trap["hookSpecificOutput"]["permissionDecision"],"deny")
                 dynamic=self.bridge(dangerous).rsplit(" shell ",1)[0]+" shell $source"
                 self.assertEqual(self.hook(shell,"kill_guard",dynamic)["hookSpecificOutput"]["permissionDecision"],"deny")
+
+    def test_kill_guard_preserves_native_pipeline_between_bridge_calls(self):
+        # These JSON probes never execute pgrep, xargs, kill, or pkill.
+        pair=self.bridge("pgrep sleep")+" | "+self.bridge("xargs kill")
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                for source in (pair,self.bridge("pgrep sleep | xargs kill"),
+                               self.bridge("pgrep sleep # trailing comment")+" | "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep; echo 1")+" | "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep")+" | "+self.bridge("true; xargs kill"),
+                               self.bridge("pgrep sleep")+" | "+self.bridge('while read p; do kill "$p"; done'),
+                               self.bridge("pgrep sleep")+" | "+self.bridge('true; while read p; do kill "$p"; done'),
+                               self.bridge("ps -ef")+" | "+self.bridge("grep sleep")+" | "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep # kill-ok: source only")+" | "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep")+" | "+self.bridge("pkill -f sleep -P 1 # kill-ok: trap"),
+                               "if ($true) { "+pair+" }",
+                               "& { "+pair+" }",self.bridge("pgrep sleep")+" | xargs kill"):
+                    denied=self.hook(shell,"kill_guard",source)["hookSpecificOutput"]
+                    self.assertEqual(denied["permissionDecision"],"deny")
+                    self.assertIn("Delamain kill guard",denied["permissionDecisionReason"])
+                for source in (self.bridge("pgrep sleep")+"; "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep | sort -n"),"kill 12345",
+                               "Write-Output 'pkill -f sleep'",
+                               "Write-Output '"+pair.replace("'","''")+"'",
+                               self.bridge("printf 12345")+" | "+self.bridge("xargs kill"),
+                               self.bridge("pgrep sleep")+" | "+self.bridge("xargs kill # kill-ok: sink owns it"),
+                               pair+" # kill-ok: whole native pipeline",
+                               "Write-Output 'pgrep sleep' | "+self.bridge("xargs kill")):
+                    self.assertFalse(self.hook(shell,"kill_guard",source))
+                event={"hook_event_name":"PreToolUse","session_id":SID,"cwd":str(self.scratch),
+                       "tool_name":"Bash","tool_input":{"command":pair}}
+                disabled=self.invoke(shell,["-Hook","kill_guard"],json.dumps(event),hook=True,
+                                     env={**self.env,"AGENT_HUB_KILL_GUARD":"off"})
+                self.assertEqual(disabled.returncode,0,disabled.stderr)
+                self.assertFalse(disabled.stdout.strip())
 
     def test_real_transcript_path_and_tool_workdir(self):
         transcript = self.scratch / "native-rollout.jsonl"

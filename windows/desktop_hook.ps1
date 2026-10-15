@@ -38,7 +38,22 @@ try {
         $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($command, [ref]$tokens, [ref]$parseErrors)
         $commands = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true))
+        $pipelineViews = @{}
         foreach ($call in $commands) {
+            $pipeline = $call.Parent
+            if ($Hook -eq 'kill_guard' -and $pipeline -is [Management.Automation.Language.PipelineAst] -and
+                $pipeline.PipelineElements.Count -gt 1) {
+                # Keep real native pipe dependencies in addition to individual
+                # calls. An enclosing if/function is outside this exact extent.
+                $key = [string]$pipeline.Extent.StartOffset + ':' + [string]$pipeline.Extent.EndOffset
+                if (-not $pipelineViews.ContainsKey($key)) {
+                    $pipelineViews[$key] = $true
+                    $stages = @($pipeline.PipelineElements | ForEach-Object {
+                        @{ script = $_.Extent.Text; start = $_.Extent.StartOffset; end = $_.Extent.EndOffset }
+                    })
+                    $projection += @{ kind = 'pipeline'; stages = $stages }
+                }
+            }
             $first = $call.CommandElements[0]
             # A literal script block is executed as a block, not as a bridge path.
             # FindAll inspects its nested calls independently below.

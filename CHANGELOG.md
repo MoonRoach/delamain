@@ -8,9 +8,10 @@
   `AGENT_HUB_GRILLING_SKILL`, default `grill`) and by `hub grilling start`, and cleared by `hub grilling end`, a
   takeover, or `AGENT_HUB_GRILLING_STALE_MIN` (240) minutes without an owner prompt. While it holds, the context-budget
   message says to finish the grilling instead of handing over, the autopilot's Bash/Write/Edit gate stays open, and
-  `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`,
-  95% of a Codex window, else 900k) the handoff becomes due all the same and its § 0 carries the grilling for the
-  successor to resume.
+  `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`; a successor started before the grilling began does
+  not take over automatically. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`, 95% of a Codex window, else 900k)
+  the hub writes the handoff with the grilling in its § 0 and asks the owner whether to hand over; the successor resumes
+  the grilling.
 - **A kill by name or pattern is refused: it, not the host, killed four agents on 14.10.** Four headless agents and
   Claude Desktop got SIGTERM at 22:56 from one `pkill` run by a fifth agent: `pkill -f "[s]leep 300" -P 1`. macOS (BSD)
   `pkill` reads options only before the first pattern, so `-P` and `1` became two more patterns, and `1` matched

@@ -171,9 +171,11 @@ grilling marks that the stage's hub is grilling the owner (bin/grilling.py): sta
 the owner stops it, status to show it. --session: the hub's session (default this one; the owner at a terminal: the
 registered hub's); --stage, else the stage whose hub that session is. Only a registered hub's session is marked. While
 the mark holds (until end, a takeover, or AGENT_HUB_GRILLING_STALE_MIN without an owner prompt), with the autopilot on,
-succeed (a new successor, also --again) and handoff (a draft) refuse, exit 2, unless --owner-asked — the owner asked
-for this handoff — or the budget hook recorded the context ceiling; a draft written then gets a § 0 item to carry the
-grilling (topic, questions and answers with their `ask` ids, open frontier, next round) for the successor to resume.
+succeed (a new successor, --again, --fallback) refuses, exit 2, unless --owner-asked — the owner asked for this handoff;
+handoff (a draft) refuses the same way unless --owner-asked or the budget hook recorded the context ceiling, and a draft
+written then gets a § 0 item to carry the grilling (topic, questions and answers with their `ask` ids, open frontier,
+next round) for the successor to resume; a successor's `takeover --auto-handoff` waits too unless succeed ran with
+--owner-asked.
 effort prints the effort a Claude Code session runs at now and where it was read (bin/session_effort.py): the hook input,
 $CLAUDE_EFFORT of the Bash tool, the last assistant record of the transcript, the `--effort` of a `claude --bg` session's
 state.json, the Desktop session record, the CLI process argv — most current first; the first that answers wins and the
@@ -1051,6 +1053,12 @@ def _cmd_takeover(a) -> int:
                             f"`hub start --stage {stage} --goal \"<what the stage delivers>\" --session <your session id>`")
     a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
+    grill = grilling.active_stage(stage) if a.auto_handoff and not starting else None
+    if grill and not grill.get("owner_asked") and grill.get("session") not in (session, cli):
+        # a successor started before the hub began grilling the owner: it waits until the grilling ends
+        raise hc.UsageError(f"takeover: the hub of stage {stage} is grilling the owner (since "
+                            f"{str(grill.get('since'))[11:16]}): an automatic takeover waits until it ends "
+                            f"(`hub grilling end`) or the owner asks for the handoff — then run this command again")
     env_sid = hc.session_id()
     if env_sid and env_sid != cli:
         print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
@@ -1592,9 +1600,13 @@ def cmd_succeed(a) -> int:
         raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
                             "background session unasked. The owner, at a terminal, may pass --force")
     pend = autopilot.load_state(stage).get("pending") or {}
-    grill = None if a.fallback or a.replace else grilling.active_stage(stage)  # those continue a handoff in flight
-    if grill and autopilot.enabled() and not a.owner_asked and not grill.get("ceiling"):
-        raise hc.UsageError(grilling.refusal("succeed", stage, grill))
+    # --fallback starts a successor too; --replace swaps one that already took over (the grilling hub is gone by then)
+    grill = None if a.replace else grilling.active_stage(stage)
+    if grill and autopilot.enabled():
+        if not a.owner_asked:  # the ceiling does not lift it: the owner says whether the grilling moves on
+            raise hc.UsageError(grilling.refusal("succeed", stage, grill))
+        if not a.dry_run:
+            grilling.mark_owner_asked(stage)  # the successor's automatic takeover may go ahead
     if a.fallback or (a.replace and not a.handoff):
         # the handoff the pending successor was started from: the numbers come out as they did then
         handoff = pend.get("handoff")
@@ -1649,6 +1661,8 @@ def cmd_grilling(a) -> int:
         raise hc.UsageError("grilling: no stage — pass --stage (this session is not a registered hub)")
     stage = hc.check_stage(stage)
     hubs = grilling.hub_sessions(stage)
+    if hubs is None:
+        raise hc.Failure(f"grilling: the registry of stage {stage} cannot be read (roles.json)")
     if not hubs:
         raise hc.UsageError(f"grilling: stage {stage} has no registered hub")
     if a.action == "status":
@@ -1660,7 +1674,7 @@ def cmd_grilling(a) -> int:
     if sid and sid not in hubs:
         raise hc.UsageError(f"grilling: session {sid[:8]} is not the hub of stage {stage} — only the registered hub's "
                             "grilling holds its handoff (the owner at a terminal: run it without a session)")
-    at_terminal, sid = not sid, sid or hubs[0]
+    at_terminal, sid = not sid, grilling.canonical(stage, sid or hubs[0])
     if a.action == "start":
         m = grilling.start(stage, sid, "hub grilling start", a.topic or "")
         print(f"grilling marked in progress in the hub of {stage} (session {sid[:8]}, since {m['since']}): automatic "

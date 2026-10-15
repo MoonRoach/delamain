@@ -42,8 +42,8 @@ Grilling (bin/grilling.py): a Skill call, a SKILL.md read or an owner prompt tha
 AGENT_HUB_GRILLING_SKILL marks the hub's grilling; an owner prompt refreshes the mark. While it holds, the warning tells
 the hub to finish the grilling and run `hub grilling end` instead of handing over (said again at once when the grilling
 starts, ends or reaches the ceiling), and at the block threshold only the BLOCK_TOOLS stay closed (no autopilot gate on
-Bash/Write/Edit). At AGENT_HUB_GRILLING_CEILING the mark records the ceiling and the usual hand-over text returns, with
-what the handoff must carry for the successor to resume the grilling.
+Bash/Write/Edit). At AGENT_HUB_GRILLING_CEILING the mark records the ceiling and the autopilot gate returns, but the text
+says to write the handoff now, carrying the grilling, and to ask the owner: `hub succeed` still wants --owner-asked.
 Fail-open: any error of its own -> exit 0, no output.
 """
 from __future__ import annotations
@@ -328,7 +328,7 @@ def grilling_hold(gr, grill: dict, ceiling_k: str, auto: bool) -> str:
             f"session{', and `hub succeed` / `hub handoff` refuse meanwhile' if auto else ''}. When the topic's frontier is empty or the "
             f"owner stops the grilling, run `{gr.shell_tool('hub')} grilling end --stage {stage}`; the next budget note "
             f"then gives the handoff steps. If it has already ended, run that now. At {ceiling_k}, the context ceiling, "
-            "the handoff becomes due all the same and carries the grilling.")
+            "you write the handoff, carrying the grilling, and ask the owner whether to hand over.")
 
 
 def emit(event: str, **fields) -> None:
@@ -414,7 +414,9 @@ def main() -> None:
                 gr.mark_ceiling(sid, tokens)  # `hub succeed` / `hub handoff` pass from now on
         except Exception:  # noqa: BLE001 — fail-open: as without a grilling
             grill, at_ceiling = None, False
-    carry = f" {gr.carry_note(grill['stage'])}" if at_ceiling else ""
+    # at the ceiling mid-grilling: write the handoff, carrying the grilling, and leave the move to the owner
+    carry = (f"The context ceiling {fmt(gr.ceiling(window))} is reached mid-grilling. {gr.ceiling_note(grill['stage'])} "
+             if at_ceiling else "")
     holding = bool(grill) and not at_ceiling  # the grilling holds the handoff back
 
     if event == "PreToolUse":
@@ -443,14 +445,14 @@ def main() -> None:
             if passes:
                 return
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
-                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {plan(True)}{carry}"))
+                f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit. {carry}{plan(True)}"))
             return
         if mentions(data.get("tool_input"), escape):
             return
         emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
             f"Session context is {fmt(tokens)} tokens, at or above the {fmt(block)} limit: {gated} are closed, every "
             f"turn here is expensive. {todo} Only handing the work over passes: a tool input that names a "
-            f"HANDOFF-*.md file or carries the marker handoff-ok (pattern: {escape.pattern}).{carry}"))
+            f"HANDOFF-*.md file or carries the marker handoff-ok (pattern: {escape.pattern}). {carry}".rstrip()))
         return
 
     raw_state = hc.setting("AGENT_HUB_STATE_DIR")
@@ -470,15 +472,14 @@ def main() -> None:
     if holding:
         emit(event, additionalContext=head + grilling_hold(gr, grill, ceiling_k=fmt(gr.ceiling(window)), auto=auto))
         return
-    if at_ceiling:
-        head += f"The context ceiling {fmt(gr.ceiling(window))} is reached mid-grilling: this session cannot go on. "
+    head += carry
     extra = (f" The {fmt(block)} limit is already passed: {gated} pass only with a HANDOFF-*.md path or the "
              "marker handoff-ok." if tokens >= block
              else f" At {fmt(block)} new {gated} calls will be denied (except a handoff).")
     if hub_stage:
-        emit(event, additionalContext=f"{head}{plan(tokens >= block or at_ceiling)}{carry}")
+        emit(event, additionalContext=f"{head}{plan(tokens >= block or at_ceiling)}")
         return
-    emit(event, additionalContext=f"{head}{todo}{extra}{carry}")
+    emit(event, additionalContext=f"{head}{todo}{extra}")
 
 
 if __name__ == "__main__":

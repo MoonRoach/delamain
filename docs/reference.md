@@ -744,7 +744,8 @@ shares the hub's session id and could run `hub succeed` too — the hub runs it 
 
 A hub that is grilling you (the companion `grilling` skill) is not handed over until the grilling ends: you finish the
 conversation with the same session. The hub's grilling is marked when the skill loads — the budget hook sees a Skill
-call (Claude Code), a shell read of the skill's `SKILL.md` (how Codex loads a skill) or your prompt invoking it
+call (Claude Code), a shell command that reads the skill's `SKILL.md` with `cat`, `sed`, `head` and the like (how
+Codex loads a skill; `ls` or `test -f` of it does not count) or your prompt invoking it
 (`/…:grilling`, `$grilling`); the skill name is matched by `AGENT_HUB_GRILLING_SKILL` (a regex, default `grill`) — and
 by `hub grilling start`, which the hub skill tells the hub to run on either engine. `hub grilling end` clears it; the
 hub runs it once the topic's frontier is empty or you stop the grilling, and you can run it at a terminal with
@@ -754,18 +755,22 @@ hub runs it once the topic's frontier is empty or you stop the grilling, and you
   grilling ends, the next message gives the handoff procedure at once, not a warn step later;
 - past the block threshold only the delegation tools (`AGENT_HUB_CONTEXT_BLOCK_TOOLS`) stay closed: Bash, Write and Edit
   are not gated, so your answers still go to `ask`;
-- `hub succeed` (a new successor, `--again` too; not `--fallback` or `--replace`, which continue one already started)
-  and `hub handoff` refuse with exit 2 unless `--owner-asked`: you asked for this handoff.
+- `hub succeed` (a new successor, `--again` and `--fallback` too; not `--replace`, which swaps one that already took
+  over) and `hub handoff` refuse with exit 2 unless `--owner-asked`: you asked for this handoff;
+- a successor started before the grilling began does not take over automatically (`hub takeover --auto-handoff`
+  refuses) until the grilling ends or `hub succeed --owner-asked` ran.
 
-The mark belongs to the hub's session (`<state>/grilling/<session id>.json`) and counts only while that session is the
-stage's registered hub, so any takeover ends it. Every prompt of yours in that session refreshes it; it lapses
-`AGENT_HUB_GRILLING_STALE_MIN` minutes (default 240) after you last spoke, journaled, so a forgotten mark does not hold
-handoffs for ever. At the context ceiling `AGENT_HUB_GRILLING_CEILING` (default 95% of a Codex rollout's context
-window, else 900k tokens — a 1M window) the session cannot go on: the hook records the ceiling in the mark, the usual
-"hand over now" text and gate return, `hub succeed`/`hub handoff` pass, and the handoff carries the grilling — its § 0
-holds the topic, the questions asked with your answers (their `ask` ids), the open frontier and the next round — and the
-successor resumes it (loads the skill, `hub grilling start`). A draft written with `--owner-asked` carries it the same
-way.
+The mark belongs to the hub's session (`<state>/grilling/<session id>.json`, under the CLI session id whichever alias
+named it) and counts only while that session is the stage's registered hub, so any takeover ends it; a registry that
+cannot be read keeps it. Every prompt of yours in that session refreshes it; it lapses `AGENT_HUB_GRILLING_STALE_MIN`
+minutes (default 240) after you last spoke, journaled, so a forgotten mark does not hold handoffs for ever (the prompt
+that ends a longer pause does not revive it). At the context ceiling `AGENT_HUB_GRILLING_CEILING` (default 95% of a
+Codex rollout's context window, else 900k tokens — a 1M window) the session cannot go on for long: the hook records the
+ceiling in the mark and the autopilot gate returns, but the hub does not hand over by itself. It writes the handoff
+(`hub handoff` passes at the ceiling) with the grilling in § 0 — the topic, the questions asked with your answers (their
+`ask` ids), the open frontier and the next round — tells you the context is at its ceiling and asks whether to hand
+over; only on your yes does it run `hub succeed --owner-asked`. The successor resumes the grilling (loads the skill,
+`hub grilling start`). A draft written with `--owner-asked` carries it the same way.
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
 `ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;

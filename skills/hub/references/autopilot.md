@@ -20,9 +20,9 @@ yourself, never from a sub-agent.
 
 **Grilling.** While you grill the owner (`hub grilling start` … `hub grilling end`), the budget message says to finish
 the grilling instead, and `hub succeed`/`hub handoff` refuse unless `--owner-asked` — only when the owner asked for the
-handoff in this conversation. At the context ceiling the message says "hand over now": then § 0 of the handoff carries
-the grilling (topic, questions asked with the owner's answers and their `ask` ids, open frontier, next round), and you
-tell the owner it moves to the successor. A successor whose handoff carries a grilling loads the grilling skill, runs
+handoff in this conversation. At the context ceiling write the handoff at once with the grilling in § 0 (topic,
+questions asked with the owner's answers and their `ask` ids, open frontier, next round), tell the owner the context is
+at its ceiling and ask whether to hand over; `--owner-asked` only after their yes. A successor whose handoff carries a grilling loads the grilling skill, runs
 `hub grilling start` and resumes it from there.
 
 For **Codex Desktop**, the following procedure governs prepared requests, start lines and ALARM.

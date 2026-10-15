@@ -39,6 +39,9 @@ $B/hub grilling end --stage stage-a > /dev/null; check "$(marked)" no "end: \`hu
 $B/hub grilling status --stage stage-a | grep -q '^no grilling in progress'; check $? 0 "status: …and says so"
 # Codex loads a skill by reading its SKILL.md through the shell
 cbh PostToolUse Bash "$(bash_in 'cat /x/skills/hub/SKILL.md')" > /dev/null; check "$(marked)" no "mark, Codex negative: reading another skill's SKILL.md sets nothing"
+for c in 'ls /x/skills/grilling/SKILL.md' 'test -f ~/.codex/skills/grilling/SKILL.md && echo y' 'git diff -- skills/grilling/SKILL.md'; do
+  cbh PostToolUse Bash "$(bash_in "$c")" > /dev/null; check "$(marked)" no "mark, Codex negative: naming the file is not reading it — $c"
+done
 cbh PostToolUse Bash "$(bash_in "sed -n '1,200p' ~/.codex/plugins/cache/mattpocock-skills/skills/grilling/SKILL.md")" > /dev/null; check "$(marked)" yes "mark, Codex: a shell read of the grilling skill's SKILL.md marks it"
 $B/hub grilling end --stage stage-a > /dev/null
 PROMPT='а что такое грилинг вообще?' cbh UserPromptSubmit > /dev/null; check "$(marked)" no "mark, negative: words about grilling in a prompt are not an invocation"
@@ -79,19 +82,22 @@ skill mattpocock-skills:grilling > /dev/null
 export AGENT_HUB_GRILLING_CEILING=600000
 usage 610000
 cbh PreToolUse Bash "$(bash_in 'git status')" > $R/c1.out
-grep -q '"deny".*Hand over now' $R/c1.out && grep -q 'carry the grilling' $R/c1.out && grep -qF 'grilling start --stage stage-a' $R/c1.out
-check $? 0 "ceiling: mid-grilling the gate returns, and the text says to carry the grilling for the successor"
+grep -q '"deny"' $R/c1.out && grep -q 'do not hand over by yourself' $R/c1.out && grep -q 'carry the grilling in its § 0' $R/c1.out && grep -q 'ask whether to hand over now' $R/c1.out
+check $? 0 "ceiling: mid-grilling the gate returns; the text says to write the handoff carrying the grilling and to ask the owner"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["ceiling"]' "$(MK)"; check $? 0 "ceiling: recorded in the mark"
 J | grep -q 'grilling: the context ceiling is reached'; check $? 0 "ceiling: journaled"
-cbh UserPromptSubmit > $R/c2.out; grep -q 'The context ceiling 600k is reached mid-grilling' $R/c2.out && grep -q 'Autopilot is on' $R/c2.out && grep -q 'carry the grilling' $R/c2.out
-check $? 0 "ceiling: the warning gives the handoff procedure with the carry clause"
-succeed > $R/c3.out 2>&1; check $? 0 "ceiling: \`hub succeed\` passes without --owner-asked"
+cbh UserPromptSubmit > $R/c2.out; grep -q 'The context ceiling 600k is reached mid-grilling' $R/c2.out && grep -q 'Autopilot is on' $R/c2.out && grep -q 'with --owner-asked added' $R/c2.out
+check $? 0 "ceiling: the warning gives the handoff procedure, to run only on the owner's yes (--owner-asked)"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub handoff --stage stage-a --out $R/ceil.md > $R/c3.out 2>&1; check $? 0 "ceiling: \`hub handoff\` passes without a flag (the handoff is prepared)"
+grep -q '^5\. A grilling with the owner was in progress' $R/ceil.md; check $? 0 "ceiling: …and its § 0 carries the grilling"
+succeed > $R/c4.out 2>&1; check "$?:$(grep -c 'context ceiling is reached: write the handoff and ask the owner' $R/c4.out)" "2:1" "ceiling: \`hub succeed\` still refuses without the owner's word"
+succeed --owner-asked > $R/c5.out 2>&1; check $? 0 "ceiling: …and passes with --owner-asked"
 unset AGENT_HUB_GRILLING_CEILING
 # Codex: the ceiling defaults to 95% of the rollout's window
 setup; skill mattpocock-skills:grilling > /dev/null
 codex_usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":int(sys.argv[1])},"model_context_window":400000}}}))' "$1" >> $TR; }
 codex_usage 350000; cbh PreToolUse Bash "$(bash_in 'git status')" > $R/x1.out; check "$(wc -c < $R/x1.out | tr -d ' ')" 0 "ceiling, Codex: past the block (85%) but under 95% of the window, the grilling holds"
-codex_usage 385000; cbh PreToolUse Bash "$(bash_in 'git status')" | grep -q 'carry the grilling'; check $? 0 "ceiling, Codex: at 95% of the window the handoff is due, carrying the grilling"
+codex_usage 385000; cbh PreToolUse Bash "$(bash_in 'git status')" | grep -q 'carry the grilling'; check $? 0 "ceiling, Codex: at 95% of the window the handoff is prepared, carrying the grilling"
 
 # ================================================================== staleness and the session binding
 setup; usage 1000; skill mattpocock-skills:grilling > /dev/null
@@ -103,6 +109,8 @@ PY
 touched(){ python3 -c 'import json,sys,time; print(int((time.time()-json.load(open(sys.argv[1]))["touched"])//60))' "$(MK)"; }
 age 100; PROMPT='[delamain watchdog] stage-a: 1 journal lines…' cbh UserPromptSubmit > /dev/null; check "$(touched)" 100 "stale: the watchdog's wake is not the owner, it does not refresh the mark"
 PROMPT='вариант B, дальше' cbh UserPromptSubmit > /dev/null; check "$(touched)" 0 "stale: the owner's answer refreshes the mark"
+age 300; PROMPT='я вернулся, продолжим' cbh UserPromptSubmit > /dev/null; check "$(marked)" no "stale: the prompt that ends a pause past the bound does not revive the mark"
+skill mattpocock-skills:grilling > /dev/null
 age 241; usage 320000
 cbh PostToolUse Bash "$(bash_in ls)" > $R/s1.out; grep -q 'Autopilot is on' $R/s1.out; check "$?:$(marked)" "0:no" "stale: 241 min after the owner last spoke the mark lapses and the handoff advice returns"
 J | grep -q 'grilling marker of hub session 11111111 lapsed'; check $? 0 "stale: the lapse is journaled"
@@ -112,6 +120,34 @@ AGENT_HUB_GRILLING_STALE_MIN=5 succeed > $R/s3.out 2>&1; check $? 0 "stale: AGEN
 setup; skill mattpocock-skills:grilling > /dev/null
 CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --handoff $H > /dev/null 2>&1
 $B/hub grilling status --stage stage-a | grep -q '^no grilling in progress'; check $? 0 "takeover: the mark of the previous hub's session no longer holds"
+
+# a Desktop hub has two ids: the mark is kept under the CLI one, which the hooks see, whichever names it
+setup; usage 1000
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); h=d["roles"]["hub"]; h["session"]="local_abc123"; h["cli_session_id"]=sys.argv[2]; json.dump(d,open(p,"w"))' "$R/stage-a/roles.json" $HUB1
+$B/hub grilling start --stage stage-a --session local_abc123 > /dev/null 2>&1; check "$(marked):$(marked local_abc123)" "yes:no" "alias: \`start --session local_…\` keeps the mark under the CLI id"
+usage 510000; cbh PreToolUse Bash "$(bash_in 'ask close q-1 --answer B')" > $R/d1.out; check "$(wc -c < $R/d1.out | tr -d ' ')" 0 "alias: …so the hook (CLI id) sees it"
+$B/hub grilling end --stage stage-a --session local_abc123 > /dev/null 2>&1; check "$(marked)" no "alias: \`end --session local_…\` removes it"
+# an unreadable registry is not a takeover; a mark that cannot be removed is not reported as ended
+setup; skill mattpocock-skills:grilling > /dev/null
+cp $R/stage-a/roles.json $R/roles.bak; echo '{broken' > $R/stage-a/roles.json
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import grilling; assert grilling.active(sys.argv[2])' "$B" $HUB1; check "$?:$(marked)" "0:yes" "registry unreadable: the mark keeps holding, and stays"
+cp $R/roles.bak $R/stage-a/roles.json
+chmod 555 $AGENT_HUB_STATE_DIR/grilling
+$B/hub grilling end --stage stage-a > $R/e1.out 2>&1; rc=$?
+chmod 755 $AGENT_HUB_STATE_DIR/grilling
+check "$rc:$(grep -c 'cannot remove the grilling mark' $R/e1.out):$(marked)" "1:1:yes" "end: a mark that cannot be removed is an error, not \"ended\""
+
+# ================================================================== a successor started before the grilling began
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/t0.out 2>&1; check $? 0 "takeover: a successor is started (no grilling yet)"
+skill mattpocock-skills:grilling > /dev/null
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --fallback > $R/t1.out 2>&1; check "$?:$(grep -c 'grilling with the owner is in progress' $R/t1.out)" "2:1" "fallback: refused while grilling"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/t2.out 2>&1; check "$?:$($B/roles --stage stage-a get hub)" "2:$HUB1" "takeover: the successor's automatic takeover waits while the hub grills the owner"
+grep -q 'an automatic takeover waits until it ends' $R/t2.out; check $? 0 "takeover: …and says why"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub grilling end > /dev/null
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/t3.out 2>&1; check "$?:$($B/roles --stage stage-a get hub)" "0:$HUB2" "takeover, control: after \`hub grilling end\` it goes ahead"
+setup; skill mattpocock-skills:grilling > /dev/null
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --owner-asked > $R/t4.out 2>&1; check $? 0 "takeover: \`hub succeed --owner-asked\` starts a successor mid-grilling"
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > $R/t5.out 2>&1; check "$?:$($B/roles --stage stage-a get hub)" "0:$HUB2" "takeover: …and its automatic takeover goes ahead"
 
 # ================================================================== hub succeed / hub handoff
 setup; skill mattpocock-skills:grilling > /dev/null

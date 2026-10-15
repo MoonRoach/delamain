@@ -9,7 +9,7 @@ session is the registered hub of its stage, so a takeover ends it without a step
            skill name matches AGENT_HUB_GRILLING_SKILL (Claude Code), a shell command that reads such a skill's
            SKILL.md (how Codex loads a skill), an owner prompt that invokes one (`/…grilling`, `$grilling`); and
            `hub grilling start`, which the hub skill tells the hub to run on either engine
-  refresh  every owner prompt in that session
+  refresh  every owner prompt in that session (one after the bound does not revive a lapsed mark)
   cleared  `hub grilling end` — the hub runs it once the topic's frontier is empty or the owner stops the grilling; the
            owner can run it at a terminal with --stage
   lapses   AGENT_HUB_GRILLING_STALE_MIN minutes after the owner last spoke (default 240), so a forgotten marker cannot
@@ -18,8 +18,10 @@ While it holds: the budget hook does not tell the hub to hand over (it says to f
 grilling end`), the autopilot's Bash/Write/Edit gate at the block threshold stays open (the owner's answers still go to
 `ask`), and `hub succeed` / `hub handoff` with the autopilot on refuse unless --owner-asked (the owner asked for this
 handoff). At the ceiling AGENT_HUB_GRILLING_CEILING (default 95% of a Codex rollout's context window, else 900000
-tokens) the session cannot go on: the hook records it in the marker, tells the hub to hand over now and carry the
-grilling in the handoff's § 0, and the two commands pass; the successor resumes the grilling.
+tokens) the session cannot go on for long: the hook records it in the marker and tells the hub to write the handoff now,
+carrying the grilling in its § 0 (`hub handoff` passes), and to ask the owner whether to hand over; `hub succeed` still
+wants --owner-asked. A successor started that way resumes the grilling. While the mark holds without --owner-asked, an
+automatic takeover (`hub takeover --auto-handoff`) of a successor started before the grilling began is refused too.
 """
 from __future__ import annotations
 
@@ -40,7 +42,9 @@ DEFAULT_STALE_MIN = 240
 DEFAULT_CEILING = 900_000
 CEILING_SHARE = 0.95
 SERVICE_TAG = "autopilot"  # the tag of the plugin's own journal lines: wakes no `jwait --tag hub`
-SKILL_FILE_RE = re.compile(r"skills/([^/\s'\"`]+)/SKILL\.md")
+# a command that reads the file (a reader at the head of a shell segment), not one that only names it (ls, test, git)
+SKILL_FILE_RE = re.compile(r"(?:^|[;&|\n(]\s*)(?:cat|sed|head|tail|nl|less|more|bat|awk|grep|rg)\b[^;&|\n]*?"
+                           r"skills/([^/\s'\"`]+)/SKILL\.md")
 PROMPT_SKILL_RE = re.compile(r"^\s*/([\w.:-]+)|(?:^|\s)\$([\w.:-]+)")
 SID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,120}")
 
@@ -103,16 +107,26 @@ def _save(sid: str, data: dict) -> None:
     hc.atomic_write(_path(sid), json.dumps(data, ensure_ascii=False, indent=1) + "\n")
 
 
-def hub_record(stage: str) -> dict:
+def hub_record(stage: str) -> Optional[dict]:
+    """The stage's `hub` record; {} when there is none, None when the registry cannot be read (unknown, not "gone")."""
     try:
         return hc.roles_load(stage)["roles"].get("hub") or {}
-    except Exception:  # noqa: BLE001 — a broken registry: no hub known
-        return {}
+    except Exception:  # noqa: BLE001
+        return None
 
 
-def hub_sessions(stage: str) -> list:
+def hub_sessions(stage: str) -> Optional[list]:
+    """Every id of the stage's registered hub (CLI uuid first, then a Desktop local_… id); None: registry unreadable."""
     rec = hub_record(stage)
+    if rec is None:
+        return None
     return [s for s in (rec.get("cli_session_id"), rec.get("session")) if isinstance(s, str) and s]
+
+
+def canonical(stage: str, sid: str) -> str:
+    """The one id a hub's mark is kept under, whichever alias names it: the CLI session id, which the hooks see."""
+    ids = hub_sessions(stage) or []
+    return ids[0] if sid in ids else sid
 
 
 def _journal(stage: str, text: str) -> None:
@@ -124,6 +138,7 @@ def _journal(stage: str, text: str) -> None:
 
 def start(stage: str, sid: str, source: str, topic: str = "") -> dict:
     """Mark the grilling of `sid`, the hub of `stage`; a second start keeps the first one's time and refreshes it."""
+    sid = canonical(stage, sid)
     if _path(sid) is None:
         raise hc.UsageError(f"bad session id {sid!r}")
     old = _load(sid)
@@ -147,9 +162,18 @@ def start(stage: str, sid: str, source: str, topic: str = "") -> dict:
 def touch(sid: str) -> None:
     """The owner spoke in `sid`: an existing marker is fresh again."""
     data = _load(sid) if sid else None
-    if data:
+    if data and active(sid):  # a mark past its bound lapses first; the prompt after a long pause does not revive it
         data["touched"] = time.time()
         _save(sid, data)
+
+
+def mark_owner_asked(stage: str) -> None:
+    """`hub succeed --owner-asked` ran: the successor's automatic takeover may go ahead mid-grilling."""
+    for sid in hub_sessions(stage) or []:
+        data = _load(sid)
+        if data:
+            data["owner_asked"] = hc.now().isoformat(timespec="seconds")
+            _save(sid, data)
 
 
 def mark_ceiling(sid: str, tokens: int) -> None:
@@ -158,7 +182,7 @@ def mark_ceiling(sid: str, tokens: int) -> None:
         data["ceiling"] = hc.now().isoformat(timespec="seconds")
         _save(sid, data)
         _journal(data["stage"], f"grilling: the context ceiling is reached ({tokens // 1000}k tokens) — hub session "
-                                f"{sid[:8]} hands over mid-grilling, the handoff carries it")
+                                f"{sid[:8]} writes a handoff that carries the grilling and asks the owner whether to hand over")
 
 
 def end(sid: str, why: str = "") -> Optional[dict]:
@@ -167,8 +191,10 @@ def end(sid: str, why: str = "") -> Optional[dict]:
         return None
     try:
         _path(sid).unlink()
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError as e:
+        raise hc.Failure(f"cannot remove the grilling mark {_path(sid)}: {e} — it still holds") from None
     _journal(data["stage"], f"grilling ended{': ' + why if why else ''} — hub session {sid[:8]} may hand over again")
     return data
 
@@ -179,7 +205,10 @@ def active(sid: str) -> Optional[dict]:
     data = _load(sid) if sid else None
     if data is None:
         return None
-    if sid not in hub_sessions(data["stage"]):
+    ids = hub_sessions(data["stage"])
+    if ids is None:  # the registry cannot be read now: unknown is not a takeover, the mark keeps holding
+        return data
+    if sid not in ids:
         try:
             _path(sid).unlink()
         except OSError:
@@ -199,7 +228,7 @@ def active(sid: str) -> Optional[dict]:
 
 def active_stage(stage: str) -> Optional[dict]:
     """The holding marker of the stage's registered hub, if any."""
-    return next((m for m in map(active, hub_sessions(stage)) if m), None)
+    return next((m for m in map(active, hub_sessions(stage) or []) if m), None)
 
 
 def refusal(command: str, stage: str, data: dict) -> str:
@@ -208,15 +237,19 @@ def refusal(command: str, stage: str, data: dict) -> str:
             f"{str(data.get('since'))[11:16] or '?'}, {data.get('source')}): no automatic handoff until it ends — the "
             f"owner finishes the conversation with this session. When the topic's frontier is empty or the owner stops "
             f"the grilling, run `{hub} grilling end --stage {stage}`, then hand over. If the owner asked for this "
-            f"handoff now, pass --owner-asked: the handoff then carries the grilling (§ 0) and the successor resumes it.")
+            f"handoff now, pass --owner-asked: the handoff then carries the grilling (§ 0) and the successor resumes it"
+            + (" (the context ceiling is reached: write the handoff and ask the owner)." if data.get("ceiling") else "."))
 
 
-def carry_note(stage: str) -> str:
-    """What a handoff written mid-grilling must hold, for the successor to resume it."""
-    return (f"carry the grilling: in § 0 of the handoff write its topic, the questions asked with the owner's answers "
-            f"(their `ask` ids), the open frontier and the next round; the successor loads the grilling skill, runs "
-            f"`{shell_tool('hub')} grilling start --stage {stage}` and resumes from there. Tell the owner in one line "
-            f"that the grilling moves to the successor.")
+def ceiling_note(stage: str) -> str:
+    """At the ceiling mid-grilling: prepare the handoff, carrying the grilling, and leave the move to the owner."""
+    return (f"The grilling still holds the handoff back: do not hand over by yourself. Stop at the end of this round "
+            f"and write the handoff now (`{shell_tool('hub')} handoff --stage {stage}` passes at the ceiling) and carry "
+            f"the grilling in its § 0: the topic, the questions asked with the owner's answers (their `ask` ids), the "
+            f"open frontier and the next round — a successor loads the grilling skill, runs `hub grilling start` and "
+            f"resumes from there. Then tell the owner in one line that the context is at its ceiling, the handoff is "
+            f"ready and the grilling would go on in a new session, and ask whether to hand over now. Only on their "
+            f"yes: the handoff procedure, with --owner-asked added to `hub succeed`.")
 
 
 def shell_tool(name: str) -> str:

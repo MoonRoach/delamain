@@ -266,6 +266,20 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertFalse(self.denied(self.payload([self.shell("echo safe"), self.shell("printf '%s' 'sleep 120'")], hook="polling_guard")))
         self.assertTrue(self.denied(self.payload([self.shell("echo safe # wait-ok: another process"), self.shell("sleep 120")], hook="polling_guard")))
 
+    def test_kill_guard_dispatches_projected_source_to_original_policy(self):
+        # These are policy input strings only; no process receives a signal.
+        dangerous="pkill -f '[s]leep 300'"
+        denied=self.run_payload(self.payload([self.shell("echo safe"),self.shell(dangerous)],hook="kill_guard"))
+        specific=denied["hookSpecificOutput"]
+        self.assertEqual(specific["permissionDecision"],"deny")
+        self.assertIn("Delamain kill guard",specific["permissionDecisionReason"])
+        for source in ("kill 12345","printf '%s' 'pkill -f sleep'",dangerous+" # kill-ok: deliberate fixture"):
+            with self.subTest(source=source):
+                self.assertFalse(self.denied(self.payload([self.shell(source)],hook="kill_guard")))
+        # The original non-overridable BSD option-order trap remains intact.
+        self.assertTrue(self.denied(self.payload([self.shell(dangerous+" -P 1 # kill-ok: fixture")],hook="kill_guard")))
+        self.assertFalse(self.denied(self.payload([{"kind":"argv","argv":["Write-Output",dangerous]}],hook="kill_guard")))
+
     def test_explicit_native_comments_preserve_escape_without_cross_bridge_escape(self):
         action = self.shell("git push origin HEAD:main")
         self.assertFalse(self.denied(self.payload([action, {"kind": "comment", "script": "# lock-ok: fixture"}])))
@@ -680,6 +694,25 @@ class NativeBridgeTests(unittest.TestCase):
                 dynamic = self.bridge("sleep 120").replace("'sleep 120'", "$source")
                 deny = self.hook(shell, "polling_guard", dynamic)
                 self.assertEqual(deny["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_kill_guard_literal_projection_numeric_pid_and_display(self):
+        # Hook probes only: even the denied/allowed kill strings are never run.
+        dangerous="pkill -f '[s]leep 300'"
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                for command in (self.bridge(dangerous),dangerous):
+                    denied=self.hook(shell,"kill_guard",command)["hookSpecificOutput"]
+                    self.assertEqual(denied["permissionDecision"],"deny")
+                    self.assertIn("Delamain kill guard",denied["permissionDecisionReason"])
+                self.assertFalse(self.hook(shell,"kill_guard","kill 12345"))
+                self.assertFalse(self.hook(shell,"kill_guard","Write-Output 'pkill -f sleep'"))
+                displayed="Write-Output '"+self.bridge(dangerous).replace("'","''")+"'"
+                self.assertFalse(self.hook(shell,"kill_guard",displayed))
+                self.assertFalse(self.hook(shell,"kill_guard",self.bridge(dangerous+" # kill-ok: deliberate fixture")))
+                trap=self.hook(shell,"kill_guard",self.bridge(dangerous+" -P 1 # kill-ok: fixture"))
+                self.assertEqual(trap["hookSpecificOutput"]["permissionDecision"],"deny")
+                dynamic=self.bridge(dangerous).rsplit(" shell ",1)[0]+" shell $source"
+                self.assertEqual(self.hook(shell,"kill_guard",dynamic)["hookSpecificOutput"]["permissionDecision"],"deny")
 
     def test_real_transcript_path_and_tool_workdir(self):
         transcript = self.scratch / "native-rollout.jsonl"

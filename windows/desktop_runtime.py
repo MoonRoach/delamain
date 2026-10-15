@@ -12,7 +12,7 @@ import shlex
 import subprocess
 import sys
 
-HOOKS = {"questions", "delegation", "path_shadow", "board_locks", "polling_guard", "handoff_size", "context_budget"}
+HOOKS = {"questions", "delegation", "path_shadow", "board_locks", "polling_guard", "kill_guard", "handoff_size", "context_budget"}
 APP_ENV = {"CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_APP_TOOLS_PIPE_PATH"}
 IDENTITY_ENV = {"CODEX_THREAD_ID", "AGENT_SESSION_ID"}
 PROXY_ENV = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"}
@@ -132,7 +132,7 @@ def normalize_event(event: dict, payload: dict) -> dict:
         if tin.get("workdir"):
             event["cwd"] = tin["workdir"]
         if event.get("tool_name") == "Bash" and isinstance(tin.get("command"), str):
-            if payload.get("hook") in ("board_locks", "polling_guard") and payload.get("command_projection"):
+            if payload.get("hook") in ("board_locks", "polling_guard", "kill_guard") and payload.get("command_projection"):
                 # Each bridge invocation starts a fresh process. Its Bash cd
                 # affects that program only, never the next native/bridge call.
                 commands = guard_events(event, payload["command_projection"])

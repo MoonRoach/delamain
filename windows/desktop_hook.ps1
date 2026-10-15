@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'handoff_size', 'context_budget')][string]$Hook,
+    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'kill_guard', 'handoff_size', 'context_budget')][string]$Hook,
     [string[]]$HookArgs = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -107,7 +107,7 @@ try {
             }
         }
     }
-    if ($unsafeBridge -and $event.hook_event_name -eq 'PreToolUse' -and $Hook -in @('board_locks', 'polling_guard', 'context_budget')) {
+    if ($unsafeBridge -and $event.hook_event_name -eq 'PreToolUse' -and $Hook -in @('board_locks', 'polling_guard', 'kill_guard', 'context_budget')) {
         $reason = 'Delamain cannot inspect this Desktop bridge call safely. Use one literal shell source, a literal desktop.ps1 path, and tool_input.workdir for multiple invocations; dynamic PowerShell expressions are unsupported for guarded operations.'
         [Console]::Error.WriteLine($reason)
         @{ hookSpecificOutput = @{ hookEventName = 'PreToolUse'; permissionDecision = 'deny'; permissionDecisionReason = $reason } } | ConvertTo-Json -Depth 10 -Compress

@@ -21,6 +21,14 @@ namespace Delamain {
     internal sealed class Foreground : IDisposable {
         internal string[] Arguments;
         string control;
+        FileStream requestLease, acknowledgementLease;
+        static FileStream Lease(string path) {
+            // Windows closes these exact handles on owner death, including
+            // TerminateProcess. DrvFS then exposes a missing request to Linux.
+            // Neither a detached guardian nor a PID lookup extends ownership.
+            return new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite,
+                FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.DeleteOnClose);
+        }
         internal Foreground(string executable, string[] arguments) {
             string trusted = ProcessTransport.WslExecutable();
             if (!String.Equals(executable, "wsl.exe", StringComparison.OrdinalIgnoreCase) &&
@@ -30,9 +38,12 @@ namespace Delamain {
             int at = Array.IndexOf(arguments, "--exec");
             if (at < 0 || at + 1 == arguments.Length)
                 throw new ArgumentException("Owned WSL foreground commands require --exec and an executable.");
-            control = Path.GetTempFileName();
+            control = Path.Combine(Path.GetTempPath(), "delamain-foreground-" + Guid.NewGuid().ToString("N"));
             try {
-                File.WriteAllText(control, "run", new UTF8Encoding(false));
+                requestLease = Lease(control);
+                byte[] initial = Encoding.UTF8.GetBytes("run");
+                requestLease.Write(initial, 0, initial.Length); requestLease.Flush();
+                acknowledgementLease = Lease(control + ".ack");
                 List<string> mapping = new List<string>();
                 for (int i = 0; i <= at; i++) mapping.Add(arguments[i]);
                 mapping.Add("wslpath"); mapping.Add("-a"); mapping.Add("-u"); mapping.Add(control);
@@ -41,13 +52,13 @@ namespace Delamain {
                     throw new IOException("WSL could not resolve its private foreground cancellation path.");
                 List<string> owned = new List<string>();
                 for (int i = 0; i <= at; i++) owned.Add(arguments[i]);
-                owned.Add("python3"); owned.Add("-c"); owned.Add(Guardian); owned.Add(mapped.Output.Trim());
+                owned.Add("python3"); owned.Add("-I"); owned.Add("-c"); owned.Add(Guardian); owned.Add(mapped.Output.Trim());
                 for (int i = at + 1; i < arguments.Length; i++) owned.Add(arguments[i]);
                 Arguments = owned.ToArray();
             } catch { Dispose(); throw; }
         }
-        string ReadControl() {
-            using (FileStream file = new FileStream(control, FileMode.Open, FileAccess.Read,
+        string ReadAcknowledgement() {
+            using (FileStream file = new FileStream(control + ".ack", FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete))
             using (StreamReader reader = new StreamReader(file, Encoding.UTF8)) return reader.ReadToEnd();
         }
@@ -75,7 +86,7 @@ namespace Delamain {
             Decide("cancel");
             Stopwatch deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 1500) {
-                try { if (ReadControl() == "done") break; }
+                try { if (ReadAcknowledgement() == "done") break; }
                 catch (IOException) { }
                 Thread.Sleep(20);
             }
@@ -86,7 +97,7 @@ namespace Delamain {
             if (control == null) return;
             Stopwatch deadline = Stopwatch.StartNew();
             while (deadline.ElapsedMilliseconds < 1500) {
-                try { if (ReadControl() == "done") return; }
+                try { if (ReadAcknowledgement() == "done") return; }
                 catch (IOException) { }
                 Thread.Sleep(20);
             }
@@ -94,13 +105,20 @@ namespace Delamain {
         }
         public void Dispose() {
             if (control == null) return;
-            File.Delete(control);
-            control = null;
+            try {
+                if (requestLease != null) requestLease.Dispose();
+                if (acknowledgementLease != null) acknowledgementLease.Dispose();
+            } finally {
+                File.Delete(control);
+                File.Delete(control + ".ack");
+                control = null;
+            }
         }
         const string Guardian = @"
-import os,signal,subprocess,sys,time
+import os,signal,subprocess,sys,time,traceback
 from pathlib import Path
 control=Path(sys.argv[1])
+acknowledgement=Path(str(control)+'.ack')
 child=None
 reaped=False
 requested=False
@@ -153,12 +171,16 @@ try:
             stop(); reaped=True
             sys.exit(0)
         time.sleep(.02)
+except Exception:
+    # Report launch failures before releasing the WSL entry status pipe.
+    traceback.print_exc()
+    sys.exit(1)
 finally:
     if child is not None and not reaped: stop()
     if status_write is not None: os.close(status_write)
     # Acknowledgement is written only after the exact foreground has exited.
     try:
-        fd=os.open(control,os.O_WRONLY|os.O_TRUNC)
+        fd=os.open(acknowledgement,os.O_WRONLY|os.O_TRUNC)
         try: os.write(fd,b'done')
         finally: os.close(fd)
     except FileNotFoundError: pass
@@ -213,15 +235,18 @@ finally:
     public static class ProcessTransport {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern uint GetWindowsDirectory(StringBuilder buffer, uint size);
-        public static string WslExecutable() {
+        static string WindowsDirectory() {
             // Ask Windows, rather than trusting the caller's cwd, PATH or
             // SystemRoot environment variable. Sysnative bypasses WOW64 redirection.
             StringBuilder directory = new StringBuilder(32768);
             uint length = GetWindowsDirectory(directory, (uint)directory.Capacity);
             if (length == 0 || length >= directory.Capacity)
                 throw new IOException("Windows could not resolve its system directory.");
+            return directory.ToString();
+        }
+        public static string WslExecutable() {
             string system = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess ? "Sysnative" : "System32";
-            string executable = Path.Combine(directory.ToString(), system, "wsl.exe");
+            string executable = Path.Combine(WindowsDirectory(), system, "wsl.exe");
             if (!File.Exists(executable))
                 throw new FileNotFoundException("The trusted Windows WSL executable is unavailable.", executable);
             return executable;
@@ -299,8 +324,16 @@ finally:
         }
         internal static ProcessStartInfo Info(string executable, string[] arguments, bool redirectInput) {
             ProcessStartInfo info = new ProcessStartInfo();
-            info.FileName = String.Equals(executable, "wsl.exe", StringComparison.OrdinalIgnoreCase)
-                ? WslExecutable() : executable;
+            string trusted = WslExecutable();
+            bool wsl = String.Equals(executable, "wsl.exe", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(executable, trusted, StringComparison.OrdinalIgnoreCase);
+            info.FileName = wsl ? trusted : executable;
+            if (wsl) {
+                // WSL itself also uses Windows system environment variables.
+                // Resolve them from the same API as its absolute executable.
+                info.EnvironmentVariables["SystemRoot"] = WindowsDirectory();
+                info.EnvironmentVariables["WINDIR"] = WindowsDirectory();
+            }
             List<string> quoted = new List<string>();
             foreach (string arg in arguments) quoted.Add(Quote(arg));
             info.Arguments = String.Join(" ", quoted.ToArray());

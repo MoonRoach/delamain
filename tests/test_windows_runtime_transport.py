@@ -705,6 +705,8 @@ class ForegroundGuardianTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             base = Path(scratch)
             control = base / "control"
+            acknowledgement = Path(str(control) + ".ack")
+            acknowledgement.touch()
             marker = base / "should-not-launch"
             # Missing or already cancelled startup must never launch a command.
             for initial in (None, "cancel"):
@@ -716,6 +718,7 @@ class ForegroundGuardianTests(unittest.TestCase):
                 self.assertFalse(marker.exists())
                 control.unlink(missing_ok=True)
             control.write_text("run")
+            acknowledgement.write_text("")
             run = subprocess.Popen([sys.executable, "-c", guardian, str(control),
                 sys.executable, "-c", "import os,sys,time; print(os.getpid(),flush=True); print('error 日本語',file=sys.stderr,flush=True); os.close(1); os.close(2); time.sleep(.2); sys.exit(4)"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -733,8 +736,8 @@ class ForegroundGuardianTests(unittest.TestCase):
                 self.assertTrue(stat.exists())
                 control.write_text("complete")
                 deadline = time.monotonic() + 2
-                while time.monotonic() < deadline and control.read_text() != "done": time.sleep(.02)
-                self.assertEqual(control.read_text(), "done")
+                while time.monotonic() < deadline and acknowledgement.read_text() != "done": time.sleep(.02)
+                self.assertEqual(acknowledgement.read_text(), "done")
                 self.assertFalse(stat.exists(), "Completion left the pinned leader unreaped")
                 print(f"embedded normal completion: entry {run.pid}, leader {leader}; stdout/stderr EOF before ack, status 4, pinned leader reaped")
             finally:
@@ -748,6 +751,8 @@ class ForegroundGuardianTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             base = Path(scratch)
             control = base / "control"
+            acknowledgement = Path(str(control) + ".ack")
+            acknowledgement.touch()
             control.write_text("run")
             helper = base / "fixture.py"
             helper.write_text("""import json,os,signal,subprocess,sys,time
@@ -784,7 +789,7 @@ time.sleep(1.5); (base/'effect').touch(); time.sleep(20)
                 print(f"embedded guardian {run.pid}, leader {leader}, child {json.loads((base/'child-owner').read_text())}, detached {detached.pid}: effect={(base/'effect').exists()}, detached effect={(base/'detached-effect').exists()}")
                 self.assertTrue((base / "detached-effect").exists())
                 self.assertFalse((base / "effect").exists(), "Early leader exit abandoned its same-group descendant")
-                self.assertEqual(control.read_text(), "done")
+                self.assertEqual(acknowledgement.read_text(), "done")
             finally:
                 control.unlink(missing_ok=True)
                 if run.poll() is None:
@@ -906,7 +911,7 @@ else {
                         positive.stdout.close(); positive.stderr.close()
 
     @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
-    def test_trusted_wsl_ignores_actual_process_cwd_and_path(self):
+    def test_trusted_wsl_ignores_actual_process_cwd_path_and_system_environment(self):
         # Get-Location and the actual Win32 process cwd intentionally differ.
         # The unsafe control proves this fake is discoverable by Windows itself.
         source = r"""
@@ -914,9 +919,13 @@ param($Transport,$Directory,$ProviderDirectory,$Marker)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 . $Transport
+$linuxDirectory=(& ([Delamain.ProcessTransport]::WslExecutable()) --distribution Ubuntu --exec wslpath -a -u $Directory | Out-String).Trim()
 Set-Location -LiteralPath $ProviderDirectory
 [Environment]::CurrentDirectory=$Directory
 $env:PATH=$Directory+';'+$env:PATH
+$priorSystemRoot=$env:SystemRoot; $priorWindir=$env:WINDIR
+$env:SystemRoot=$Directory
+$env:WINDIR=$Directory
 $env:FIXTURE_SEARCH_MARKER=$Marker
 $info=[Diagnostics.ProcessStartInfo]::new()
 $info.FileName='wsl.exe'; $info.UseShellExecute=$false
@@ -926,7 +935,7 @@ $null=$control.StandardOutput.ReadToEnd(); $control.WaitForExit()
 if (-not [IO.File]::Exists($Marker)) { throw 'Unsafe cwd search did not run the positive fake control' }
 [IO.File]::Delete($Marker); $control.Dispose()
 $code='import json,sys; print(json.dumps([sys.argv[1:],"trusted Linux"]))'
-$arguments=@('--distribution','Ubuntu','--exec','python3','-c',$code,'','日本語 😀','quote" and $literal')
+$arguments=@('--distribution','Ubuntu','--cd',$linuxDirectory,'--exec','python3','-I','-c',$code,'','日本語 😀','quote" and $literal')
 $captured=Invoke-DelamainWsl -Arguments $arguments -Capture
 if ($captured.ExitCode -ne 0) { throw 'Trusted WSL capture failed' }
 $streamed=@(Invoke-DelamainWsl -Arguments $arguments)
@@ -935,7 +944,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Trusted WSL streaming failed' }
 $direct=[Delamain.ProcessTransport]::Run('wsl.exe',$arguments,$true,$false,$false,$null)
 if ($direct.ExitCode -ne 0) { throw 'Trusted Info selection failed' }
 if ([IO.File]::Exists($Marker)) { throw 'Production invoked cwd/PATH fake WSL' }
-[pscustomobject]@{ path=[Delamain.ProcessTransport]::WslExecutable(); bits=[IntPtr]::Size;
+$trustedPath=[Delamain.ProcessTransport]::WslExecutable()
+$env:SystemRoot=$priorSystemRoot; $env:WINDIR=$priorWindir
+[pscustomobject]@{ path=$trustedPath; bits=[IntPtr]::Size;
  cwd=[Environment]::CurrentDirectory; location=(Get-Location).ProviderPath;
  fake=[IO.File]::Exists($Marker); capture=$captured.Output; stream=$streamed; direct=$direct.Output } | ConvertTo-Json -Compress
 """
@@ -952,6 +963,63 @@ if ([IO.File]::Exists($Marker)) { throw 'Production invoked cwd/PATH fake WSL' }
                 for value in (data["capture"],data["stream"][0],data["direct"]):
                     self.assertEqual(json.loads(value),[["","日本語 😀",'quote" and $literal'],"trusted Linux"])
                 print(f"trusted WSL: {shell}, {data['path']}; unsafe cwd fake positive, production fake negative")
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_guardian_ignores_malicious_python_module_in_selected_linux_cwd(self):
+        source=r"""
+param($Transport,$Directory)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+$linuxDirectory=(& ([Delamain.ProcessTransport]::WslExecutable()) --distribution Ubuntu --exec wslpath -a -u $Directory | Out-String).Trim()
+# Positive control: ordinary Python really imports the hostile cwd module.
+$info=[Diagnostics.ProcessStartInfo]::new()
+$info.FileName=[Delamain.ProcessTransport]::WslExecutable()
+$info.Arguments='--distribution Ubuntu --cd "'+$linuxDirectory+'" --exec python3 -c "import subprocess"'
+$info.UseShellExecute=$false; $info.CreateNoWindow=$true
+$info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+$unsafe=[Diagnostics.Process]::Start($info)
+$null=$unsafe.StandardOutput.ReadToEnd(); $errorText=$unsafe.StandardError.ReadToEnd(); $unsafe.WaitForExit()
+if ($unsafe.ExitCode -eq 0 -or -not $errorText.Contains('Untrusted cwd module imported by guardian')) { throw 'Malicious cwd positive control did not run' }
+$unsafe.Dispose()
+$arguments=@('--distribution','Ubuntu','--cd',$linuxDirectory,'--exec','/bin/true')
+$captured=Invoke-DelamainWsl -Arguments $arguments -Capture
+$streamed=@(Invoke-DelamainWsl -Arguments $arguments)
+if ($captured.ExitCode -ne 0 -or $LASTEXITCODE -ne 0) { throw 'Guardian imported a caller cwd Python module' }
+[Console]::Write('isolated guardian passed capture and stream; malicious cwd positive control passed')
+"""
+        for shell in self.native_shells():
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                directory=Path(scratch)
+                (directory/'subprocess.py').write_text("raise RuntimeError('Untrusted cwd module imported by guardian')\n")
+                result=self.run_transport_script(shell,source,directory)
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                self.assertIn(b'isolated guardian passed',result.stdout)
+
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_failed_foreground_launch_keeps_terminal_ack_for_capture_and_stream(self):
+        source=r"""
+param($Transport)
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+. $Transport
+$arguments=@('--distribution','Ubuntu','--exec','/nonexistent-delamain-foreground-fixture')
+$captured=Invoke-DelamainWsl -Arguments $arguments -Capture
+$streamed=@(Invoke-DelamainWsl -Arguments $arguments)
+[pscustomobject]@{capture=$captured.ExitCode;stream=$LASTEXITCODE;output=$captured.Output;lines=$streamed.Count} | ConvertTo-Json -Compress
+"""
+        for shell in self.native_shells():
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory(dir=self.directory) as scratch:
+                result=self.run_transport_script(shell,source,env={**self.env,"TEMP":scratch,"TMP":scratch})
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                data=json.loads(result.stdout)
+                self.assertNotEqual(data['capture'],0)
+                self.assertNotEqual(data['stream'],0)
+                self.assertEqual(data['output'],"")
+                self.assertEqual(data['lines'],0)
+                self.assertIn(b'FileNotFoundError',result.stderr)
+                self.assertNotIn(b'cleanup deadline',result.stderr)
+                self.assertEqual(list(Path(scratch).iterdir()),[],"Failed Popen left private request/ack files")
 
     @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
     def test_owned_wsl_normal_unicode_input_exit_codes_and_control_file_cleanup(self):
@@ -1011,7 +1079,11 @@ exit $value.ExitCode
     def test_early_leader_exit_retains_foreground_until_delayed_pipeline_abort(self):
         self.check_aborted_linux_pipeline(("early",))
 
-    def check_aborted_linux_pipeline(self, modes):
+    @unittest.skipUnless(shutil.which("wsl.exe"), "Real trusted WSL")
+    def test_hard_killed_native_owner_cancels_quiet_and_early_foreground(self):
+        self.check_aborted_linux_pipeline(("ignore", "early"), hard_kill=True)
+
+    def check_aborted_linux_pipeline(self, modes, hard_kill=False):
         # Test the Linux side effect after the caller has returned, not merely
         # disappearance of the Windows client. Exact start tokens pin teardown.
         helper=self.directory/"foreground.py"
@@ -1039,6 +1111,7 @@ else:
  child=subprocess.Popen([sys.executable,__file__,str(base),'detached'],start_new_session=True,
   stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  (base/'foreground-owner').write_text(json.dumps([os.getpid(),token(os.getpid())]))
+ (base/'guardian-owner').write_text(json.dumps([os.getppid(),token(os.getppid())]))
  while not (base/'detached-owner').exists(): time.sleep(.01)
  if mode=='early':
   subprocess.Popen([sys.executable,__file__,str(base),'quiet-child'])
@@ -1055,7 +1128,7 @@ else:
             return result
         linux_helper=wsl("wslpath","-a","-u",str(helper)).stdout.decode().strip()
         source=r"""
-param($Transport,$Helper,$Directory,$Mode,$NativeDirectory)
+param($Transport,$Helper,$Directory,$Mode,$NativeDirectory,$HardKill)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 . $Transport
@@ -1066,6 +1139,10 @@ Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3',$He
         & ([Delamain.ProcessTransport]::WslExecutable()) --distribution Ubuntu --exec python3 $Helper $Directory inspect
         if ($LASTEXITCODE -ne 0) { throw 'Leader inspection failed' }
     }
+    if ($HardKill -eq 'yes') {
+        [IO.File]::WriteAllText((Join-Path $NativeDirectory 'kill-ready'),'ready')
+        Start-Sleep -Seconds 30
+    }
     $_
 } | Select-Object -First 1
 [IO.File]::WriteAllText((Join-Path $NativeDirectory 'return-ticks'),[DateTime]::UtcNow.Ticks.ToString())
@@ -1073,7 +1150,7 @@ Invoke-DelamainWsl -Arguments @('--distribution','Ubuntu','--exec','python3',$He
         cleanup=r"""import json,os,signal,sys,time
 from pathlib import Path
 base=Path(sys.argv[1])
-for name in ('foreground-owner','descendant-owner','detached-owner'):
+for name in ('foreground-owner','descendant-owner','detached-owner','guardian-owner'):
  p=base/name
  if not p.exists(): continue
  pid,expected=json.loads(p.read_text())
@@ -1087,7 +1164,7 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
   if fields[19]==expected: signal.pidfd_send_signal(fd,signal.SIGKILL)
  except (FileNotFoundError,ProcessLookupError): pass
  finally: os.close(fd)
-for name in ('foreground-owner','descendant-owner','detached-owner'):
+for name in ('foreground-owner','descendant-owner','detached-owner','guardian-owner'):
  p=base/name
  if not p.exists(): continue
  pid,expected=json.loads(p.read_text()); deadline=time.monotonic()+3
@@ -1108,14 +1185,39 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
                     controls.mkdir()
                     try:
                         began=time.monotonic()
-                        result=self.run_transport_script(shell,source,linux_helper,linux_directory,mode,scratch,
-                            env={**self.env,"TEMP":str(controls),"TMP":str(controls)})
+                        environment={**self.env,"TEMP":str(controls),"TMP":str(controls)}
+                        if hard_kill:
+                            script=directory/'hard-kill.ps1'
+                            script.write_text(source,encoding="utf-8-sig")
+                            run=subprocess.Popen([shell,"-NoProfile","-File",str(script),
+                                str(ROOT/'windows/process_transport.ps1'),linux_helper,linux_directory,mode,scratch,'yes'],
+                                stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=environment)
+                            try:
+                                deadline=time.monotonic()+20
+                                while not (directory/'kill-ready').exists() and run.poll() is None and time.monotonic()<deadline:
+                                    time.sleep(.02)
+                                if not (directory/'kill-ready').exists():
+                                    if run.poll() is None: run.kill()
+                                    output,error=run.communicate(timeout=8)
+                                    self.fail("Native owner never reached kill point: "+error.decode(errors="replace"))
+                                self.assertTrue(list(controls.iterdir()),"Owner did not retain its cancellation lease")
+                                # TerminateProcess bypasses PowerShell finally and C# Dispose.
+                                killed=time.monotonic(); run.kill()
+                                output,error=run.communicate(timeout=8)
+                                deadline=time.monotonic()+2
+                                while list(controls.iterdir()) and time.monotonic()<deadline: time.sleep(.02)
+                                abort_seconds=time.monotonic()-killed
+                            finally:
+                                if run.poll() is None: run.kill(); run.communicate(timeout=8)
+                            owner={'pid':json.loads((directory/'foreground-owner').read_text())[0]}
+                        else:
+                            result=self.run_transport_script(shell,source,linux_helper,linux_directory,mode,scratch,'no',
+                                env=environment)
+                            self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
+                            owner=json.loads(result.stdout)
+                            abort_seconds=(int((directory/'return-ticks').read_text())-int((directory/'first-ticks').read_text()))/10_000_000
                         elapsed=time.monotonic()-began
-                        self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
-                        owner=json.loads(result.stdout)
                         self.assertEqual(owner['pid'],json.loads((directory/'foreground-owner').read_text())[0])
-                        self.assertEqual(list(controls.iterdir()),[],"Aborted caller left a private cancellation file")
-                        abort_seconds=(int((directory/'return-ticks').read_text())-int((directory/'first-ticks').read_text()))/10_000_000
                         time.sleep(4)
                         if mode=='early':
                             self.assertIn((directory/'leader-state').read_text(),('gone','Z'), 'Abort did not follow leader exit')
@@ -1126,6 +1228,10 @@ for name in ('foreground-owner','descendant-owner','detached-owner'):
                         self.assertLess(abort_seconds,3,"Pipeline abort waited for delayed foreground output")
                         self.assertTrue(detached,"Abort killed a detached worker")
                         self.assertFalse(foreground,"Quiet Linux foreground survived the Windows client cancellation")
+                        self.assertEqual(list(controls.iterdir()),[],"Aborted caller left a private cancellation file")
+                        verify="import sys; from pathlib import Path; p=Path('/proc/'+sys.argv[1]+'/stat'); f=p.read_text().rsplit(')',1)[1].split() if p.exists() else None; assert f is None or f[19]!=sys.argv[2] or f[0]=='Z', 'guardian survived owner cleanup'"
+                        guardian_pid,guardian_token=json.loads((directory/'guardian-owner').read_text())
+                        wsl('python3','-I','-c',verify,str(guardian_pid),guardian_token)
                     finally:
                         print(wsl("python3","-c",cleanup,linux_directory).stdout.decode(),end="")
 

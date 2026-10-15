@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A headless Claude executor starts without MCP servers by default.** `AGENT_HUB_SPAWN_MCP` now defaults to
+  `none` (it was `inherit`): an agent started by `agent spawn` no longer carries the tool lists, instructions and
+  authentication notes of every server in your config, plugins and claude.ai connectors in each turn (about 3.5k tokens
+  and a second of startup). The hub gives a launch servers only when the task needs them — a browser check, a docs
+  lookup, a GitLab or DB server: `--mcp inherit` or `--mcp FILE[,FILE]`; the hub skill, its launch reference and the
+  executor brief template (a "Tools" line) say so, and `setup` question 10 asks whether the project's agents need
+  servers. The journal's `started headless agent …` line and `--dry-run` name `MCP inherit` / `MCP only <files>` and
+  stay silent for `none`. **Behaviour change:** to get the old behaviour back, set `"AGENT_HUB_SPAWN_MCP": "inherit"`
+  in the hub home's `config.json` (or a repository's `.agent-hub/config.json`), or pass `--mcp inherit`. A resumed
+  agent keeps the choice of its launch, the headless hub successor still inherits, Codex has no equivalent switch.
+
 ## 1.0.10 — 2026-10-15
 
 - **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over

@@ -80,7 +80,9 @@ mkdir -p $P/bin; printf '#!/bin/sh\nexit 0\n' > $P/bin/codex; chmod +x $P/bin/co
 CODEX_BIN=$P/bin/codex $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d3.json
 check "$(jf '"--engine codex --sandbox read-only --model gpt-6-astra" in d["start"]' < $P/d3.json)" True "built-in default, Claude author, codex installed -> a Codex reviewer"
 CODEX_BIN=$P/bin/missing $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d4.json
-check "$(jf '"--engine" in d["start"]' < $P/d4.json)" False "negative: Claude author, no codex CLI -> the Claude default stays"
+check "$(jf '["--engine claude" in d["start"], "codex" in d["start"]]' < $P/d4.json)" "[True, False]" "negative: Claude author, no codex CLI -> the Claude default stays (named)"
+CODEX_THREAD_ID=probe CODEX_BIN=$P/bin/missing $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d4b.json
+check "$(jf '["--engine claude" in d["start"], "codex" in d["start"]]' < $P/d4b.json)" "[True, False]" "negative: Claude author, no codex CLI, Codex host -> Claude named explicitly, no Codex launch"
 $B/hub reviewer --json 2>/dev/null > $P/d5.json
 check "$(jf '"--engine" in d["start"]' < $P/d5.json)" False "negative: no --author: the default is unchanged (host engine)"
 exit $fail

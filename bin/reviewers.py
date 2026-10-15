@@ -266,8 +266,8 @@ def load(cwd=None, author: Optional[Author] = None) -> Loaded:
         raw_default = {"name": "agent", "kind": "agent"}
         if author and author.engine == "codex":
             raw_default["engine"] = "claude"
-        elif author and author.engine == "claude" and shutil.which(hc.setting("CODEX_BIN", cwd=cwd) or "codex"):
-            raw_default["engine"] = "codex"
+        elif author and author.engine == "claude":  # Codex when its CLI is there, else Claude — named, never the host's
+            raw_default["engine"] = "codex" if shutil.which(hc.setting("CODEX_BIN", cwd=cwd) or "codex") else "claude"
         entries, origin = [Entry(1, raw_default)], "default"
     for e in entries:
         if e.kind == "agent":

@@ -100,6 +100,9 @@ PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REV
 # Spawn policy (bin/spawn_policy.py): the default effort per model is the repository's to set, like the default effort;
 # what needs a reason and how large a context a resume may start from are the user's own limits (hub home only).
 PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
+# MCP servers of a Claude agent (`agent spawn --mcp`): a repository may choose inherit or none, never a config file —
+# a file's servers are commands the CLI starts without the approval a project's .mcp.json needs (bin/agent mcp_choice).
+PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
 HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
 BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their

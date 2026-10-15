@@ -203,6 +203,14 @@ A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delam
   with `claude --version` (5 s at most; the line `<version> (Claude Code)`) and remembered by path, size and modification
   time in `<hub home>/.state/cli-version/`. If you must hold a model, pin it with
   `AGENT_HUB_MODEL_MAP`.
+- **An agent loads every MCP server unless told otherwise.** A Claude agent inherits the servers of your config, your
+  enabled plugins and your claude.ai connectors, as an interactive session does; their tool names, instructions and
+  "needs authentication" notes sit in every turn's context (about 3.5k tokens on one machine with a dozen servers,
+  mostly unauthenticated, and about a second of startup). `agent spawn --mcp none` starts the agent with no MCP server
+  (`--strict-mcp-config`), `--mcp FILE[,FILE]` with only the servers of those MCP config files (`{"mcpServers": {…}}`,
+  the format of `claude --mcp-config`); `AGENT_HUB_SPAWN_MCP` sets the default. The choice is kept for the agent's
+  resumes. `none` drops the servers of the project's own `.mcp.json` too: a repository whose agents need them sets
+  `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. Codex has no switch for its plugins' servers: the flag is refused there and the setting does not apply.
 - **Turns are counted per run.** `agent status` and `agent-top` show the last run's turns next to the total once an
   agent was resumed (`turns 31 (total 60)`; `31/60` in the agent-top list), so a limit in the brief can be checked.
 
@@ -300,6 +308,13 @@ observer — `agent status` or the poll of `jwait --journal` (every 10 s) — jo
 once per run (marker under `<state dir>/agent-exits/<stage>/`); `agent stop`, a registered role only, and a death
 within the last day are the bounds. The brief and every message reach the CLI on stdin (`prompt-<run>.txt` in the agent's
 directory), never in argv, so a `pkill -f "<words of a brief>"` cannot hit an agent.
+
+An agent runs in its own session and process group (`setsid`), with its stdio in files and no controlling terminal: the
+exit or kill of the session, terminal or app that spawned it — its process group, SIGHUP, the host alone — does not reach
+it, for both engines (`tests/t_kill_guard.sh`). What still reaches it is a signal sent to its own pid: `agent stop`, or a
+kill by name or pattern, which matches every process of the user. On 14.10 an agent's `pkill -f "[s]leep 300" -P 1`
+killed Claude Desktop and four agents: macOS `pkill` reads options only before the first pattern, so `1` became a pattern.
+The `kill_guard.py` hook refuses such commands (see [Agent discipline](#agent-discipline)).
 
 Headless agent, foreground or background sub-agent of the hub, `claude --bg` or Desktop session — which to use when,
 decided by what the work does and who must reach it rather than by how long it takes, with the measurements behind it:
@@ -495,6 +510,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_CODEX_DEFAULT_MODEL` | CLI configured model | Optional Codex model pin when spawn omits `--model`. |
 | `AGENT_HUB_CODEX_MODEL_MAP` | none | Explicit Codex model aliases; Claude aliases are not translated automatically. |
 | `AGENT_HUB_CODEX_HOOK_TRUST` | `bypass` | Detached Codex hook trust policy: bypass runs all enabled hooks without persisted review; `reviewed` requires Codex trust. |
+| `AGENT_HUB_SPAWN_MCP` | `inherit` | MCP servers of a Claude agent without `agent spawn --mcp`: `inherit` (your config, enabled plugins and claude.ai connectors), `none` (no server: `--strict-mcp-config`), or absolute paths of MCP config files, comma-separated (only their servers: `--strict-mcp-config --mcp-config …`). A repository may set `inherit` or `none` only (in its `.agent-hub/config.json`, or in a hub home inside it: `AGENT_HUB_HOME` `project`) — a file's servers are commands the CLI would start without the approval a project's `.mcp.json` needs. `none` and files drop the project's own `.mcp.json` servers too; a repository that needs them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice; a headless autopilot successor always inherits; Codex agents ignore it. |
 | `AGENT_HUB_PERMISSION_MODE` | `bypassPermissions` | Permission mode of headless agents (nobody is there to approve a prompt). |
 | `AGENT_HUB_DEFAULT_REPO` | the git repository you run in (a worktree: its main repository), else `*` | Repository of `lock take/release` and of the main-merge lock `hub takeover --take-main-merge` takes; `*` (every repository) only outside a git checkout or with an explicit `--repo '*'`. The name is the checkout directory's; when it differs from the remote's (`gh … -R owner/name` is matched by the name it gives), set the variable or pass `--repo`. `lock rules init` writes it into `.agent-hub/config.json`. |
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub start` and `hub takeover` take the hub repository's main-merge when it is free (absent or expired), and `hub takeover` also when an earlier hub of the same stage holds it, as if `--take-main-merge` were given. A lock held by anyone else (another stage's hub, a steward) is left alone with the hint to use `--take-main-merge`, whatever this says; so is any held lock on `hub start`. The explicit flag takes it from anyone and prints an `ATTENTION` line with the holder's stage and the age of its latest journal line. Without the setting, a free main-merge of a configured hub repository is reported in the digest. |
@@ -638,8 +654,9 @@ worker subagents.
                       │                                command used before the rename at its skill; when the owner
                       │                                asks for grilling (грилинг, grill me), name the grilling skill
                       └─ context_budget.py             warn once per step above the warn threshold
- PreToolUse  Bash ────── polling_guard.py              deny foreground wait loops, long sleeps,
-                                                       self-matching pgrep -f, one-off CI status reads
+ PreToolUse  Bash ────┬─ polling_guard.py              deny foreground wait loops, long sleeps,
+                      │                                self-matching pgrep -f, one-off CI status reads
+                      └─ kill_guard.py                 deny pkill, killall, kill $(pgrep …), pgrep | xargs kill
              Agent|Task|Workflow ─ delegation.py pre-tool   deny by level rules and subagent effort rules
              * ───────── context_budget.py             past the block threshold deny Agent/Task/SendMessage
                                                        (a handoff still passes)
@@ -651,6 +668,7 @@ worker subagents.
 |---|---|---|
 | `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and past the block threshold it is forced to. |
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
+| `kill_guard.py` | on | Killing processes by name or pattern: `pkill`, `killall`, `killall5`, `kill $(pgrep …)`, `pgrep … \| xargs kill` (`pidof` and `ps … \| grep` count as `pgrep` at any stage of the pipeline), the loop and variable forms in one command (`for p in $(pgrep …); do kill $p`, `P=$(pgrep …); kill $P`), also behind `sudo`/`timeout`/`eval`/`if !` and inside `bash -c "…"`, foreground or background; a segment that starts with `ssh` is not read. A pattern matches every process of the user — other agents, the hub, the desktop app — and on macOS `pkill -f pat -P 1` reads `-P` and `1` as two more patterns. Allowed: `kill <pid>`, `kill -- -<pgid>`, `agent stop`, `pgrep` alone, quoted text no shell runs, and a deliberate pattern kill with `# kill-ok: <reason>` — except a `pkill` with an option or a second pattern after the first one, which the marker does not pass. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. Independent of the dial, its `prompt` hook helps a successor that an older hub started with the command used before the rename (`/agent-hub:hub take over stage …`): when a prompt starts with `/agent-hub:<skill>` and `<skill>` is one of this plugin's skills (read from `skills/`), it adds a note that this is the former name of `/delamain:<skill>`, to invoke that skill and take the rest of the prompt as its arguments; any other prompt gets nothing. |
 
 Each hook fails open: an error of its own (a broken config, an unreadable transcript) never blocks a tool call. Since Claude Code 2.1.299 a plugin hook that crashes, times out or prints half a document would block the call, so every
@@ -783,6 +801,8 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_SUCCESSOR_EFFORT` | the hub's own | hub home only | The Claude successor's `--effort` (`low`…`max`); `hub succeed --effort` overrides it. Unset: the effort the hub runs at now, read from its session (`hub effort`); if it cannot be read `hub succeed` refuses instead of guessing. Codex successors inherit the hub's effort. |
 | `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` | `inherit` | hub home only | The successor's `--permission-mode`; `inherit` = the hub's own (plan mode starts it in the default mode). |
 | `AGENT_HUB_SUCCESSOR_TIMEOUT` | `600` | hub home only | Seconds to wait for the successor's takeover line before the headless fallback. |
+| `AGENT_HUB_KILL_GUARD` | `on` | repo or home | `off` disables the kill guard. |
+| `AGENT_HUB_KILL_ESCAPE` | `kill-ok` | repo or home | The marker word of `# kill-ok: <reason>`. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |
 | `AGENT_HUB_POLL_MAX_SLEEP`, `AGENT_HUB_POLL_MAX_BOUNDED_WAIT` | `30`, `90` | repo or home | Seconds: a bare sleep; a bounded loop's iterations × sleep. |
 | `AGENT_HUB_POLL_ESCAPE` | `poll-ok` | repo or home | The marker word of `# poll-ok: <reason>`. |

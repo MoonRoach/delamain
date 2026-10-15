@@ -236,6 +236,9 @@ check "$(call --bg count):$(pending kind)" "none:headless" "--headless: agent sp
 setup; AGENT_HUB_REASON_POLICY=refuse AGENT_HUB_EFFORT_DEFAULTS='{"opus": "low"}' succeed --model opus --headless > $R/rsn.out 2>&1
 check "$(pending kind)" headless "reason policy refuse: the headless successor still starts"
 grep -q 'hub successor' $R/stage-a/agents/hub-2/meta.json; check $? 0 "…with a reason in its meta.json"
+# AGENT_HUB_SPAWN_MCP is for executors: a headless hub successor keeps the MCP servers its predecessor had
+setup; AGENT_HUB_SPAWN_MCP=none succeed --model opus --headless > /dev/null 2>&1
+grep -q '"mcp": "inherit"' $R/stage-a/agents/hub-2/meta.json; check $? 0 "AGENT_HUB_SPAWN_MCP=none: the headless successor still inherits MCP servers"
 # no takeover by the deadline -> --fallback: log tail journaled, bg stopped (kept), headless from the same handoff
 setup; succeed --model opus > /dev/null 2>&1
 $B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 0 "fallback: exit 0"

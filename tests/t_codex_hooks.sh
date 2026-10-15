@@ -234,6 +234,9 @@ class CodexHooks(unittest.TestCase):
         self.assertIn('exec_command', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertNotIn('run_in_background', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertFalse(self.denied(self.hook('polling_guard.py', 'Bash', {'command': 'echo done'})))
+        self.assertTrue(self.denied(self.hook('kill_guard.py', 'Bash', {'command': 'pkill -f "[s]leep 300" -P 1'})))
+        self.assertFalse(self.denied(self.hook('kill_guard.py', 'Bash', {'command': 'kill 12345'})))
+        self.assertIn('kill_guard.py', [name for name, _ in self.manifest('Bash', {'command': 'true'})])
         run = subprocess.run([str(ROOT / 'bin' / 'lock'), 'take', 'main-merge', '--repo', '*', '--until', '2099-01-01T00:00',
                               '--why', 'test', '--owner', 'Other'], capture_output=True, text=True,
                              env={**self.env, 'CODEX_THREAD_ID': 'other'}, timeout=5)

@@ -147,6 +147,35 @@ printf '#!/bin/bash\necho new https://new.example/2\n' > $O/newurl.sh; chmod +x 
 : > $J; $B/await --wait --log $O/reused.log -- $O/newurl.sh >/dev/null 2>&1
 check "$(grep -c 'https://new.example/2 (' $J)" 1 "reused log: the link is this run's URL"
 
+# 5f. killpg answered with EPERM: macOS says that, not ESRCH, while the group holds only zombies (the leader reaped, a
+# child still dying), and it used to cost the supervisor its line (rc 1, no TIMEOUT / FAILED). The race is ~1% a call and
+# cannot be forced, so the kernel's answer is injected: the real killpg runs (nothing is left running), then it raises.
+cat > $O/stopgroup.py <<'PY'
+import importlib.machinery, importlib.util, os, subprocess, sys, time
+path, started = sys.argv[1:3]
+sys.argv = [path]
+loader = importlib.machinery.SourceFileLoader("await_mod", path)
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("await_mod", loader)); loader.exec_module(mod)
+real = os.killpg
+def eperm(pgid, sig):
+    try:
+        real(pgid, sig)
+    finally:
+        raise PermissionError(1, "Operation not permitted")
+os.killpg = eperm
+p = subprocess.Popen(["/bin/bash", "-c", "sleep 300 & echo $! > \"$1\"; wait", "x", started], start_new_session=True)
+for _ in range(100):
+    if os.path.exists(started) and os.path.getsize(started):
+        break
+    time.sleep(0.05)
+try:
+    mod.stop_group(p)
+    print("ok")
+except Exception as e:
+    print("raised", type(e).__name__)
+PY
+check "$(python3 -I $O/stopgroup.py $B/await $O/stopgroup.child)" ok "an EPERM from killpg (macOS: a group of zombies) does not abort stop_group"
+
 # 6. the hub's own jwait (digest filter) wakes once on the line, though the line is written under the hub's tag family
 : > $J; rm -f $G/*; export EXIT=0
 $B/jlog --tag old "old line" >/dev/null

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`await` no longer loses its journal line on macOS when it stops the command.** `killpg` on a process group whose
+  only members are zombies answers EPERM there (Linux: ESRCH); `await` caught only the second, so a timeout or a
+  SIGTERM/SIGINT on the supervisor could end in a traceback (exit 1) and no `TIMEOUT`/`FAILED` line, in about 1% of
+  stops. Both answers now mean "nothing left to signal". A stop signal that lands between the command's start and the
+  supervisor learning its pid is held and acted on instead of leaving the command running.
+
 ## 1.0.8 — 2026-10-15
 
 - **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's

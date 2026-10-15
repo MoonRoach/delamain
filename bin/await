@@ -99,21 +99,25 @@ def human(secs: float) -> str:
     return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s // 3600}h{s % 3600 // 60:02d}m"
 
 
+def signal_group(pgid: int, sig: int) -> None:
+    """killpg that treats "nothing left to signal" as success. On macOS the kernel answers EPERM, not ESRCH, when the
+    group's only members are zombies (the leader reaped, a child dying and not yet reaped by init): an unhandled
+    PermissionError here used to take the supervisor down without its journal line."""
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def stop_group(proc: subprocess.Popen) -> None:
     """SIGTERM to the command's process group, then, after the grace, SIGKILL to it whatever the leader did: the
     leader's exit on SIGTERM says nothing about a grandchild that ignores it."""
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    signal_group(proc.pid, signal.SIGTERM)
     try:
         proc.wait(timeout=KILL_GRACE_S)
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    signal_group(proc.pid, signal.SIGKILL)
     proc.wait()
 
 
@@ -132,11 +136,18 @@ def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
         if EARLY_SIGNALS:
             raise Interrupted(EARLY_SIGNALS[0])
         with open(log, "ab") as out:
+            # a stop signal between the fork and `proc = ...` would raise with proc still None: the command would run on
+            # unstopped. Hold it until proc is bound, then act on it.
+            set_signals(lambda signum, frame: EARLY_SIGNALS.append(signum))
             try:
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                         start_new_session=True)
             except OSError as e:
                 return "FAILED", f"could not start: {e.strerror or e}"
+            finally:
+                set_signals(_raise_interrupted)
+            if EARLY_SIGNALS:
+                raise Interrupted(EARLY_SIGNALS[0])
             rc = proc.wait(timeout=hc.parse_duration(args.timeout).total_seconds())
         took = human(time.monotonic() - started)
         if rc < 0:

@@ -17,6 +17,10 @@ a repository's .agent-hub/config.json or the hub home's config.json (the usual o
   until   optional YYYY-MM-DD: available through that day, not after
   for     optional list of change classes the entry serves; absent = every class
 
+The change's author — who really wrote it, not which host runs `hub reviewer` — comes from `--author` (a role of the
+stage, or `engine[/model]`). A `check` sees it as AGENT_HUB_REVIEW_AUTHOR_ENGINE and AGENT_HUB_REVIEW_AUTHOR_MODEL
+(both removed from its environment when the author is unknown); the built-in default entry takes the other engine.
+
 A broken entry is reported on stderr and skipped; a list with no valid entry gives the built-in default, one
 `agent` entry. Every value that reaches the line the hub is told to run, or the text it reads — name, skill, model,
 effort, change classes — is checked against a strict pattern, whichever layer it comes from.
@@ -29,6 +33,7 @@ import os
 import math
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -39,6 +44,8 @@ import hubcore as hc
 import engines
 
 SETTING = "AGENT_HUB_REVIEWERS"
+AUTHOR_ENGINE_VAR, AUTHOR_MODEL_VAR = "AGENT_HUB_REVIEW_AUTHOR_ENGINE", "AGENT_HUB_REVIEW_AUTHOR_MODEL"
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,99}")
 KINDS = ("agent", "skill")
 FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for", "engine")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")                       # name, change class: 64 at most
@@ -96,6 +103,57 @@ class Loaded:
 
     def __init__(self, entries: list, problems: list, origin: str):
         self.entries, self.problems, self.origin = entries, problems, origin
+
+
+class Author:
+    """Who wrote the change: engine (claude | codex) and, when known, the model; `source` says where it was read."""
+
+    def __init__(self, engine: str, model: Optional[str], source: str):
+        self.engine, self.model, self.source = engine, model, source
+
+    def __str__(self) -> str:
+        return f"{self.engine}/{self.model}" if self.model else self.engine
+
+    def env(self) -> dict:
+        return {AUTHOR_ENGINE_VAR: self.engine, AUTHOR_MODEL_VAR: self.model or ""}
+
+    def as_dict(self) -> dict:
+        return {"engine": self.engine, "model": self.model, "source": self.source}
+
+
+def parse_author(spec: str, stage: Optional[str] = None) -> Author:
+    """`--author` as an Author: `claude` / `codex`, `engine/model`, or a role of the stage (its agent's meta.json
+    gives the engine — absent means Claude, as everywhere — and the model it ran with). UsageError when it is none
+    of them: a wrong author must not quietly become the host."""
+    spec = (spec or "").strip()
+    if "/" in spec:
+        engine, _, model = spec.partition("/")
+        if engine not in engines.ENGINES:
+            raise hc.UsageError(f"--author {show(spec)}: the engine before '/' is one of {', '.join(engines.ENGINES)}")
+        if not MODEL_RE.fullmatch(model):
+            raise hc.UsageError(f"--author {show(spec)}: the model after '/' is letters, digits and . _ : @ [ ] / - only")
+        return Author(engine, model, "--author")
+    if spec in engines.ENGINES:
+        return Author(spec, None, "--author")
+    if not stage:
+        raise hc.UsageError(f"--author {show(spec)}: not an engine (claude, codex, claude/MODEL) and there is no stage "
+                            "to look a role up in — pass --stage or set HUB_STAGE")
+    if not NAME_RE.fullmatch(spec):
+        raise hc.UsageError(f"--author {show(spec)}: neither an engine[/model] nor a role name")
+    path = hc.root() / hc.check_stage(stage) / "agents" / spec / "meta.json"
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise hc.UsageError(f"--author {show(spec)}: no agent with that role in stage {stage} ({path} is missing or "
+                            "unreadable); use engine[/model] if the author is not an agent of this stage") from None
+    if not isinstance(meta, dict):
+        raise hc.UsageError(f"--author {show(spec)}: {path} is not a JSON object")
+    engine = meta.get("engine") or "claude"
+    if engine not in engines.ENGINES:
+        raise hc.UsageError(f"--author {show(spec)}: {path} names engine {show(engine)}")
+    model = meta.get("resolved_model") or meta.get("model")
+    model = model if isinstance(model, str) and MODEL_RE.fullmatch(model) else None
+    return Author(engine, model, f"role {spec}")
 
 
 # ---------------------------------------------------------------- reading the list
@@ -173,8 +231,10 @@ def _validate(item, seen: set, cwd=None) -> dict:
     return item
 
 
-def load(cwd=None) -> Loaded:
-    """Parse AGENT_HUB_REVIEWERS. Problems are collected (and reported by the caller), never raised."""
+def load(cwd=None, author: Optional[Author] = None) -> Loaded:
+    """Parse AGENT_HUB_REVIEWERS. Problems are collected (and reported by the caller), never raised. With a known
+    author the built-in default entry (no valid list) is the other engine's reviewer — a Codex change gets Claude,
+    a Claude change gets Codex when the codex CLI is installed — so the default is never the author's own engine."""
     raw, origin = hc.setting_origin(SETTING, cwd=cwd)
     problems: list = []
     data = None
@@ -203,7 +263,12 @@ def load(cwd=None) -> Loaded:
         if not entries:
             problems.append(f"{SETTING}: no valid entry; using the built-in default (one `agent` reviewer)")
     if not entries:
-        entries, origin = [Entry(1, {"name": "agent", "kind": "agent"})], "default"
+        raw_default = {"name": "agent", "kind": "agent"}
+        if author and author.engine == "codex":
+            raw_default["engine"] = "claude"
+        elif author and author.engine == "claude" and shutil.which(hc.setting("CODEX_BIN", cwd=cwd) or "codex"):
+            raw_default["engine"] = "codex"
+        entries, origin = [Entry(1, raw_default)], "default"
     for e in entries:
         if e.kind == "agent":
             model, effort = _review_defaults(cwd, e.engine)
@@ -242,13 +307,22 @@ def _check_dir() -> Path:
     return home if home.is_dir() else Path.home()
 
 
-def run_check(command: str, timeout: float) -> tuple:
+def check_env(author: Optional[Author]) -> dict:
+    """The environment of a `check`: the hub's own, with the author variables set from --author — or removed when the
+    author is unknown, so a value left in the caller's shell never passes for it."""
+    env = {k: v for k, v in os.environ.items() if k not in (AUTHOR_ENGINE_VAR, AUTHOR_MODEL_VAR)}
+    if author:
+        env.update(author.env())
+    return env
+
+
+def run_check(command: str, timeout: float, env: Optional[dict] = None) -> tuple:
     """(exit code or None, output) of a `check` command, run in the hub home in its own process group. The verdict
     is the exit of the shell itself; its output goes to a file, so a child that keeps the output open after the shell
     exited cannot hold the answer up. On the timeout the whole group is killed."""
     with tempfile.TemporaryFile() as out:
         proc = subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.DEVNULL, stdout=out,
-                                stderr=subprocess.STDOUT, start_new_session=True, cwd=_check_dir())
+                                stderr=subprocess.STDOUT, start_new_session=True, cwd=_check_dir(), env=env)
         code: Optional[int]
         try:
             code = proc.wait(timeout=timeout)
@@ -268,7 +342,7 @@ def _short(text: str) -> str:
     return text if len(text) <= OUTPUT_CHARS else text[:OUTPUT_CHARS - 1] + "…"
 
 
-def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
+def judge(entry: Entry, change_class: Optional[str], origin: str, author: Optional[Author] = None) -> Verdict:
     """Whether the entry can review a change of this class now. The cheap tests come first; the `check` command
     runs only for an entry that passed them."""
     if entry.until and hc.now().date() > dt.date.fromisoformat(entry.until):
@@ -283,7 +357,7 @@ def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
             return Verdict(entry, False, "its `check` comes from a repository's config and is never run")
         timeout = _check_timeout()
         try:
-            code, out = run_check(entry.check, timeout)
+            code, out = run_check(entry.check, timeout, check_env(author))
         except OSError as e:
             return Verdict(entry, False, f"check could not run: {e}")
         if code is None:
@@ -294,12 +368,12 @@ def judge(entry: Entry, change_class: Optional[str], origin: str) -> Verdict:
     return Verdict(entry, True, "no check")
 
 
-def walk(loaded: Loaded, change_class: Optional[str], every: bool = False) -> tuple:
+def walk(loaded: Loaded, change_class: Optional[str], every: bool = False, author: Optional[Author] = None) -> tuple:
     """(verdicts, chosen): the entries judged in order, up to and including the first available one — or all of
     them with `every`. chosen is the first available verdict, or None."""
     verdicts, chosen = [], None
     for entry in loaded.entries:
-        v = judge(entry, change_class, loaded.origin)
+        v = judge(entry, change_class, loaded.origin, author)
         verdicts.append(v)
         if v.available and chosen is None:
             chosen = v

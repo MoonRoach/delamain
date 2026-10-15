@@ -70,6 +70,7 @@ flowchart LR
 | `hub rename` | `hub rename --stage OLD --to NEW [--dry-run]`: rename a stage none of whose agents is alive (otherwise exit 2, the live ones listed): its directory, the names and paths in its json files, the question register's heading and the board's lock notes that name it. |
 | `hub close` | `hub close --stage S [--why TEXT] [--force] [--dry-run]`: close a stage whose hub is no longer needed. Refuses (exit 2) while an agent of the stage runs or an owner question waits (`--force` stops the agents and leaves the questions). Stops an idle background hub (a Desktop, terminal or busy one is named with how to end it), releases the locks held by the stage's sessions (not one whose holder plays a live role in another open stage, or may: a registry unread; such a hub session is not stopped either), retires every role, journals `close: …` and writes `"closed"` into `stage.json`. A closed stage is left out of agent-top (`--all` shows it), the watchdog, the night queue and the question summaries, and `agent spawn` refuses it; `hub start` / `hub takeover` reopens it and continues the hub numbering. |
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
+| `hub grilling` | `hub grilling start / end / status`: mark that the hub is grilling the owner, so nothing hands it over automatically until the grilling ends ([No automatic handoff in the middle of a grilling](#no-automatic-handoff-in-the-middle-of-a-grilling)). |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
@@ -660,7 +661,8 @@ worker subagents.
              Agent|Task|Workflow ─ delegation.py pre-tool   deny by level rules and subagent effort rules
              * ───────── context_budget.py             past the block threshold deny Agent/Task/SendMessage
                                                        (a handoff still passes)
- PostToolUse * ───────── context_budget.py             warn once per step above the warn threshold
+ PostToolUse * ───────── context_budget.py             warn once per step above the warn threshold; mark a
+                                                       hub's grilling when its skill loads (no handoff meanwhile)
  agent spawn (CLI) ───── bin/subagent_rules.py         the same effort rules for headless agents
 ```
 
@@ -735,7 +737,7 @@ successor's `hub takeover --auto-handoff` takes the number it was started under 
 `jwait` match) and the chain agree.
 
 Past the block threshold the hub's Bash passes only when every command of the line is `hub handoff`, `hub succeed`,
-`jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
+`hub grilling`, `jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
 `HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, only with autopilot on (`--force` for you at a
 terminal), and only one successor per shift starts; a refused call prints when to retry and the `jwait` to wait with.
 A successor that never took over stops blocking the shift: `hub succeed --again` drops its record once it is not
@@ -746,6 +748,44 @@ position; only the hub that handed over, or you at a terminal, may run it. A tak
 took over (that new successor's, or one you start by hand with the same number) keeps the chain and says "re-took shift
 #N (replaces <id8>), handoff by #M" in the journal. A sub-agent of the hub
 shares the hub's session id and could run `hub succeed` too — the hub runs it itself, never delegates it.
+
+#### No automatic handoff in the middle of a grilling
+
+A hub that is grilling you (the companion `grilling` skill) is not handed over until the grilling ends: you finish the
+conversation with the same session. The hub's grilling is marked when the skill loads — the budget hook sees a Skill
+call (Claude Code), a shell command that reads the skill's `SKILL.md` with `cat`, `sed`, `head`, `nl` and the like
+(how Codex loads a skill; `ls`, `test -f` or a `grep` for its path does not count) or your prompt invoking it
+(`/…:grilling`, `$grilling`); the skill name is matched by `AGENT_HUB_GRILLING_SKILL` (a regex, default `grill`) — and
+by `hub grilling start`, which the hub skill tells the hub to run on either engine. `hub grilling end` clears it; the
+hub runs it once the topic's frontier is empty or you stop the grilling, and you can run it at a terminal with
+`--stage`. `hub grilling status` shows it. While it holds:
+
+- the budget message tells the hub to finish the grilling and run `hub grilling end` instead of handing over; once the
+  grilling ends, the next message gives the handoff procedure at once, not a warn step later;
+- past the block threshold only the delegation tools (`AGENT_HUB_CONTEXT_BLOCK_TOOLS`) stay closed: Bash, Write and Edit
+  are not gated, so your answers still go to `ask`;
+- `hub succeed` (a new successor, `--again` and `--fallback` too; not `--replace`, which swaps one that already took
+  over) and `hub handoff` refuse with exit 2 unless `--owner-asked`: you asked for this handoff;
+- a successor started before the grilling began does not take over automatically (`hub takeover --auto-handoff`
+  refuses) until the grilling ends or `hub succeed --owner-asked` accepts a request with that same handoff. Permission
+  is recorded under the request's lock only after its checks pass, belongs to that request and the current grilling,
+  and cannot be used with a different handoff; a refused request or a dry run grants nothing.
+
+The mark belongs to the hub's session (`<state>/grilling/<session id>.json`, under the CLI session id whichever alias
+named it) and counts only while that session is the stage's registered hub, so any takeover ends it; a registry that
+cannot be read keeps it. Every prompt of yours in that session refreshes it; it lapses `AGENT_HUB_GRILLING_STALE_MIN`
+minutes (default 240) after you last spoke, journaled, so a forgotten mark does not hold handoffs for ever (the prompt
+that ends a longer pause does not revive it). At the context ceiling `AGENT_HUB_GRILLING_CEILING` (default 95% of a
+Codex rollout's context window, else 900k tokens — a 1M window) the session cannot go on for long: the hook records the
+ceiling in the mark and the autopilot gate returns (with `ask` let through, for your answer), even if a configured
+ceiling is below both warn and block, but the hub does not
+hand over by itself. It writes the handoff
+(`hub handoff` passes at the ceiling) with the grilling in § 0 — the topic, the questions asked with your answers (their
+`ask` ids), the open frontier and the next round — tells you the context is at its ceiling and asks whether to hand
+over; only on your yes does it run `hub succeed --owner-asked`. The successor resumes the grilling (loads the skill,
+`hub grilling start`). A draft written with `--owner-asked` carries it the same way. Known limit: the takeover check
+runs once, at the start of `hub takeover --auto-handoff`; a grilling begun in the seconds that command runs does not
+stop it.
 
 A successor not in bypass mode starts with the hub's own commands (`hub takeover/handoff/succeed`, `jlog`, `jwait`,
 `ask`, `roles`, `lock list`, `agent status`) and the hub home allowed (`--settings`), so it takes over without a prompt;
@@ -794,13 +834,16 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
 | `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
 | `AGENT_HUB_CONTEXT_TODO` | points at `delamain:handoff` | hub home only | The "what to do" sentence of both messages. |
-| `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets and delegation levels. |
+| `AGENT_HUB_STATE_DIR` | `<hub home>/.state` | hub home only | Warning buckets, delegation levels and grilling marks. |
 | `AGENT_HUB_AUTO_HANDOFF` | `off` | hub home only | `on` (or JSON `true`): [autopilot](#autopilot-the-hub-hands-over-by-itself) — the stage hub hands over to a successor by itself. |
 | `AGENT_HUB_AUTO_HANDOFF_CHAIN` | `10` | hub home only | Automatic handoffs in a row without the owner; `0` = never start a successor. |
 | `AGENT_HUB_SUCCESSOR_MODEL` | the hub's own | hub home only | The successor's model (alias or `claude-…` id); default: the model of the hub's last turn. |
 | `AGENT_HUB_SUCCESSOR_EFFORT` | the hub's own | hub home only | The Claude successor's `--effort` (`low`…`max`); `hub succeed --effort` overrides it. Unset: the effort the hub runs at now, read from its session (`hub effort`); if it cannot be read `hub succeed` refuses instead of guessing. Codex successors inherit the hub's effort. |
 | `AGENT_HUB_SUCCESSOR_PERMISSION_MODE` | `inherit` | hub home only | The successor's `--permission-mode`; `inherit` = the hub's own (plan mode starts it in the default mode). |
 | `AGENT_HUB_SUCCESSOR_TIMEOUT` | `600` | hub home only | Seconds to wait for the successor's takeover line before the headless fallback. |
+| `AGENT_HUB_GRILLING_SKILL` | `grill` | hub home only | Regex on a skill's name: loading a matching skill marks the hub's [grilling](#no-automatic-handoff-in-the-middle-of-a-grilling). |
+| `AGENT_HUB_GRILLING_STALE_MIN` | `240` | hub home only | Minutes after the owner's last prompt at which a grilling mark lapses. |
+| `AGENT_HUB_GRILLING_CEILING` | 95% of a Codex window, else `900000` | hub home only | Tokens at which a grilling hub hands over all the same, carrying the grilling. |
 | `AGENT_HUB_KILL_GUARD` | `on` | repo or home | `off` disables the kill guard. |
 | `AGENT_HUB_KILL_ESCAPE` | `kill-ok` | repo or home | The marker word of `# kill-ok: <reason>`. |
 | `AGENT_HUB_POLL_GUARD` | `on` | repo or home | `off` disables the polling guard (e.g. in a repository with its own). |

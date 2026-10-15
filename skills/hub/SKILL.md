@@ -102,7 +102,9 @@ with its `--since HH:MM`, handle what it shows, keep one waiter. Going quiet on 
   B: …" — and the default you take if no answer comes.
 - Grilling on request (грилинг, погриль, grill me): load the `grilling` skill and run it as written until the topic's
   frontier is empty; the planning limit below and the A/B format do not shorten it. A question recorded with `ask add`
-  keeps the recommendation as a recommendation: it waits for the owner, never acts on silence.
+  keeps the recommendation as a recommendation: it waits for the owner, never acts on silence. Declare it: `hub grilling
+  start` before the first round, `hub grilling end` once the frontier is empty or the owner stops it — meanwhile nothing
+  hands you over automatically.
 
 ## Planning a stage: agree the business result before autonomous work
 

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling
+  the owner, and the successor lost the thread of questions and answers. A hub's grilling is now marked when the
+  grilling skill loads (a Skill call in Claude Code, a read of its `SKILL.md` in Codex, a prompt invoking it;
+  `AGENT_HUB_GRILLING_SKILL`, default `grill`) and by `hub grilling start`, and cleared by `hub grilling end`, a
+  takeover, or `AGENT_HUB_GRILLING_STALE_MIN` (240) minutes without an owner prompt. While it holds, the context-budget
+  message says to finish the grilling instead of handing over, the autopilot's Bash/Write/Edit gate stays open, and
+  `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`; a successor started before the grilling began does
+  not take over automatically. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`, 95% of a Codex window, else 900k)
+  the hub writes the handoff with the grilling in its § 0 and asks the owner whether to hand over; the successor resumes
+  the grilling. The owner's permission belongs to an accepted successor request and its handoff: a refused request
+  grants nothing, and a different handoff cannot use it. The grilling ceiling also takes effect below warn/block.
+
 - **`await` no longer loses its journal line on macOS when it stops the command.** `killpg` on a process group whose
   only members are zombies answers EPERM there (Linux: ESRCH); `await` caught only the second, so a timeout or a
   SIGTERM/SIGINT on the supervisor could end in a traceback (exit 1) and no `TIMEOUT`/`FAILED` line, in about 1% of

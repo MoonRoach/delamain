@@ -110,6 +110,8 @@ BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DEL
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",
                   "AGENT_HUB_SUCCESSOR_EFFORT", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
 HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE", "AGENT_HUB_DESKTOP_CLI_HANDOFF")
+# Grilling (bin/grilling.py): what holds an automatic handoff back is the autopilot's, hub home only.
+HUB_WIDE_KEYS += ("AGENT_HUB_GRILLING_SKILL", "AGENT_HUB_GRILLING_STALE_MIN", "AGENT_HUB_GRILLING_CEILING")
 BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_DESKTOP_CLI_HANDOFF")
 # Watchdog (bin/watchdog): hub home only. It starts commands (a notification channel, a resume of a hub), so a cloned
 # repository must not set any of it; one job serves one hub home, so every tool sharing the home must agree.

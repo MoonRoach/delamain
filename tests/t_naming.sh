@@ -56,7 +56,7 @@ mkdir -p $R/yc-move/agents/a1 $R/yc-move/coordinator/work
 TOKEN=fake-agent-token-$$
 bash -c 'sleep 300; :' $TOKEN > /dev/null 2>&1 &
 PID=$!
-trap 'kill $PID 2>/dev/null' EXIT
+trap 'kill $PID 2>/dev/null; test_cleanup' EXIT
 cat > $R/yc-move/agents/a1/meta.json <<JSON
 {"role": "a1", "tag": "a1", "model": "sonnet", "stage": "yc-move", "session_id": "$H2", "process_token": "$TOKEN", "pid": $PID,
  "dir": "$R/yc-move/agents/a1", "brief": "$R/yc-move/coordinator/work/brief.md", "title": "agent a1 (yc-move)", "engine": "claude"}

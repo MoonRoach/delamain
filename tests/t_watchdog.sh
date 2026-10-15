@@ -35,7 +35,7 @@ CWD=$R/hubcwd; mkdir -p "$CWD"; export FX_CWD=$CWD
 WAITER=; HOLDER=; LP=
 cleanup(){ local f d; for f in $R/*/agents/*/meta.json; do d=$(dirname "$f"); "$B/agent" stop --stage "$(basename "$(dirname "$(dirname "$d")")")" "$(basename "$d")" >/dev/null 2>&1; done
   [ -n "$WAITER" ] && kill $WAITER 2>/dev/null; [ -n "$HOLDER" ] && kill $HOLDER 2>/dev/null; [ -n "$LP" ] && kill $LP 2>/dev/null; return 0; }
-trap cleanup EXIT
+trap 'cleanup; test_cleanup' EXIT
 
 # mk_dhub STAGE: a headless hub (role hub-3) whose run has ended, registered as the stage's hub; silent for 20 min
 mk_dhub(){

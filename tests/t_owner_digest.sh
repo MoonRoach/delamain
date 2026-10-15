@@ -118,7 +118,7 @@ PY
 # a live process whose command line holds a session id, the way `agent status` recognises a live agent
 python3 -c 'import time; time.sleep(300)' sid-live &
 LIVE=$!
-trap 'kill $LIVE 2>/dev/null' EXIT
+trap 'kill $LIVE 2>/dev/null; test_cleanup' EXIT
 python3 "$GEN" fixture "$LIVE" sid-live
 before=$(snap "$R")
 

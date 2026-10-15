@@ -7,11 +7,12 @@
   hub takeover --stage stage-a --session <session id> [--n 17] [--handoff PATH] [--dry-run]
                [--name "Hub stage-a #17"] [--goal "…"] [--skip-lock RESOURCE ...] [--take-main-merge]
                [--main-merge-until +30d] [--repo PATH | --no-project]
-  hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents]
+  hub handoff  --stage stage-a [--n 16] [--out PATH] [--session ID] [--allow-live-subagents] [--owner-asked]
   hub handoff  --stage stage-a --finish [--handoff PATH] [--allow-todo]
-  hub succeed  --stage stage-a --handoff PATH [--allow-todo] [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run]
+  hub succeed  --stage stage-a --handoff PATH [--allow-todo] [--model M] [--effort E] [--permission-mode MODE] [--cwd DIR] [--headless] [--dry-run] [--owner-asked]
   hub succeed  --stage stage-a --fallback [--why TEXT]
   hub succeed  --stage stage-a --replace [--force] [--handoff PATH] [--dry-run]
+  hub grilling start|end|status [--stage stage-a] [--session ID] [--topic TEXT] [--why TEXT]
   hub rename   --stage OLD --to NEW [--dry-run]
   hub close    --stage stage-a [--why TEXT] [--force] [--dry-run]
   hub effort   [--session ID] [--json]
@@ -22,7 +23,7 @@
   hub home     [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
 Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename, close and grill need a stage, `reviewer`
-puts it into the `agent spawn` line it prints, `home` and `effort` ignore it.
+puts it into the `agent spawn` line it prints, `home` and `effort` ignore it, `grilling` finds it from the session.
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
@@ -173,6 +174,16 @@ in the `ask` register and reports to the hub with one line "@hub GRILLED …" (b
 open (default) writes the brief and launches by host — Claude Desktop: start_session arguments with initiation user_asked
 for the hub to call; Codex app: create_thread arguments; another Claude host: `claude --bg --remote-control` and its link;
 another Codex host: the command for the owner. join registers the new session as role `grill`; done reports and retires it.
+grilling marks that the stage's hub is grilling the owner (bin/grilling.py): start, run by the hub before the first round
+(in Claude Code the budget hook also marks it when the grilling skill loads), end once the topic's frontier is empty or
+the owner stops it, status to show it. --session: the hub's session (default this one; the owner at a terminal: the
+registered hub's); --stage, else the stage whose hub that session is. Only a registered hub's session is marked. While
+the mark holds (until end, a takeover, or AGENT_HUB_GRILLING_STALE_MIN without an owner prompt), with the autopilot on,
+succeed (a new successor, --again, --fallback) refuses, exit 2, unless --owner-asked — the owner asked for this handoff;
+handoff (a draft) refuses the same way unless --owner-asked or the budget hook recorded the context ceiling, and a draft
+written then gets a § 0 item to carry the grilling (topic, questions and answers with their `ask` ids, open frontier,
+next round) for the successor to resume; a successor's `takeover --auto-handoff` waits too unless succeed ran with
+--owner-asked.
 effort prints the effort a Claude Code session runs at now and where it was read (bin/session_effort.py): the hook input,
 $CLAUDE_EFFORT of the Bash tool, the last assistant record of the transcript, the `--effort` of a `claude --bg` session's
 state.json, the Desktop session record, the CLI process argv — most current first; the first that answers wins and the
@@ -211,6 +222,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import autopilot  # noqa: E402
+import grilling  # noqa: E402
 import engines
 import hubcore as hc  # noqa: E402
 import grill_session  # noqa: E402
@@ -1050,11 +1062,18 @@ def _cmd_takeover(a) -> int:
                             f"`hub start --stage {stage} --goal \"<what the stage delivers>\" --session <your session id>`")
     a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
+    handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
+    grill = grilling.active_stage(stage) if a.auto_handoff and not starting else None
+    if (grill and grill.get("session") not in (session, cli)
+            and not grilling.owner_asked_for(grill, autopilot.load_state(stage).get("pending") or {}, handoff)):
+        # a successor started before the hub began grilling the owner: it waits until the grilling ends
+        raise hc.UsageError(f"takeover: the hub of stage {stage} is grilling the owner (since "
+                            f"{str(grill.get('since'))[11:16]}): an automatic takeover waits until it ends "
+                            f"(`hub grilling end`) or the owner asks for the handoff — then run this command again")
     env_sid = hc.session_id()
     if env_sid and env_sid != cli:
         print(f"ATTENTION: not run from session {session} (your sid {env_sid[:8]}, its sid {cli[:8]}); "
               "the locks are recorded on it", file=sys.stderr)
-    handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
     if handoff is not None and not handoff.is_file():
         raise hc.UsageError(f"--handoff {handoff}: no such file")
     notes = []
@@ -1378,6 +1397,9 @@ def cmd_handoff(a) -> int:
         return cmd_handoff_finish(a, stage)
     if a.handoff or a.allow_todo:
         raise hc.UsageError("--handoff and --allow-todo go with --finish")
+    grill = grilling.active_stage(stage)
+    if grill and autopilot.enabled() and not a.owner_asked and not grill.get("ceiling"):
+        raise hc.UsageError(grilling.refusal("handoff", stage, grill))
     n = a.n or handoff_number(stage)
     tag = f"hub-{n}"
     name, succ = hub_name(stage, n), hub_name(stage, n + 1)
@@ -1453,6 +1475,11 @@ def cmd_handoff(a) -> int:
         return s.replace("|", "/").replace("\n", " ")
 
     me_id = me["local"] or me["cli"] or "TODO session id"
+    grill_item = (f"\n5. A grilling with the owner was in progress (since {str(grill.get('since'))[11:16]}): resume it — load "
+                  f"the grilling skill, `hub grilling start --stage {stage}`, carry on from what follows. TODO: "
+                  + (f"topic «{grill['topic']}» — " if grill.get("topic") else "its topic; ")
+                  + "the questions asked with the owner's answers (`ask` ids); the open frontier; the next round."
+                  if grill else "")
     goal_line = f"\nGoal of the stage: {hc.stage_goal(stage)}" if hc.stage_goal(stage) else ""
     body = f"""# Handoff "{name}" → "{succ}" — {stage} — {t:%Y-%m-%d %H:%M} — ENTRY POINT
 
@@ -1474,7 +1501,7 @@ Report progress against it with technical evidence separately.
    line; it prints a digest and the first `jwait` command. Tell "{name}" once that you took over (`roles budget`).
 2. The first `jwait` — use the wait procedure printed in the takeover digest; start no other waiters.
 3. Check every "owner said" below against `ask list --stage {stage}` (takeover digest); on a mismatch the register wins.
-4. TODO: background processes and script questions waiting for an answer (output file, question marker).
+4. TODO: background processes and script questions waiting for an answer (output file, question marker).{grill_item}
 
 ## 1. Where things stand ({t:%H:%M})
 | What | State | Where it shows |
@@ -1583,6 +1610,10 @@ def cmd_succeed(a) -> int:
         raise hc.UsageError("autopilot is off (AGENT_HUB_AUTO_HANDOFF in the hub home's config.json): a hub starts no "
                             "background session unasked. The owner, at a terminal, may pass --force")
     pend = autopilot.load_state(stage).get("pending") or {}
+    # --fallback starts a successor too; --replace swaps one that already took over (the grilling hub is gone by then)
+    grill = None if a.replace else grilling.active_stage(stage)
+    if grill and autopilot.enabled() and not a.owner_asked:  # the ceiling does not lift it: the owner decides
+        raise hc.UsageError(grilling.refusal("succeed", stage, grill))
     if a.fallback or (a.replace and not a.handoff):
         # the handoff the pending successor was started from: the numbers come out as they did then
         handoff = pend.get("handoff")
@@ -1618,14 +1649,51 @@ def cmd_succeed(a) -> int:
         succ = n + 1
     check_caller(stage, n)
     if a.fallback:  # starts from the root the bg session was started in (pending.cwd): the shell's directory is no matter
-        return autopilot.fallback(stage, n, a.why, succ)
+        return autopilot.fallback(stage, n, a.why, succ, owner_asked=a.owner_asked)
     cwd, cwd_note = successor_cwd(stage, a.cwd)
     if not cwd.is_dir():
         raise hc.UsageError(f"--cwd {cwd}: no such directory")
     if cwd_note:
         notes.append(cwd_note)
     return autopilot.succeed(stage, n, handoff, a.model, a.permission_mode, cwd, a.headless, a.dry_run, a.again,
-                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree)
+                             engine=a.engine, succ=succ, notes=tuple(notes), effort_arg=a.effort, surface=a.surface, branch=a.branch, desktop_worktree=a.desktop_worktree,
+                             owner_asked=a.owner_asked)
+
+
+# ---------------------------------------------------------------- grilling
+
+def cmd_grilling(a) -> int:
+    sid = a.session or hc.session_id()
+    stage = a.stage or (autopilot.hub_stage_of(sid) if sid else None)
+    if not stage:
+        raise hc.UsageError("grilling: no stage — pass --stage (this session is not a registered hub)")
+    stage = hc.check_stage(stage)
+    hubs = grilling.hub_sessions(stage)
+    if hubs is None:
+        raise hc.Failure(f"grilling: the registry of stage {stage} cannot be read (roles.json)")
+    if not hubs:
+        raise hc.UsageError(f"grilling: stage {stage} has no registered hub")
+    if a.action == "status":
+        m = grilling.active_stage(stage)
+        print(f"grilling in progress in the hub of {stage} since {m['since']} ({m['source']})"
+              + (f", topic: {m['topic']}" if m.get("topic") else "") + (f"; context ceiling reached {m['ceiling']}" if m.get("ceiling") else "")
+              if m else f"no grilling in progress in the hub of {stage}")
+        return 0
+    if sid and sid not in hubs:
+        raise hc.UsageError(f"grilling: session {sid[:8]} is not the hub of stage {stage} — only the registered hub's "
+                            "grilling holds its handoff (the owner at a terminal: run it without a session)")
+    at_terminal, sid = not sid, grilling.canonical(stage, sid or hubs[0])
+    if a.action == "start":
+        m = grilling.start(stage, sid, "hub grilling start", a.topic or "")
+        print(f"grilling marked in progress in the hub of {stage} (session {sid[:8]}, since {m['since']}): automatic "
+              f"handoffs wait for `hub grilling end --stage {stage}` (or {grilling.stale_seconds() // 60} min without "
+              "an owner prompt)")
+        return 0
+    # the owner at a terminal ends the hub's mark under either of its ids
+    gone = [m for m in (grilling.end(s, a.why or "") for s in (hubs if at_terminal else [sid])) if m]
+    print(f"grilling ended in the hub of {stage}: automatic handoffs resume" if gone else
+          f"no grilling was marked in the hub of {stage}: nothing to end")
+    return 0
 
 
 # ---------------------------------------------------------------- reviewer
@@ -2061,6 +2129,8 @@ def main(argv: list) -> int:
                    help="do not write a draft: check the filled one (--handoff, else the latest) and refuse while § 0–2 hold TODO")
     h.add_argument("--handoff", help="with --finish: the handoff to check (default: the latest HANDOFF-hub-*.md)")
     h.add_argument("--allow-todo", action="store_true", help="with --finish: accept a handoff with TODO left in § 0–2")
+    h.add_argument("--owner-asked", action="store_true",
+                   help="the owner asked for this handoff: write it although a grilling is in progress (it carries the grilling)")
     sc = sub.add_parser("succeed", parents=[stage_opt], help="start the successor of an automatic handoff (autopilot)")
     sc.add_argument("--handoff", help="the filled handoff draft")
     sc.add_argument("--allow-todo", action="store_true", help="start the successor although § 0–2 of the handoff still hold TODO")
@@ -2088,7 +2158,15 @@ def main(argv: list) -> int:
                          "position. For the hub that handed over, or the owner at a terminal")
     sc.add_argument("--force", action="store_true", help="run although AGENT_HUB_AUTO_HANDOFF is off (the owner, by hand); "
                                                           "with --replace: also stop a successor that is busy")
+    sc.add_argument("--owner-asked", action="store_true",
+                    help="the owner asked for this handoff: start the successor although a grilling is in progress")
     sc.add_argument("--dry-run", action="store_true")
+    gp = sub.add_parser("grilling", parents=[stage_opt], help="mark that the hub is grilling the owner: no automatic "
+                                                              "handoff until it ends")
+    gp.add_argument("action", choices=("start", "end", "status"))
+    gp.add_argument("--session", help="the hub's session (default: this one; at a terminal: the registered hub's)")
+    gp.add_argument("--topic", help="with start: the topic, for the journal and the handoff")
+    gp.add_argument("--why", help="with end: why it ended (frontier empty, the owner stopped it), for the journal")
     dr = sub.add_parser("desktop-request", help="reserve native dispatch and print create_thread args for a saved project")
     db = sub.add_parser("desktop-bind", help="confirm native client/actual identity without claiming takeover")
     df = sub.add_parser("desktop-fail", help="record native failure without an invisible CLI fallback")
@@ -2144,7 +2222,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
-            "close": cmd_close, "grill": grill_session.main,
+            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling,
             "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),

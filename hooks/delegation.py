@@ -227,7 +227,8 @@ def grilling_context(prompt) -> str | None:
             "grilling, ignore this note. If the skill is not installed, say so once and follow the same method. In a "
             "stage hub, a grilling over the stage's open questions runs in a session of its own instead: run `hub grill "
             "--stage <S>` and do what it prints, without loading the skill here; a new topic the owner raises in the "
-            "hub is grilled here, unless the owner says otherwise.")
+            "hub is grilled here, unless the owner says otherwise: run `hub grilling start` before the first round and "
+            "`hub grilling end` once the frontier is empty or the owner stops it; until then automatic handoffs wait.")
 
 
 def emit(event: str, **fields) -> None:

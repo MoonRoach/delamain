@@ -4,8 +4,11 @@
 # one summary line per script, sorted by name, and exits non-zero if any script fails.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"; B="$(cd "$T/../bin" && pwd)"
+# TMPDIR before any mktemp: an inherited one may lie inside the real home or hub. The suite's sandbox is made under /tmp
+# (the directory of the logs is the caller's: $1).
+SANDBOX="$(TMPDIR=/tmp mktemp -d)"; mkdir -p "$SANDBOX/tmp"; export TMPDIR="$SANDBOX/tmp"
 OUT="${1:-$(mktemp -d)}"; mkdir -p "$OUT"
-export HOME="$(mktemp -d)"; export AGENT_HUB_HOME="$HOME/hub-home"; export XDG_CONFIG_HOME="$HOME/.config" DELAMAIN_TEST_SANDBOX="$HOME"
+export HOME="$SANDBOX/home"; mkdir -p "$HOME"; export AGENT_HUB_HOME="$HOME/hub-home"; export XDG_CONFIG_HOME="$HOME/.config" DELAMAIN_TEST_SANDBOX="$SANDBOX"
 # Positive control: the tools honour AGENT_HUB_HOME, and without it they fall back to $HOME/agent-hub — of a throw-away
 # HOME, never the real one; a HOME of its own, run from it (no repository's .agent-hub/ around): a stage in the test
 # HOME's ~/agent-hub would make every test's stage-a "a stage in another home".

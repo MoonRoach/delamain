@@ -1863,3 +1863,30 @@ test('a path selector matches the way the CLI normalises it (trailing slash, ., 
   expect(inStages(rows, ['alpha · repo@branch'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
   expect(inStages(rows, ['alpha@/w/repo@branch/.agent-hub/local/'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
 })
+
+test('a lock keeps its home and label from the CLI, and the Summary shows the label only while stages come from several homes', async ($, on) => {
+  mock.clock(on)
+  const locks = [
+    { kind: 'main-merge', repo: 'demo', owner_name: 'hub-a', until: '2099-01-01T00:00', active: true, why: 'merging', home: DEFAULT_HOME, home_label: '' },
+    { kind: 'main-merge', repo: 'demo', owner_name: 'hub-b', until: '2099-01-01T00:00', active: true, why: 'merging', home: PROJ_HOME, home_label: 'proj' },
+  ]
+  const parsed = parseSnapshot(snapshot([agent()], { locks, multi_home: true }), 0)
+  expect(parsed.locks.map(l => [l.home, l.home_label])).toEqual([[DEFAULT_HOME, ''], [PROJ_HOME, 'proj']])
+  const older = parseSnapshot(snapshot([agent()], { locks: [{ kind: 'k', repo: 'r', owner_name: 'o', until: 'u', active: true, why: 'w' }] }), 0)
+  expect(older.locks[0]).toEqual({ kind: 'k', repo: 'r', owner_name: 'o', until: 'u', active: true, why: 'w' }) // an older CLI: no home fields
+
+  let json = snapshot([agent()], { locks, multi_home: true })
+  stubPane(on, () => json)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ key: 'lock:0' }))?.text).toMatch(/main-merge +demo +until 01-01 00:00 +hub-a: merging/) // the default home's: no label
+  expect((await ui.find({ key: 'lock:1' }))?.text).toMatch(/main-merge +demo \(proj\) +until 01-01 00:00 +hub-b: merging/) // another home's: whose it is
+  await ui.unmount()
+
+  json = snapshot([agent()], { locks, multi_home: false }) // one home: the rows are as they were
+  const one = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  await one.press({ key: 'view-summary' })
+  expect((await one.find({ key: 'lock:1' }))?.text).not.toContain('(proj)')
+  await one.unmount()
+})

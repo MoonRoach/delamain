@@ -43,7 +43,8 @@ export type Agent = {
 
 export type Counts = { live: number; done: number; error: number; dead: number }
 
-export type Lock = { kind: string; repo: string; owner_name: string; until: string; active: boolean; why: string }
+/** `home` and `home_label`: the hub home whose board holds the lock (absent from an older CLI). */
+export type Lock = { kind: string; repo: string; owner_name: string; until: string; active: boolean; why: string; home?: string; home_label?: string }
 
 /**
  * `items` are display lines (the CLI cuts them to 12); `ids` are every open question id of the stage, from the untruncated
@@ -206,6 +207,8 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
         until: str(l.until),
         active: l.active === true,
         why: str(l.why),
+        ...(typeof l.home === 'string' ? { home: l.home } : {}),
+        ...(typeof l.home_label === 'string' ? { home_label: l.home_label } : {}),
       }))
     : []
   const journal: JournalLine[] = Array.isArray(data.journal_tail)

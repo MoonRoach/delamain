@@ -10,9 +10,13 @@ for _v in $(env | cut -d= -f1 | grep -E '^(AGENT_HUB_|AGENT_TOP_)'); do
   [ "$_v" = AGENT_HUB_HOME ] || unset "$_v"
 done
 unset _v AGENT_BOARD_FILE CLAUDE_CONFIG_DIR CLAUDE_SESSIONS_DIR CODEX_HOME
+# TMPDIR first of all: an inherited one may lie inside the real home or hub, and mktemp would put the test's directories
+# there. The standalone sandbox itself is made under /tmp, not under what was inherited.
 if [ -z "${DELAMAIN_TEST_SANDBOX:-}" ]; then
-  DELAMAIN_TEST_SANDBOX="$(mktemp -d)"
+  DELAMAIN_TEST_SANDBOX="$(TMPDIR=/tmp mktemp -d)"
   export DELAMAIN_TEST_SANDBOX HOME="$DELAMAIN_TEST_SANDBOX/home" XDG_CONFIG_HOME="$DELAMAIN_TEST_SANDBOX/home/.config"
   export AGENT_HUB_HOME="$HOME/hub-home"   # as run_all.sh sets it: inside the sandbox, never the caller's
   mkdir -p "$HOME"
 fi
+export TMPDIR="$DELAMAIN_TEST_SANDBOX/tmp"
+mkdir -p "$TMPDIR"

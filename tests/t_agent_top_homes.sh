@@ -345,6 +345,10 @@ check "$(lk)" "main-merge@my@repo name:True" "(n) a lock in a foreign home's boa
 (cd $SM/plain && $B/agent-top --once --width 120 2>&1 | grep -q 'main-merge demo (my@repo name) until 2099-01-01 00:00'); check $? 0 "(n) …and the text says whose it is while homes are many"
 check "$(lk --stage def)" "-" "(n) negative: a view of the default home's stage does not read the other home's board"
 (cd $SM/plain && AGENT_BOARD_FILE=$SM/other.md $B/agent-top --json 2>/dev/null | python3 -c 'import json,sys; assert json.load(sys.stdin)["locks"] == []'); check $? 0 "(n) AGENT_BOARD_FILE keeps its meaning: that one board is read, not each home's"
+# two homes whose boards are one file (a symlink) show its locks once
+ln -s "$MH/board.md" $SM/home/agent-hub/board.md
+check "$(lk)" "main-merge@:True" "(n) two homes with one board file (a symlink): the lock is listed once, under the first home"
+rm $SM/home/agent-hub/board.md
 export HOME=$S/home XDG_CONFIG_HOME=$S/xdg
 
 exit $fail

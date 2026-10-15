@@ -738,7 +738,9 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     const lockRows: RenderChildren[] = []
     s.locks.forEach((lk, i) => {
       const until = lk.until.slice(5, 16).replace('T', ' ')
-      const rest = ` ${lk.repo}  until ${until}  ${lk.owner_name}: ${lk.why}`
+      // while stages come from several homes a lock of another home says whose it is, as a stage does
+      const where = s.multi_home && lk.home_label ? ` (${lk.home_label})` : ''
+      const rest = ` ${lk.repo}${where}  until ${until}  ${lk.owner_name}: ${lk.why}`
       const kind = clip(lk.kind, Math.max(3, Math.floor(sw / 2)))
       lockRows.push(
         row(`lock:${i}`, [

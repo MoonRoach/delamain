@@ -1251,10 +1251,14 @@ class Collector:
         import board
         homes = list(dict.fromkeys([self.homes[0]] + [r.home for r in refs]))
         explicit = os.environ.get("AGENT_BOARD_FILE")
-        out, saved = [], board.BOARD
+        out, saved, seen = [], board.BOARD, set()
         try:
             for kh in homes[:1] if explicit else homes:
                 board.BOARD = Path(explicit) if explicit else kh.path / "board.md"
+                real = hc.real_path(board.BOARD)
+                if real in seen:      # two homes whose boards are one file (a symlink): its locks once, under the first home
+                    continue
+                seen.add(real)
                 try:
                     recs = board.load()
                 except (board.BoardError, ValueError, OSError):

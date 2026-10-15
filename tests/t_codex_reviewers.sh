@@ -38,4 +38,45 @@ assert s[s.index('--cwd')+1] == str(Path(sys.argv[2])/'stage-a/coordinator/work'
 assert '--worktree' not in s,s
 PY_STAGE
 check $? 0 'Codex reviewer uses the stage work directory under the hub home'
+# Reviewer output permissions are narrower than executor permissions, on spawn and resume.
+CODEX_BIN="$T/fake_codex.py" python3 - "$B" "$AGENT_HUB_HOME" <<'PY_SCOPE'
+import json, os, subprocess, sys, time, tomllib
+from pathlib import Path
+bins, home = map(Path, sys.argv[1:])
+work = (home/'stage-a/coordinator/work').resolve()
+work.mkdir(parents=True, exist_ok=True)
+brief = home/'brief.md'
+brief.write_text('Write a report, leave the repository unchanged.\n')
+base = [str(bins/'agent'), 'spawn', '--stage', 'stage-a', '--engine', 'codex', '--role', 'review-scope',
+        '--cwd', str(work), '--model', 'gpt-fixture', '--brief', str(brief)]
+def run(args):
+    return subprocess.run(args, text=True, capture_output=True)
+def wait():
+    end=time.monotonic()+15
+    while time.monotonic()<end:
+        r=run([str(bins/'agent'),'status','--stage','stage-a','review-scope'])
+        if r.returncode==0 and 'ALIVE' not in r.stdout: return
+        time.sleep(.1)
+    raise AssertionError('reviewer did not finish')
+r=run(base+['--sandbox','workspace-write']); assert r.returncode==0,r.stderr
+wait()
+r=run([str(bins/'agent'),'send','--stage','stage-a','review-scope','continue']); assert r.returncode==0,r.stderr
+wait()
+rows=[json.loads(l) for l in (work/'codex-argv.jsonl').read_text().splitlines()]
+assert len(rows)==2 and rows[1][:2]==['exec','resume'],rows
+for row in rows:
+    config=tomllib.loads('\n'.join(row[i+1] for i,a in enumerate(row) if a=='-c'))
+    policy=config['sandbox_workspace_write']
+    assert policy['writable_roots']==[str(work)],policy
+    assert policy['exclude_tmpdir_env_var'] and policy['exclude_slash_tmp'],policy
+for extra in [
+    ['--cwd',str(home.parent),'--sandbox','workspace-write'],
+    ['--cwd',str(home),'--sandbox','workspace-write'],
+    ['--sandbox-policy',json.dumps({'type':'workspace-write','writable_roots':[str(home)]})],
+]:
+    r=run(base+extra+['--dry-run'])
+    assert r.returncode==2 and 'reviewer' in r.stderr,r.stderr
+print('PASS review-role cwd-only roots persist on resume; wider roots/cwd are refused')
+PY_SCOPE
+check $? 0 'M1 reviewer report/journal scope excludes home config and other inboxes'
 exit $fail

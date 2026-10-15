@@ -146,31 +146,66 @@ def hook_args(cwd=None):
     return args
 
 
-def worktree_git_roots(cwd):
-    """Commit needs the linked worktree's index/HEAD plus shared objects and branch refs.
+REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE)
 
-    Keep common config, hooks and other worktrees outside the write grant. Only
-    linked worktrees get extra roots; ordinary checkout policy is unchanged.
-    """
+
+def is_review_role(meta):
+    return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
+
+
+# Paths are relative to the linked worktree's private Git directory, never its config/pointers.
+WORKTREE_STATE_FILES = (
+    "HEAD", "HEAD.lock", "ORIG_HEAD", "ORIG_HEAD.lock", "index", "index.lock", "COMMIT_EDITMSG",
+    "MERGE_HEAD", "MERGE_HEAD.lock", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH",
+    "AUTO_MERGE", "AUTO_MERGE.lock", "REBASE_HEAD", "REBASE_HEAD.lock",
+    "CHERRY_PICK_HEAD", "CHERRY_PICK_HEAD.lock", "REVERT_HEAD", "REVERT_HEAD.lock", "SQUASH_MSG",
+    "FETCH_HEAD", "FETCH_HEAD.lock",
+)
+WORKTREE_STATE_DIRS = ("logs", "rebase-merge", "rebase-apply", "sequencer", "refs/rewritten", "refs/worktree")
+
+
+def worktree_git_roots(cwd):
+    """Grant operation state and this branch's refs, leaving Git config/pointers read-only."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
             cwd=cwd, capture_output=True, text=True, timeout=5)
+        branch = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                                cwd=cwd, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return []
-    if result.returncode:
-        return []
     paths = result.stdout.strip().splitlines()
-    if len(paths) != 2:
+    if result.returncode or len(paths) != 2:
         return []
     gitdir, common = (Path(p).resolve() for p in paths)
     if gitdir == common:
         return []
-    # Reftable stores refs and reflogs together; the files backend keeps them apart.
-    refs = [common / "reftable"] if (common / "reftable").is_dir() else [
-        common / "refs" / "heads", common / "logs" / "refs" / "heads",
-        common / "packed-refs", common / "packed-refs.lock"]
-    return [str(p) for p in [gitdir, common / "objects", *refs]]
+    refs = []
+    if (common / "reftable").is_dir():
+        # Reftable is one shared store; it cannot be narrowed to one branch by path.
+        refs = [common / "reftable"]
+    elif branch.returncode == 0:
+        name = branch.stdout.strip()
+        if not name.startswith("refs/heads/") or any(p in (".", "..") for p in Path(name).parts):
+            raise hc.UsageError("cannot grant sandbox roots for an invalid worktree branch")
+        ref = common / name
+        log = common / "logs" / name
+        refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
+    state = [gitdir / name for name in (*WORKTREE_STATE_FILES, *WORKTREE_STATE_DIRS)]
+    return [str(p) for p in [*state, common / "objects", *refs]]
+
+
+def workspace_write_roots(meta):
+    policy = meta.get("sandbox_policy") or {}
+    if is_review_role(meta):
+        cwd, home = Path(meta["cwd"]).resolve(), hc.root().resolve()
+        if cwd == home or not cwd.is_relative_to(home):
+            raise hc.UsageError("Codex workspace-write reviewer --cwd must be a directory under the hub home")
+        if any(not Path(p).resolve().is_relative_to(cwd) for p in policy.get("writable_roots", [])):
+            raise hc.UsageError("Codex reviewer writable_roots must stay inside its cwd under the hub home")
+        return [str(cwd)]
+    git_roots = meta["sandbox_git_roots"] if "sandbox_git_roots" in meta else worktree_git_roots(meta["cwd"])
+    return list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())] + git_roots))
 
 
 def codex_argv(meta, prompt=None, resume=False):
@@ -192,8 +227,9 @@ def codex_argv(meta, prompt=None, resume=False):
         args += ["-c", "sandbox_mode=" + json.dumps(sandbox), "-c", 'approval_policy="never"']
         if sandbox == "workspace-write":
             policy = meta.get("sandbox_policy") or {}
-            roots = list(dict.fromkeys(policy.get("writable_roots", []) + [str(hc.root())]
-                                       + worktree_git_roots(meta["cwd"])))
+            roots = workspace_write_roots(meta)
+            if is_review_role(meta):
+                policy = policy | {"exclude_tmpdir_env_var": True, "exclude_slash_tmp": True}
             args += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value(roots)]
             for key in ("network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"):
                 if key in policy:

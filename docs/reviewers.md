@@ -83,7 +83,9 @@ For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the hea
 file). For a Codex `agent` reviewer it prints `--sandbox workspace-write` and `--cwd` pointing to the stage's
 `coordinator/work` under the hub home. Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
 Create that directory before spawning, and put the absolute repository path, base and head in the brief for reading.
-Keep the repository outside the hub home and the chosen cwd; do not add it to writable roots. The sandbox then lets
+The reviewer receives only its cwd as a writable root; wider explicit roots are refused, and temporary-directory
+writes are excluded. Home configuration and other agents' inboxes stay read-only. Keep the repository outside the
+hub home and the chosen cwd; do not add it to writable roots. The sandbox then lets
 Codex write its report and journal, while repository writes are denied. `read-only` cannot write either; spawning a
 Codex review role/tag with that policy emits one warning. Claude's review brief prohibits repository edits; it does
 not acquire a Codex sandbox through this command. In both cases run the line with **no `--worktree`**: a reviewer

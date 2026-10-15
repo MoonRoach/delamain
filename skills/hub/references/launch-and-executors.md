@@ -60,7 +60,8 @@ code** before acting on it — a review is a colleague's opinion. Classes, the c
 For a Codex reviewer use the printed `--sandbox workspace-write` with `--cwd` in the stage's `coordinator/work`
 under the hub home (create it first); without a stage fill `<HUB_WORK>` with a directory there. Put the absolute
 repository path, base and head in the brief for reading. Keep the repository outside the hub home and reviewer cwd,
-and never add it as a writable root: report and journal writes work, repository writes are denied. `read-only`
+and never add it as a writable root. A review role receives only its cwd, with temporary-directory writes excluded;
+home config and other agents' inboxes remain read-only: report and journal writes work, repository writes are denied. `read-only`
 cannot write the report or journal and a Codex review role/tag launched that way gets one warning at spawn.
 Claude reviewers keep their repository cwd and must follow the brief's prohibition on repository edits.
 

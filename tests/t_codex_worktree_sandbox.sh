@@ -7,6 +7,18 @@ python3 - "$B" "$AGENT_HUB_HOME" <<'PY'
 import json, os, subprocess, sys, tempfile, time, tomllib
 from pathlib import Path
 bins, home = map(Path, sys.argv[1:])
+failures=[]
+def verify(name, assertion):
+    try:
+        assertion()
+        print('PASS '+name)
+    except AssertionError as e:
+        failures.append(name)
+        print('FAIL '+name+': '+str(e))
+
+def require(condition, evidence):
+    assert condition,evidence
+
 
 def run(*args, cwd=None):
     return subprocess.run(list(map(str, args)), cwd=cwd, text=True, capture_output=True, check=True)
@@ -46,23 +58,43 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     git('worktree', 'add', '-b', 'nested/task', wt, cwd=repo)
     common = repo/'.git'
     gitdir = Path(git('rev-parse', '--absolute-git-dir', cwd=wt))
-    expected = {str(home), str(gitdir), str(common/'objects'),
-                str(common/'refs/heads'), str(common/'logs/refs/heads'),
-                str(common/'packed-refs'), str(common/'packed-refs.lock')}
+    required = {str(home), str(common/'objects')}
+    branch_roots = {str(common/p) for p in ('refs/heads/nested/task', 'refs/heads/nested/task.lock',
+                                          'logs/refs/heads/nested/task', 'logs/refs/heads/nested/task.lock')}
+    forbidden = {str(gitdir), str(common), str(repo), str(common/'refs/heads'),
+                 str(common/'logs/refs/heads'), str(common/'packed-refs'), str(common/'packed-refs.lock')}
+    state_files = {'HEAD', 'HEAD.lock', 'ORIG_HEAD', 'ORIG_HEAD.lock', 'index', 'index.lock', 'COMMIT_EDITMSG',
+                   'MERGE_HEAD', 'MERGE_HEAD.lock', 'MERGE_MSG', 'MERGE_MODE', 'MERGE_RR', 'MERGE_AUTOSTASH',
+                   'AUTO_MERGE', 'AUTO_MERGE.lock', 'REBASE_HEAD', 'REBASE_HEAD.lock',
+                   'CHERRY_PICK_HEAD', 'CHERRY_PICK_HEAD.lock', 'REVERT_HEAD', 'REVERT_HEAD.lock', 'SQUASH_MSG',
+                   'FETCH_HEAD', 'FETCH_HEAD.lock'}
+    state_dirs = {'logs', 'rebase-merge', 'rebase-apply', 'sequencer', 'refs/rewritten', 'refs/worktree'}
+    def safe_gitdir(rs):
+        assert str(gitdir/'HEAD') in rs and str(gitdir/'index.lock') in rs,rs
+        for root in rs:
+            path=Path(root)
+            if path.is_relative_to(gitdir):
+                assert str(path.relative_to(gitdir)) in state_files|state_dirs,root
     brief = home/'brief.md'
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,
                          'writable_roots': [str(base/'extra')]})
     spawn('executor', wt, '--sandbox-policy', policy)
+    git('symbolic-ref', 'HEAD', 'refs/heads/other-branch', cwd=wt)
     run(bins/'agent', 'send', 'executor', 'continue with the same sandbox')
     wait('executor')
     rows = [json.loads(l) for l in (wt/'codex-argv.jsonl').read_text().splitlines()]
     assert len(rows) == 2 and rows[1][:2] == ['exec', 'resume'], rows
-    for row in rows:
-        assert set(roots(row)) == expected | {str(base/'extra')}, roots(row)
-        assert str(common) not in roots(row) and str(repo) not in roots(row), roots(row)
-        assert 'sandbox_workspace_write.network_access=false' in row, row
-    print('PASS worktree commit metadata roots and explicit policy persist on real spawn/resume')
+    for index,row in enumerate(rows):
+        rs=set(roots(row))
+        verify(f'H1 launch {index} has only safe worktree metadata roots',lambda: safe_gitdir(rs))
+        verify(f'M2 launch {index} has only its original branch refs',
+               lambda: require(branch_roots<=rs and not forbidden&rs and
+                               str(common/'refs/heads/other-branch') not in rs,rs))
+        assert required|{str(base/'extra')}<=rs,rs
+        assert 'sandbox_workspace_write.network_access=false' in row,row
+    assert roots(rows[0])==roots(rows[1]),rows
+    print('PASS explicit policy and original Git roots persist despite a changed HEAD on resume')
     for role, cwd in [('plain', repo), ('outside', home)]:
         spawn(role, cwd, '--sandbox', 'workspace-write')
         row = json.loads((cwd/'codex-argv.jsonl').read_text().splitlines()[-1])
@@ -80,8 +112,11 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
         nested.mkdir()
         spawn('reftable', nested, '--sandbox', 'workspace-write')
         row = json.loads((nested/'codex-argv.jsonl').read_text().splitlines()[-1])
-        assert set(roots(row)) == {str(home), str(rt/'.git/objects'), str(rt/'.git/reftable'),
-                                  git('rev-parse', '--absolute-git-dir', cwd=rwt)}, roots(row)
+        rs=set(roots(row))
+        rg=Path(git('rev-parse', '--absolute-git-dir', cwd=rwt))
+        verify('H1 reftable worktree metadata is also restricted',lambda: require(
+            str(rg) not in rs and str(rg/'commondir') not in rs and str(rg/'HEAD') in rs,rs))
+        assert {str(home),str(rt/'.git/objects'),str(rt/'.git/reftable')}<=rs,rs
         print('PASS reftable worktree from nested cwd uses only its own metadata, objects and ref store')
     else:
         print('SKIP reftable backend is unavailable in this Git')
@@ -95,9 +130,14 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
                        ('worker', ['--sandbox', 'read-only']),
                        ('review-writable', ['--sandbox', 'workspace-write']),
                        ('tagged', ['--permission-mode', 'plan', '--tag', 'external-review'])]:
-        r = spawn(role, home, *args)
+        reviewer_work=home/'stage-a/coordinator/work'
+        reviewer_work.mkdir(parents=True,exist_ok=True)
+        r = spawn(role, reviewer_work if role=='review-writable' else home, *args)
         assert ('cannot write its report or journal' in r.stderr) == (role == 'tagged'), r.stderr
     print('PASS review tags and effective permission mode warn; unrelated roles/writable review stay quiet')
+    verify('L1 alternates trust boundary is documented',lambda: require(
+        'objects/info/alternates' in (bins.parent/'docs/codex.md').read_text(), 'missing alternates boundary'))
+    assert not failures,failures
 PY
 check $? 0 'workspace-write worktree and read-only reviewer controls'
 exit $fail

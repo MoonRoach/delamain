@@ -191,13 +191,26 @@ hub home and reviewer cwd, and do not add it to writable roots. The sandbox sele
 worker: it can write the report and journal under the hub home while repository writes are denied. A `read-only`
 worker cannot write either; a review role/tag with that policy gets one warning at spawn.
 
-Workspace-write agents automatically receive the hub home as a writable root. When cwd is in a linked Git worktree,
-spawn and resume also grant its own Git directory (index, HEAD and locks), common objects, `refs/heads` and
-`logs/refs/heads`, and the individual `packed-refs` / `packed-refs.lock` files (or `reftable` for that backend).
-These shared metadata roots allow commits and branch updates;
-the common config, hooks and sibling worktree directories are not granted. The entire common Git directory is
-never added. A sandboxed interactive coordinator may need `--add-dir <hub-home>` to write to the shared home.
-Full access needs no directory grant.
+Workspace-write executors receive the hub home as a writable root. A review role/tag instead receives only its
+cwd strictly below the hub home, with temporary-directory writes excluded; wider explicit roots or a cwd outside
+that home are refused. Its report, journal and `.journal.lock` fit within the stage's `coordinator/work`; home
+configuration and other agents' inboxes stay read-only. Keep that cwd outside any repository.
+
+For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
+commit/merge messages and pseudorefs), their own logs and rebase/sequencer state directories, plus common objects.
+`commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
+refs/reflogs are limited to the worktree's initial branch and its lock files, including nested branch names;
+`packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
+`reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
+
+These file-root commit/merge/rebase checks were verified on macOS seatbelt. Git may emit a nonfatal
+`packed-refs.lock` denial even though the operation succeeds; commits with loose and packed refs were checked.
+Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
+access; they fail closed rather than receiving the whole Git directory. Continue agent-created rebase/sequencer
+state inside the sandbox, since that operation state can contain commands.
+The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.
+A sandboxed interactive coordinator may need `--add-dir <hub-home>`; full access needs no directory grant.
 
 See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
 

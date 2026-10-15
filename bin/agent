@@ -386,7 +386,9 @@ def mcp_choice(given, cwd) -> object:
     raw = (raw or "inherit").strip()
     if raw in MCP_CHOICES:
         return raw
-    if origin == "project" or (origin == "home" and hc.home().layer == "project"):
+    # a hub home inside a repository (AGENT_HUB_HOME "project": <repo>/.agent-hub/local/) is the repository's, also in
+    # a child that got its path as $AGENT_HUB_HOME (hc.child_env), where its layer reads "env"
+    if origin == "project" or (origin == "home" and hc.CONFIG_DIRNAME in hc.root().resolve().parts):
         raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in a repository's config.json: one of {MCP_CHOICES} — an MCP "
                             "config file goes in a hub home's config.json outside the repository, the environment or "
                             "--mcp")

@@ -72,6 +72,8 @@ mkdir -p $P/.agent-hub/local; echo "{\"AGENT_HUB_SPAWN_MCP\": \"$W/one.json\"}" 
 (unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph.out 2>&1
 check $? 2 "negative: an MCP config file in a project hub home's config.json is refused"
 grep -q "in a repository's config.json" $R/ph.out; check $? 0 "…as the repository's setting"
+AGENT_HUB_HOME=$P/.agent-hub/local $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run > $R/ph3.out 2>&1
+check $? 2 "negative: …also in a child that got that home as \$AGENT_HUB_HOME"
 echo '{"AGENT_HUB_SPAWN_MCP": "none"}' > $P/.agent-hub/local/config.json
 (unset AGENT_HUB_HOME; cd $P && $B/agent-spawn --role projh --cwd $P --model haiku --brief $P/b.md --dry-run) > $R/ph2.out 2>&1
 check $? 0 "…while none there is taken"; grep -q 'MCP none' $R/ph2.out; check $? 0 "…and shown"

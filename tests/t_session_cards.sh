@@ -29,21 +29,24 @@ import hubcore as hc
 import session_cards as cards
 from unittest.mock import patch
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import json
 rec = {"session": "registered"}
 assert hc.session_matches(rec, "registered", "")
 assert not hc.session_matches(rec, "other", "")
-with patch.object(hc, "session_matches", return_value=True) as match, \
-     patch.object(hc, "roles_load", return_value={"roles": {"hub": rec}}), \
-     patch.object(hc, "root", return_value=Path(sys.argv[1])), \
-     patch.object(Path, "iterdir", return_value=iter([Path("stage-a")])), \
-     patch.object(Path, "is_file", return_value=True):
-    assert cards.is_hub("from-hook")
-    assert match.call_args.args[1] == "from-hook"
-    assert hc.role_for_session("stage-a", "from-registry")[0] == "hub"
-    assert match.call_args.args[1] == "from-registry"
-    with patch.object(hc, "session_id", return_value="from-caller"):
-        assert hc.role_for_caller("stage-a")[0] == "hub"
-    assert match.call_args.args[1] == "from-caller"
+with TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    (home / "stage-a").mkdir()
+    (home / "stage-a" / "roles.json").write_text(json.dumps({"roles": {"hub": rec}}))
+    with patch.object(hc, "session_matches", return_value=True) as match, \
+         patch.object(hc, "root", return_value=home):
+        assert cards.is_hub("from-hook")
+        assert match.call_args.args[1] == "from-hook"
+        assert hc.role_for_session("stage-a", "from-registry")[0] == "hub"
+        assert match.call_args.args[1] == "from-registry"
+        with patch.object(hc, "session_id", return_value="from-caller"):
+            assert hc.role_for_caller("stage-a")[0] == "hub"
+        assert match.call_args.args[1] == "from-caller"
 PYTEST
 
 # ---- no registry at all: nobody is a hub, nothing is denied (and nothing is printed)

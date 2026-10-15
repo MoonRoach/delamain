@@ -193,7 +193,8 @@ worker cannot write either; a review role/tag with that policy gets one warning 
 
 Workspace-write agents automatically receive the hub home as a writable root. When cwd is in a linked Git worktree,
 spawn and resume also grant its own Git directory (index, HEAD and locks), common objects, `refs/heads` and
-`logs/refs/heads`, and the individual `packed-refs` / `packed-refs.lock` files (or `reftable` for that backend). These shared metadata roots allow commits and branch updates;
+`logs/refs/heads`, and the individual `packed-refs` / `packed-refs.lock` files (or `reftable` for that backend).
+These shared metadata roots allow commits and branch updates;
 the common config, hooks and sibling worktree directories are not granted. The entire common Git directory is
 never added. A sandboxed interactive coordinator may need `--add-dir <hub-home>` to write to the shared home.
 Full access needs no directory grant.

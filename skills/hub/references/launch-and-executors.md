@@ -101,7 +101,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   Codex model and CLI checks before the first detached launch: [codex-hub.md](codex-hub.md#engine-models-and-hook-trust).
 
   `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the headless default: Claude uses its bypass mode, Codex uses
-  `--dangerously-bypass-approvals-and-sandbox`. For Codex read-only review, pass `--sandbox read-only` instead.
+  `--dangerously-bypass-approvals-and-sandbox`. For a Codex reviewer, use `--sandbox workspace-write` and cwd under the hub home, as in *Reviews* above.
   Codex hook trust is separate: see `docs/codex.md`; read the returned errors when a restricted operation fails.
 - A brief follows `<plugin-root>/templates/brief-executor-template.md` (short); the advanced one,
   `brief-executor-advanced.md`, adds production permissions, size limits and evidence rules for teams that need them.

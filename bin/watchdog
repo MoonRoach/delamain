@@ -18,6 +18,9 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
+  R6  an engine's plan week crosses to "ahead of pace" or "runs out before the reset" (bin/limit_pace.py) → one
+      `[pace] @hub LIMIT …` line per stage with a hub, once per window and level; the owner is notified once per window
+      when it runs out before the reset. AGENT_HUB_LIMIT_PACE=off turns it off
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
@@ -26,7 +29,8 @@ Settings (hub home config.json or the environment; all hub-wide): AGENT_HUB_WATC
 AGENT_HUB_WATCHDOG_EVERY (5m), _WAKE_AFTER (15m), _BACKOFF_MAX (4h), _NIGHT_QUEUE (on), _API_ERROR (on),
 AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; empty = no remote channel),
 AGENT_HUB_SPAWN_HOLD_LOAD (empty = off), AGENT_HUB_SPAWN_HOLD (warn|refuse).
-What leaves the machine: the stage name, minutes, counts and the event word. Never line text, session ids, tags, paths.
+What leaves the machine: the stage name, minutes, counts and the event word (R6: the engine's name). Never line text,
+session ids, tags, paths.
 Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick; AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]
 replaces the measured load; AGENT_HUB_WATCHDOG_STOP_WAIT=<seconds> replaces the 30 s that a stopped hub may take to exit.
 Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
@@ -256,6 +260,7 @@ class Tick:
         self.state = load_state()
         self.actions: list = []
         self.wake_after, self.backoff_max = wake_after(), backoff_max()
+        self.paces = None  # bin/limit_pace.read_all(), read once per tick when a stage with a hub needs it
         self.rows = None  # `claude agents --json`, read once per tick when a Claude hub needs it
         self.rows_read = False
 
@@ -967,6 +972,29 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
             ep["result"] = f"failed: {res['detail'][:120]}"
 
 
+def rule_r6(tick: Tick, stage: str) -> None:
+    """Limit pace: one `@hub LIMIT …` line per crossing in the journal of a stage with a hub; the owner is notified once
+    per window that is projected to run out before its reset. A failure is a line of the tick, never the stage's."""
+    try:
+        import limit_pace
+        if limit_pace.mode() == "off":
+            return
+        if tick.paces is None:
+            tick.paces = limit_pace.read_all(now=tick.now.timestamp())
+        for engine in limit_pace.ENGINES:
+            p = tick.paces[engine].get("7d")
+            if p is None:
+                continue
+            text = limit_pace.note_crossing(stage, p, write=not tick.dry)
+            if text:
+                tick.say(stage, "R6", f"journal: {first_line(text)}")
+            if p.level == "exhaust" and limit_pace.note_crossing("*owner", p, write=not tick.dry, journal=False):
+                tick.notify(stage, "R6", f"delamain: {limit_pace.ENGINE_NAME[engine]} plan week projected to run out "
+                                         "before its reset; choose engine/model/effort per launch (agent spawn --dry-run)")
+    except Exception as e:  # noqa: BLE001
+        tick.say(stage, "R6", f"limit pace skipped: {type(e).__name__}: {first_line(str(e))}")
+
+
 def run_stage(tick: Tick, stage: str) -> None:
     st = tick.state["stages"].setdefault(stage, {})
     if (hc.root() / stage / "agents").is_dir():
@@ -975,6 +1003,7 @@ def run_stage(tick: Tick, stage: str) -> None:
     if not rec:
         return
     rule_r2(tick, stage, st)
+    rule_r6(tick, stage)
     marker, expired = read_marker(stage, tick.now)
     if marker and expired and not tick.dry:
         try:
@@ -1002,10 +1031,12 @@ def stage_names(only=None) -> list:
         return []
     names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and ((p / "roles.json").is_file() or (p / "agents").is_dir())]
     if only:
+        if only in names and hc.stage_closed(only):
+            return []  # `hub close`: nothing of the stage is watched any more
         if only not in names:
             raise hc.Failure(f"no stage {only!r} with a registry or agents in {root}")
         return [only]
-    return names
+    return [n for n in names if not hc.stage_closed(n)]
 
 
 def rule_r5(tick: Tick) -> None:

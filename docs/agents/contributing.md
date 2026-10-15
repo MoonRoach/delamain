@@ -12,6 +12,9 @@ For using the product, return to the [agent entry point](README.md#install-or-op
    pointers, checkable completion criteria and one authoritative home per meaning. Resolve installed skill
    pointers from the plugin root; repository-only operational paths are not installation paths.
    Done when new or moved content has a discoverable entry and existing inbound pointers resolve.
+   The hub skill is loaded whole by every hub and re-read on every call: `skills/hub/SKILL.md` is a core, and a
+   procedure used only in some situations (Codex Desktop, a handoff, a review) goes to `skills/hub/references/` with a
+   "read … when …" pointer in the core. `tests/t_hub_skill_layout.sh` holds its size budget and its pointers.
 3. Run checks appropriate to the change from the repository root. Read actual exit codes from the execution
    harness or redirected output, rather than the final command of a pipe.
 

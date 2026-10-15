@@ -13,13 +13,14 @@ CHECK=$(mktemp)
 cat > "$CHECK" <<'PY'
 import json, sys
 
-# The settings hooks of 0.7.1 / main 027c95a, before the mod: all must stay, in this order.
+# The settings hooks of 0.7.1 / main 027c95a, before the mod: all must stay, in this order (timeouts of board_locks and
+# polling_guard raised 5 -> 10 with the hook fail-safe: its deadline is 1.5 s under the timeout, see hooks/failsafe.py).
 BEFORE = [
     ("SessionStart", None, 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/questions.py"', 10),
     ("SessionStart", None, 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/delegation.py" session-start', 10),
     ("SessionStart", None, 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/path_shadow.py"', 10),
-    ("PreToolUse", "Bash", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py"', 5),
-    ("PreToolUse", "Bash", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py"', 5),
+    ("PreToolUse", "Bash", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/board_locks.py"', 10),
+    ("PreToolUse", "Bash", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/polling_guard.py"', 10),
     ("PreToolUse", "Write|Edit", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/handoff_size.py"', 10),
     ("PreToolUse", "Agent|Task|Workflow", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/delegation.py" pre-tool', 10),
     ("PreToolUse", "*", 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py"', 10),

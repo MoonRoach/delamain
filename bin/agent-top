@@ -18,11 +18,16 @@ from the parent's completion notice (a foreground one: the result of its Agent c
 the parent session runs (<claude config>/sessions/<pid>.json with a live claude pid) and died once it is gone —
 where that folder does not exist, died after 30 min of silence. Enter opens an
 agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), brief, inbox. `j` — stage journal with a
-filter, `s` — locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
-`agent send` / `agent stop` after a y/N confirmation; nothing else is ever written.
+filter, `s` — stages, locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
+`agent send` / `agent stop`, `c` closes a stage through `hub close`, each after a y/N confirmation; nothing else is ever
+written.
+Stages: a stage closed by `hub close` (stage.json "closed") is left out unless --all or named by --stage (`closed_hidden`
+in --json lists the ones left out). `stage_info` gives each shown stage's goal, closed record, live agents and last
+activity (newest of its journal, agent logs, roles and questions); a stage that is open, has no live agent and was quiet
+for $AGENT_TOP_IDLE_S (default 48 h) is `idle` — a candidate for `hub close`.
 
 Keys: ↑↓ select/scroll · ⏎ open · Esc back · Tab tab · j journal · s summary · a all agents · m message · x stop ·
-r refresh · ? help · q quit.  --read-only disables m and x.
+c close a stage · r refresh · ? help · q quit.  --read-only disables m, x and c.
 Logs are read incrementally from the last offset (log.jsonl reaches several MB): only assistant/result lines are
 parsed, a log over $AGENT_TOP_SCAN_MAX bytes (8 MB) is scanned from its tail and its turn count is marked with +.
 The offsets and what was read up to them outlive the process in a cache, <state dir>/agent-top/cache.sqlite (state dir:
@@ -36,7 +41,8 @@ stage's agents' dollars against its hub's: the hub's are logged when it is a hea
 session transcript's tokens at the per-model price the agents' results show (≈; a hub without a Claude transcript has none).
 Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DIR (default ~/.claude), AGENT_HUB_TZ (time zone of clocks and the journal,
 default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB),
-AGENT_TOP_CACHE (0: no disk cache), NO_COLOR.
+AGENT_TOP_CACHE (0: no disk cache), AGENT_TOP_IDLE_S (seconds, default 172800), AGENT_TOP_HUB_BIN (the `hub` script; tests),
+NO_COLOR.
 Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 """
 from __future__ import annotations
@@ -64,6 +70,7 @@ import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import codex_limits  # noqa: E402
+import limit_pace  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
 import topcache  # noqa: E402  (the readers' offsets between runs: <state dir>/agent-top/cache.sqlite)
 from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as _line_ts,  # noqa: E402
@@ -72,6 +79,7 @@ from subagents import (UUID_RE, TOOL_ID_RE as _TOOL_ID_RE, is_alive, line_ts as 
 BIN = hc.BIN
 STALE_S = 300                     # a live agent silent this long is flagged "quiet"
 RECENT_S = 24 * 3600              # finished agents older than this are hidden without --all / `a`
+IDLE_S = int(os.environ.get("AGENT_TOP_IDLE_S") or 48 * 3600)   # an open stage this quiet with no live agent is idle
 SCAN_MAX = int(os.environ.get("AGENT_TOP_SCAN_MAX") or 8 * 1024 * 1024)
 FEED_TAIL_BYTES = 400_000
 FLUSH_S = 2.0                     # a long first read writes the disk cache this often, not only at its end
@@ -744,16 +752,47 @@ class Feed:
 
 # ---------------------------------------------------------------- collecting
 
-def discover_stages(only) -> list:
+def discover_stages(only, show_all: bool = False) -> tuple:
+    """(stages to show, closed stages left out): every stage with agents or a role registry, or the ones named; a stage
+    closed by `hub close` only with --all or by name."""
     if only:
-        return [hc.check_stage(s) for s in only]
+        return [hc.check_stage(s) for s in only], []
     root = hc.root()
     try:
         names = sorted(d.name for d in root.iterdir() if d.is_dir() and hc.STAGE_RE.fullmatch(d.name)
                        and ((d / "agents").is_dir() or (d / "roles.json").exists()))
     except OSError:
         names = []
-    return names
+    if show_all:
+        return names, []
+    closed = [n for n in names if hc.stage_closed(n)]
+    return [n for n in names if n not in closed], closed
+
+
+def stage_activity(stage: str):
+    """The mtime of the stage's newest journal file, agent log, roles.json or questions.md; None when there is none."""
+    base = hc.root() / stage
+    paths = [base / "roles.json", base / "questions.md", *hc.work_dir(stage).glob("journal-*.md"),
+             *base.glob("agents/*/log.jsonl")]
+    newest = None
+    for p in paths:
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        newest = m if newest is None else max(newest, m)
+    return newest
+
+
+def stage_info(stage: str, agents: list, now: float) -> dict:
+    """What the stage is and whether it is still in use: goal, closed record, live agents, last activity, idle."""
+    closed = hc.stage_closed(stage)
+    at = stage_activity(stage)
+    live = sum(1 for a in agents if a["stage"] == stage and a["state"] == "live")
+    idle_s = None if at is None else max(0, int(now - at))
+    return {"goal": hc.stage_goal(stage), "closed": closed, "live": live,
+            "last_activity_at": None if at is None else dt.datetime.fromtimestamp(at, hc.TZ).isoformat(timespec="seconds"),
+            "idle_s": idle_s, "idle": not closed and live == 0 and (idle_s is None or idle_s >= IDLE_S)}
 
 
 def load_ask():
@@ -861,7 +900,7 @@ class Collector:
     def snapshot(self, wait_ext: bool = False) -> dict:
         now = time.time()
         ps = subagents.process_table_start()     # `ps` runs while the registers and the role files are read
-        stages = discover_stages(self.stages_arg)
+        stages, closed_hidden = discover_stages(self.stages_arg, self.show_all)
         self.ext.poll(stages)
         agents, roles_by_stage, rate = [], {}, None
         for stage in stages:
@@ -892,7 +931,8 @@ class Collector:
         rates = self.token_rates()                                                  # prices must not depend on the list's filter
         spend = {s: self._spend(rs, rates, *costs[s]) for s, rs in roles_by_stage.items()}
         out = {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
-               "stages": stages, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
+               "stages": stages, "closed_hidden": closed_hidden, "idle_after_s": IDLE_S,
+               "stage_info": {s: stage_info(s, agents, now) for s in stages}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
                "codex_limits": self.codex_limits.snapshot()}
@@ -1524,8 +1564,30 @@ def spend_text(sp: dict) -> str:
             + (" (partial: transcript not fully read or a model unpriced)" if sp.get("hub_partial") else ""))
 
 
+def stage_rows(snap: dict, width: int) -> list:
+    """The Stages block: each shown stage with its live agents and last activity; idle and closed ones marked."""
+    rows = [R(("Stages (an idle one: no live agent, quiet ≥ " + fmt_age(snap["idle_after_s"]) + " — close it: c)", "bold_u"))]
+    info_of = snap["stage_info"]
+    for stage in sorted(snap["stages"], key=lambda st: (bool((info_of.get(st) or {}).get("closed")),
+                                                        bool((info_of.get(st) or {}).get("idle")), st)):
+        info = info_of.get(stage) or {}   # working stages first, then the idle ones (to close), then the closed ones
+        closed = info.get("closed")
+        ago = f"{fmt_age(info['idle_s'])} ago" if info.get("idle_s") is not None else "—"
+        if closed:
+            text, st = f"{stage}  CLOSED {str(closed.get('at') or '')[:16].replace('T', ' ')} — {closed.get('why') or ''}", "dim"
+        else:
+            text = (f"{stage}  {'IDLE  ' if info.get('idle') else ''}live {info.get('live', 0)} · last activity {ago}"
+                    + (f" · {info['goal']}" if info.get("goal") else ""))
+            st = "warn" if info.get("idle") else "norm"
+        rows += wrap_rows(text, width, st, "  ", "    ", 2)
+    if snap.get("closed_hidden"):
+        rows += wrap_rows(f"{len(snap['closed_hidden'])} closed stage(s) hidden (a shows them): "
+                          + ", ".join(snap["closed_hidden"]), width, "dim", "  ", "    ", 2)
+    return rows
+
+
 def summary_rows(snap: dict, width: int) -> list:
-    rows = [R(("Locks (lock list)", "bold_u"))]
+    rows = stage_rows(snap, width) + [R(("", "norm")), R(("Locks (lock list)", "bold_u"))]
     if not snap["locks"]:
         rows.append(R(("  no locks", "dim")))
     for lk in snap["locks"]:
@@ -1581,10 +1643,11 @@ HELP = [
     "  ↑ ↓ / PgUp PgDn / Home End   select an agent",
     "  ⏎                            open the agent: log feed, brief, inbox",
     "  j                            stage journal (/ — filter, t — by the agent's tag, , . — day back/forward)",
-    "  s                            summary: locks, owner questions, roles, plan limits",
+    "  s                            summary: stages (idle ones marked), locks, owner questions, roles, plan limits",
     "  a                            all agents / only live and recent ones (24 h)",
     "  m                            message the agent (agent send) — with confirmation",
     "  x                            stop the agent (agent stop) — with confirmation",
+    "  c                            close a stage whose hub is no longer needed (hub close) — asks which, then y/N",
     "  r                            refresh now;  ?  this help;  q  quit",
     "Agent",
     "  Tab / 1 2 3                  feed · brief · inbox",
@@ -1600,6 +1663,26 @@ def help_rows(width: int) -> list:
     rows = []
     for ln in HELP:
         rows += wrap_rows(ln, width, "bold" if ln and not ln.startswith(" ") else "norm", "", "    ")
+    return rows
+
+
+def pace_lines(snap: dict) -> list:
+    """The limit-pace advisor line of each engine (bin/limit_pace.py); [] when AGENT_HUB_LIMIT_PACE=off."""
+    if limit_pace.mode() == "off":
+        return []
+    cache = hc.state_dir() / "agent-top" / "limit-pace.json" if os.environ.get("AGENT_TOP_CACHE", "1") != "0" else None
+    paces = limit_pace.read_all(now=snap["now"], cache=cache)
+    stage = snap["stages"][0] if len(snap["stages"]) == 1 else None
+    return [(e, paces[e].get("7d"), limit_pace.summary(e, paces, stage)) for e in limit_pace.ENGINES]
+
+
+def pace_rows(snap: dict, width: int) -> list:
+    got = pace_lines(snap)
+    if not got:
+        return []
+    rows = [R(("", "norm")), R(("Limit pace (choose engine/model/effort for this launch)", "bold_u"))]
+    for _, p, text in got:
+        rows += wrap_rows(text, width, "warn" if p is not None and p.level == "exhaust" else "norm", "  ", "    ")
     return rows
 
 
@@ -1619,6 +1702,7 @@ def render_once(snap: dict, coll: Collector, width: int, agent=None, lines: int 
         out += ["", f"feed (last {min(lines, len(fr))} lines):"] + fr[-lines:]
     else:
         out += [""] + txt(summary_rows(snap, width))
+        out += txt(pace_rows(snap, width))
         jl = coll.journal(snap["stages"], 0)
         multi = len({s for s, *_ in jl}) > 1
         jr, _ = journal_rows(jl, width, multi, "", None)
@@ -1708,10 +1792,15 @@ def render_widget(snap: dict) -> str:
 
 def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> dict:
     agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
-    out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "counts": snap["counts"], "agents": agents,
+    out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "closed_hidden": snap["closed_hidden"],
+           "idle_after_s": snap["idle_after_s"], "stage_info": snap["stage_info"], "counts": snap["counts"], "agents": agents,
            "roles": snap["roles"], "spend": snap["spend"], "locks": snap["locks"], "questions": snap["questions"],
            "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
            "codex_limits": snap.get("codex_limits", {}),
+           "limit_pace": {e: {"level": p.level if p else "unknown", "used": p.used if p else None,
+                              "expected": p.expected if p else None, "resets_at": p.resets_at if p else None,
+                              "eta": p.eta if p else None, "confirmed": bool(p and p.confirmed), "text": text}
+                          for e, p, text in pace_lines(snap)},
            "journal_tail": [{"stage": s, "time": hh, "tag": t, "text": x} for s, hh, t, x in coll.journal(snap["stages"], 0)[-20:]]}
     if agent:
         a = find_agent(snap, agent)
@@ -1858,17 +1947,18 @@ class App:
         if self.busy:
             return Row([(pad(" ⏳ " + self.busy, width), "warn")], fill="warn")
         keys = {
-            "list": [" ↑↓ select  ⏎ agent  j journal  s summary  a all  m message  x stop  ? help  q quit",
-                     " ↑↓ ⏎ agent  j journal  s summary  a all  m x  ? q", " ⏎ j s a m x ? q"],
+            "list": [" ↑↓ select  ⏎ agent  j journal  s summary  a all  m message  x stop  c close stage  ? help  q quit",
+                     " ↑↓ ⏎ agent  j journal  s summary  a all  m x c  ? q", " ⏎ j s a m x c ? q"],
             "agent": [" Esc back  Tab tab  ↑↓ scroll  End tail  [ ] agent  m message  x stop  j journal  q quit",
                       " Esc  Tab  ↑↓  End  [ ]  m x j  q", " Esc Tab ↑↓ q"],
             "journal": [" Esc back  ↑↓ scroll  / filter  t by tag  c reset  , . day  q quit", " Esc  ↑↓  / t c  , .  q", " Esc / t q"],
-            "summary": [" Esc back  ↑↓ scroll  q quit", " Esc  ↑↓  q", " Esc q"],
+            "summary": [" Esc back  ↑↓ scroll  c close stage  q quit", " Esc  ↑↓  c  q", " Esc q"],
             "help": [" any key — back  q quit", " any — back", " ? q"],
         }[self.view]
         text = next((k for k in keys if dispw(k) <= width), keys[-1])
         if self.cfg.read_only:
-            text = text.replace("m message  x stop  ", "").replace(" m x ", " ")
+            text = (text.replace("m message  x stop  c close stage  ", "").replace("  c close stage", "")
+                    .replace(" m x c ", " ").replace("  c  ", "  ").replace(" m x c", ""))
         return Row([(pad(text, width), "key")], fill="key")
 
     # -- keys
@@ -1901,6 +1991,9 @@ class App:
             return False
         if k in ("m", "x"):
             self._start_action(k)
+            return False
+        if k == "c" and self.view != "journal":   # the journal's own `c` resets its filter
+            self._start_close()
             return False
         if self.view == "list":
             self._list_key(k)
@@ -2022,7 +2115,7 @@ class App:
             st["cur"] = cur + 1
         return False
 
-    # -- actions (through `agent send` / `agent stop` only)
+    # -- actions (through `agent send` / `agent stop` / `hub close` only)
     def _start_action(self, k: str):
         a = self.selected()
         if self.cfg.read_only:
@@ -2048,6 +2141,35 @@ class App:
                     else "RELEASE: the process is already gone, release the role")
             self._ask_confirm(f" {what} — {a['role']} ({a['stage']})? [y/N] ", {"kind": "stop", "a": a})
 
+    def _start_close(self):
+        """`c`: which stage to close — the selected agent's, else the first idle one — then a y/N confirmation."""
+        if self.cfg.read_only:
+            self.say("--read-only mode: actions are disabled", "warn")
+            return
+        a = self.selected() if self.view != "summary" else None
+        info = self.snap.get("stage_info") or {}
+        idle = [st for st in self.snap["stages"] if (info.get(st) or {}).get("idle")]
+        guess = a["stage"] if a else (idle[0] if idle else "")
+        self.mode = "input"
+        self.inp = {"prompt": " close stage (Enter, Esc cancels): ", "buf": list(guess), "cur": len(guess),
+                    "on_enter": self._confirm_close}
+
+    def _confirm_close(self, text: str):
+        stage = text.strip()
+        if not stage:
+            self.say("no stage — cancelled", "dim", 3)
+            return
+        info = (self.snap.get("stage_info") or {}).get(stage)
+        if info is None:
+            self.say(f"no stage {stage!r} in this view", "warn")
+            return
+        if info.get("closed"):
+            self.say(f"stage {stage} is already closed", "warn")
+            return
+        live = f" ({info['live']} live agent(s): it refuses)" if info.get("live") else ""
+        self._ask_confirm(f" CLOSE stage {stage}? [y/N]{live} — hub close: locks released, roles retired, a background hub stopped ",
+                          {"kind": "close", "stage": stage})
+
     def _confirm_send(self, a: dict, text: str):
         text = one_line(text)
         if not text:
@@ -2061,6 +2183,12 @@ class App:
         self.mode, self.confirm = "confirm", dict(action, prompt=prompt)
 
     def _run_action(self, act: dict):
+        if act["kind"] == "close":
+            argv = [os.environ.get("AGENT_TOP_HUB_BIN") or str(BIN / "hub"), "close", "--stage", act["stage"],
+                    "--why", "closed from agent-top"]
+            self.busy = f"hub close {act['stage']}…"
+            threading.Thread(target=self._action_thread, args=(argv, dict(os.environ), act["stage"], "close"), daemon=True).start()
+            return
         a = act["a"]
         agent_bin = os.environ.get("AGENT_TOP_AGENT_BIN") or str(BIN / "agent")
         if act["kind"] == "send":
@@ -2079,7 +2207,9 @@ class App:
             r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=240)
             out = (r.stdout.strip().splitlines() or [""])[0] if r.returncode == 0 else (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
             self.busy = ""
-            self.say(("✓ " if r.returncode == 0 else "✗ ") + f"{kind} {role}: {one_line(out)}", "ok" if r.returncode == 0 else "err_bar", 12)
+            warn = r.returncode == 0 and "ATTENTION:" in out   # closed, but its hub session still runs: keep it in sight
+            self.say(("✓ " if r.returncode == 0 else "✗ ") + f"{kind} {role}: {one_line(out)}",
+                     "warn" if warn else "ok" if r.returncode == 0 else "err_bar", 60 if warn else 12)
         except (OSError, subprocess.TimeoutExpired) as e:
             self.busy = ""
             self.say(f"✗ {kind} {role}: {e}", "err_bar", 12)

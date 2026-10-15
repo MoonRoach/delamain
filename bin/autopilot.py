@@ -43,6 +43,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import grilling  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import session_effort  # noqa: E402
@@ -86,6 +87,10 @@ STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "
 # handoff outside the project, with nobody there to answer (smoke test, CLI 2.1.285). Everything else still asks — the
 # owner answers over Remote Control.
 HUB_ALLOW = ("hub takeover", "hub handoff", "hub succeed", "jlog", "jwait", "ask", "roles", "lock list", "agent status")
+# Every background successor, bypass or not: Claude Code 2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by
+# default since 2.1.299), and a hub waiting on a long `jwait` is such a conversation. The context budget then reads the
+# smaller post-compaction size (hooks/context_budget.py), so the hub goes on from a summary instead of handing over.
+NO_IDLE_COMPACTION = {"idleCompaction": False}
 LINK_WAIT_S = 90
 BG_TIMEOUT_S = 60  # one `claude --bg` call
 # How long a reservation of `hub succeed` / `--fallback` blocks the shift: login (30 s), up to three `claude --bg` tries
@@ -426,6 +431,21 @@ def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: 
     return " ".join(parts)
 
 
+def predecessor_cwd(stage: str, hint: Optional[str]) -> Optional[str]:
+    """The directory the budget hook's `hub succeed --cwd` names: the hub's registered worktree, else `hint` (the hook
+    input's directory, which drifts with the hub's shell) when it is a good place, else None (`hub succeed` then decides
+    and refuses a bad directory itself)."""
+    recorded = hc.registered_worktree(stage)
+    if recorded is not None:
+        return str(recorded)
+    project = hc.stage_project(stage)  # a hub registered before worktrees were recorded: the project is on file anyway
+    if project is not None:
+        return str(project)
+    if hint and hc.project_cwd_problem(stage, hint) is None:
+        return hint
+    return None
+
+
 def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], now_block: bool,
                 block_k: str, effort: Optional[str] = None) -> str:
     """The autopilot paragraph of the context budget's warning and deny reason. `effort`: what the hub runs at now (the
@@ -494,7 +514,7 @@ class Start(Exception):
 
 def followthrough_summary() -> str:
     """Point every successor surface at the hub skill's authoritative procedure."""
-    return """For Codex, apply the hub skill's Terminal follow-through: consume the report/result, verify resource ownership and
+    return """For Codex, apply the hub skill's Terminal follow-through (`references/codex-hub.md`): consume the report/result, verify resource ownership and
 remaining approved Business DoD, then start/resume next independent authorized ready work before waiting/final.
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
@@ -581,8 +601,9 @@ class Successor:
             argv += ["--effort", self.effort]
         if flag:
             argv += ["--permission-mode", flag]
-        if flag != "bypassPermissions":
-            argv += ["--settings", json.dumps(successor_settings(), separators=(",", ":"))]
+        settings = successor_settings() if flag != "bypassPermissions" else {}
+        settings.update(NO_IDLE_COMPACTION)
+        argv += ["--settings", json.dumps(settings, separators=(",", ":"))]
         return argv + [self.prompt()]
 
     def started(self, bg_id: str, mode: str) -> dict:
@@ -704,7 +725,7 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         brief = self.brief(why)
         argv = [sys.executable, str(hc.BIN / "agent"), "spawn", "--stage", self.stage, "--role", role, "--tag", role,
                 "--cwd", str(self.cwd), "--model", self.model, "--brief", str(brief), "--title", self.title,
-                "--reason", SUCCESSOR_REASON]
+                "--reason", SUCCESSOR_REASON, "--mcp", "inherit"]  # a hub keeps the MCP servers its predecessor had
         if self.effort:
             argv += ["--effort", self.effort]
         if self.root:
@@ -754,7 +775,8 @@ class CodexSuccessor(Successor):
 You are the next hub of stage `{self.stage}`. Your predecessor handed over automatically and stopped.
 The owner may be away; they reach you through `ask` and `agent send hub-{self.succ} "…"`.
 
-1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill), then run
+1. Read the bundled hub skill at `{skill}` (or invoke the installed `delamain:hub` skill) and its `references/codex-hub.md`
+   and `references/autopilot.md`, then run
    `{self.takeover_cmd()}`. `self` resolves this worker's own session id. Follow its digest and `{self.handoff}`.
 2. Run the digest's first `jwait` once unconditionally to replay handover events.
    {followthrough_summary()}
@@ -1082,6 +1104,8 @@ def _record(stage: str, succ: int, pend: dict, reservation: Optional[dict] = Non
                 pend = dict(pend, taken_over=previous["taken_over"])
             if previous.get("author") and not pend.get("author"):
                 pend = dict(pend, author=previous["author"])
+            if previous.get("grilling_owner_asked") and previous.get("handoff") == pend.get("handoff"):
+                pend = dict(pend, grilling_owner_asked=previous["grilling_owner_asked"])
             data["pending"] = pend
             save_state(stage, data)
 
@@ -1114,7 +1138,8 @@ def require_cli_handoff_permission():
 def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optional[str], cwd: Path,
             headless: bool = False, dry_run: bool = False, again: bool = False, engine=None,
             succ: Optional[int] = None, notes: tuple = (), effort_arg: Optional[str] = None,
-            replace: bool = False, force: bool = False, surface="auto", branch=None, desktop_worktree=False) -> int:
+            replace: bool = False, force: bool = False, surface="auto", branch=None, desktop_worktree=False,
+            owner_asked: bool = False) -> int:
     limit = chain_limit()
     tag, succ = f"hub-{n}", succ or n + 1
     predecessor = hc.roles_load(stage)["roles"].get("hub") or {}
@@ -1140,15 +1165,26 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     # A desktop retry reuses its reservation, including an uncertain native launch. Never spawn a fallback.
     existing = load_state(stage).get("pending") or {}
     if existing.get("surface") == "desktop" and (not existing.get("taken_over") or existing.get("n") == succ):
-        if existing.get("taken_over"):
-            raise hc.Failure("desktop successor already took over")
-        if not again:
-            raise hc.Failure("desktop request already reserved; use --again to inspect/retry the same request")
-        if (surface != "desktop" or existing.get("n") != succ
-                or Path(existing["handoff"]).resolve() != handoff.resolve()):
-            raise hc.Failure("retry must keep the same desktop surface and handoff")
-        desktop_report(stage, existing)
-        return 0
+        with state_lock(stage):
+            data = load_state(stage)
+            if (data.get("pending") or {}) != existing:
+                raise hc.Failure("desktop request changed before retry; inspect it again")
+            existing = data["pending"]
+            if existing.get("taken_over"):
+                raise hc.Failure("desktop successor already took over")
+            if not again:
+                raise hc.Failure("desktop request already reserved; use --again to inspect/retry the same request")
+            if (surface != "desktop" or existing.get("n") != succ
+                    or Path(existing["handoff"]).resolve() != handoff.resolve()):
+                raise hc.Failure("retry must keep the same desktop surface and handoff")
+            if owner_asked and not dry_run:
+                current = hc.roles_load(stage)["roles"].get("hub") or {}
+                if caller_sid not in (current.get("session"), current.get("cli_session_id")):
+                    raise hc.Failure("the registered predecessor changed before retry; request retained")
+                grilling.authorize_handoff(stage, existing, owner_asked)
+                save_state(stage, data)
+            desktop_report(stage, existing)
+            return 0
     approval, sandbox_policy, effort, effort_notes = "never", None, None, []
     if engine == "codex":
         context = codex_context()
@@ -1185,7 +1221,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         raise hc.UsageError(f"--model {model!r}: {problem}")
     if surface == "desktop":
         return prepare_desktop(stage, n, succ, handoff, cwd, model, effort, sandbox_policy,
-                               context.get("approval_policy"), branch, dry_run, desktop_worktree)
+                               context.get("approval_policy"), branch, dry_run, desktop_worktree, owner_asked=owner_asked)
     if again and not dry_run:
         drop_dead(stage, n, cwd, succ)
     def check_predecessor():
@@ -1231,6 +1267,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             data["pending"] = {"n": succ, "kind": "starting", "at": started, "handoff": str(handoff),
                                "model": model, "k": k, "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort,
                                "author": hc.session_id()}
+            grilling.authorize_handoff(stage, data["pending"], owner_asked)
             save_state(stage, data)
     if at_limit:
         line = (f"auto-handoff chain limit {limit} reached — waiting for the owner; handoff {handoff}. "
@@ -1265,6 +1302,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         for note in effort_notes:
             print(f"[plan] {note}")
         return 0
+    loud = None
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
     elif headless:
@@ -1281,8 +1319,13 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             return 0
         except Start as e:
             why = str(e)
-    hc.journal_append(stage, tag, f"auto-handoff: background successor not started — {why}; falling back to a "
-                                  "headless hub (agent spawn)")
+            loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
+                    "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
+                    f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
+    # a headless successor is the designed outcome for codex / --headless: no warning, and no advice to replace it
+    line = loud or f"auto-handoff: headless successor by design: {why}"
+    hc.journal_append(stage, tag, line)
+    print(line + "\n")
     phase = {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
              "handoff": str(handoff), "model": model, "k": k, "engine": engine, "mode": mode,
              "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort}
@@ -1343,7 +1386,8 @@ def desktop_report(stage, pend):
             "keep the predecessor active and retain the request while awaiting the owner. Never create another thread for an uncertain result.")
 
 
-def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False):
+def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False,
+                    owner_asked=False):
     root = main_checkout(cwd) or cwd.resolve()
     predecessor_cwd = str(cwd.resolve())
     authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
@@ -1384,7 +1428,8 @@ def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approva
 
 You are the automatic desktop successor for stage `{stage}`. Request `{req}`.
 Use the existing hub home `{hc.root()}` (pass AGENT_HUB_HOME explicitly to shell commands if not inherited).
-Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}` and the handoff `{handoff}`.
+Read the bundled hub skill `{hc.BIN.parent / 'skills/hub/SKILL.md'}`, its `references/codex-hub.md` and `references/autopilot.md`,
+and the handoff `{handoff}`.
 Continue the unchanged Business DoD and human authority source/reference and scope recorded in that handoff.
 Consult these predecessor rule layers and the question register: {authority_sources}. Check standing explicit
 human instructions and revocation. Apply the hub skill's native authority check before any later context transfer;
@@ -1415,6 +1460,7 @@ Owner questions use `ask`; consult the register, not copied decisions.
             # Brief precedes reservation: a write failure leaves no dispatchable incomplete request.
             hc.atomic_write(brief, prompt)
             data['chain'], data['pending'] = k, pend
+            grilling.authorize_handoff(stage, pend, owner_asked)
             save_state(stage, data)
             hc.journal_append(stage, f'hub-{n}',
                               f'auto-handoff {k}/{limit}: desktop request {req} prepared, handoff {handoff}')
@@ -1733,7 +1779,7 @@ def headless_or_owner(stage: str, s: Successor, why: str, replacing: bool = Fals
         raise
 
 
-def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None) -> int:
+def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None, owner_asked: bool = False) -> int:
     """The background successor did not take over in time: journal its log tail, stop it, start a headless one from
     the same handoff (the chain is not counted again). Only for this hub's own successor (hub-<succ>, default n + 1).
     Reserved under the lock like `hub succeed`, so a retry after a killed run is refused rather than doubled."""
@@ -1771,6 +1817,7 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None)
         effort = successor_effort(bg.get("effort"))
         reservation = dict(bg, kind="falling-back", at=now, bg_at=bg.get("bg_at") or bg.get("at"))
         data["pending"] = reservation
+        grilling.authorize_handoff(stage, reservation, owner_asked)
         save_state(stage, data)
     timeout_s = takeover_timeout()
     try:

@@ -1,8 +1,10 @@
 # Installation and setup
 
 **Platform.** macOS and Linux; Python and the selected CLI on `PATH` (standard library only).
-Windows is unsupported: the tools need `fcntl`, `setsid`, `ps` and `curses`. Claude Code itself runs natively on
-Windows ([setup](https://code.claude.com/docs/en/setup)); the limit is Delamain's. WSL is untested.
+The tools need `fcntl`, `setsid`, `ps` and `curses`, so the core does not run natively on Windows.
+The [Windows transport](windows-workflow.md) runs that core in WSL2 for a native Windows Codex coordinator;
+the [terminal launcher](windows-wsl.md) is a separate Linux coordinator mode. Native Windows Claude
+integration is not established.
 
 Follow the [README's three-step recipe](../README.md#start): install, set up the project, then give the hub a job.
 If you start the hub first, it offers `delamain:setup` when the repository has no `.agent-hub/`.
@@ -82,6 +84,11 @@ journal line is lost, while the worker's exit code is still propagated.
     only in the hub home, in repositories that have `.agent-hub/`, under the directories of the hub-wide setting
     `AGENT_HUB_SCOPE_DIRS`, and, for `questions`, in agents started by `agent spawn`. A session in an unrelated
     project hears nothing from them.
+  - `session_cards` (before Claude Desktop's `start_session` / `hand_off_to_session`, and at session start) acts only in
+    a session registered as a stage's `hub`: it refuses cards (`initiation` `own_initiative` or `offer`) and forks, and
+    names `agent spawn`, `ask add` and `hub handoff` instead; a session the owner asked for (`user_asked`; a fork they
+    asked for: `user_asked` with `context` `fork`) and an accepted card (`proposal_id`) pass. `spawn_task` (the older
+    task-card tool) is refused the same way. Any other session, and any error of its own, is let through.
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
     `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
     time in the same places as `questions`, and once per distinct set of paths elsewhere.
@@ -111,4 +118,3 @@ answer, stopping once the business result is clear. Delamain does not bundle it;
 ```
 
 Without it the `hub` skill grills by hand in the same format; the answers go to the question register either way.
-

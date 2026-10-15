@@ -38,6 +38,14 @@ import sys
 import time
 from pathlib import Path
 
+if __name__ == "__main__" and sys.argv[1:2] in (["session-start"], ["prompt"], ["pre-tool"]):  # hook mode: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # bin/delegation loads this module by filename
 from codex_compat import agent_call as codex_agent_call, native_tool, policy_tool
 
@@ -216,7 +224,11 @@ def grilling_context(prompt) -> str | None:
             "questions. A hub's own question format (A/B with a default and a due time) and its \"stop once the "
             "business result is clear\" limit do not apply to a grilling the owner asked for, and its decisions wait "
             "for the owner's answers: a recommendation is not a default taken on silence. If the prompt only mentions "
-            "grilling, ignore this note. If the skill is not installed, say so once and follow the same method.")
+            "grilling, ignore this note. If the skill is not installed, say so once and follow the same method. In a "
+            "stage hub, a grilling over the stage's open questions runs in a session of its own instead: run `hub grill "
+            "--stage <S>` and do what it prints, without loading the skill here; a new topic the owner raises in the "
+            "hub is grilled here, unless the owner says otherwise: run `hub grilling start` before the first round and "
+            "`hub grilling end` once the frontier is empty or the owner stops it; until then automatic handoffs wait.")
 
 
 def emit(event: str, **fields) -> None:

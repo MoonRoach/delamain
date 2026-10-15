@@ -39,7 +39,7 @@ An explicit owner grant for automatic same-stage context handoffs persists until
 under it without another per-transfer approval. If absent/revoked or outside scope, preserve the request and
 predecessor and ask once. Keep the Business DoD unchanged; an automatic marker/configuration is not human authority.
 Give the queue finite completion checks. A Codex successor applies the hub skill's
-[Terminal follow-through](../hub/SKILL.md#terminal-follow-through) and reconciles this snapshot against Business DoD
+[Terminal follow-through](../hub/references/codex-hub.md#terminal-follow-through) and reconciles this snapshot against Business DoD
 before DONE, preserving explicit owner boundaries. Desktop request/client IDs are pending references; record actual
 thread/cwd and observed policy only once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
 

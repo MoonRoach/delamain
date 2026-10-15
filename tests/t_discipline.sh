@@ -329,7 +329,7 @@ fp "/agent-hub:hub take over" | python3 -c 'import json,sys; json.load(sys.stdin
 # The owner asking for grilling: the hook names the companion skill, dial on or off (14.10: Russian free text did not load it)
 for pos in "давай сразу грилинг по открытым вопросам" "ещё не следуют грилл ми" "погриль меня по плану" "Grill me on this design" "грильни" "/mattpocock-skills:grill-me план" "do some grilling on the plan"; do
   fp "$pos" > $R/gr.out
-  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "mattpocock-skills:grilling" in t and "until the frontier" in t and "not a default taken on silence" in t' $R/gr.out
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "mattpocock-skills:grilling" in t and "until the frontier" in t and "not a default taken on silence" in t and "hub grill --stage" in t' $R/gr.out
   check $? 0 "grilling: [$pos] names the grilling skill and its rounds"
 done
 for neg in "купил гриль на дачу" "гриль" "Сравни электрические грили" "Добавь grilled cheese в меню" "Проверь skills/grilling/SKILL.md" "how is it going?"; do

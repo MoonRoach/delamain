@@ -116,6 +116,11 @@ with `setsid` stop too. In the experiment (E16) a spawned agent survived both it
 killing of the background task that launched it, because it had already been reparented; nothing is gained by
 running it in the background, so do not rely on that.
 
+Once started, the agent is out of reach of its host: its own session and process group, stdio in files, no
+controlling terminal. A SIGTERM or SIGHUP to the host's process group, or the host app quitting, does not stop it
+(`tests/t_kill_guard.sh`, both engines). Only a signal to the agent's own pid does: `agent stop`, or a kill by pattern —
+which is why the `kill_guard.py` hook refuses `pkill`, `killall` and `kill $(pgrep …)` ([reference](reference.md#agent-discipline)).
+
 ## Journal lines from sub-agents
 
 A sub-agent's shell inherits the parent's environment, `HUB_TAG` and `CLAUDE_CODE_SESSION_ID` included (E2), so a
@@ -124,6 +129,36 @@ bare `jlog` writes under the parent's tag. The convention:
   `jlog --tag hub-<N>/<name> "DONE <report path>"`; the hub's `jwait` drops its own sub-tags, and the completion
   notice is what wakes the hub;
 - an executor's sub-agents write nothing to the journal (above).
+
+## Waiting for CI, a merge or a lock
+
+A wait command run as the hub's own background Bash wakes the hub on every exit, and each wake re-reads the hub's whole
+context: in the 07–14.10 audit 202 of 913 background wakes were CI, merge or lock waits. The hub should wake once, on
+a result it must decide on. `await` does the waiting outside the hub's context:
+
+```bash
+# an ordinary foreground call: it returns in a moment with the supervisor's pid and the log path
+await --ok MERGED --label "MR !12" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr 12
+```
+
+The supervisor runs the command in its own session with its output in a log (`<stage>/coordinator/work/await/`),
+journals nothing while it runs and, when it ends, one line:
+
+```
+- 14:07 [hub-3-await] @hub MERGED MR !12 — https://gitlab.example/mr/12 (exit 0, 11m, log …/await/….log)
+```
+
+The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `@hub` addresses the hub, and the tag
+`<tag>-await` is neither the hub's own tag nor its sub-tag `<tag>/…`, which `jwait` drops. Outcomes: exit 0 → the
+`--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group
+gets SIGTERM, then SIGKILL after 5 s, also for a grandchild that ignores SIGTERM) → `TIMEOUT`; any other exit code,
+a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words such as `CONFLICT` for a command that
+distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait` and reads
+the result from the exit word it prints; `--to <its tag>` is for an executor that wants a line for its own `jwait`,
+the default `--to hub` wakes the hub. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
+`FAILED … interrupted`; a supervisor killed
+with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails
+at once with exit 2 and no line.
 
 ## What did not make it into the plugin
 
@@ -158,7 +193,7 @@ session was stopped and removed afterwards.
 | E14 | `claude --bg` | returns at once; hosted by `claude daemon` → `bg-pty-host`; `claude agents --json` lists it (`kind: background`, `status`, `state`); inherits the launching shell's environment (`jlog` worked); transcript at the usual `projects/<project>/<session>.jsonl`; a peer's `SendMessage` to its name ran a command in it; `--bg -p` refused; `--dangerously-skip-permissions` refused until accepted interactively; a variadic flag (`--allowedTools Bash "<task>"`) swallowed the prompt; after SIGTERM to its process it was not restarted (`state: blocked`) and `claude --bg --resume <id>` started a copy with the history |
 | E15 | A sub-agent that backgrounds its own command | its turn ends at once and the parent gets a `completed` notice with an interim result; the backgrounded command is killed when the `-p` parent exits |
 | E16 | `agent spawn` and the parent session's exit | a `claude -p` session ran `agent spawn` once as a foreground and once as a background Bash call, then exited after 10 s: both agents (fake CLI holding 45 s) kept running and wrote their `result`; a third spawn inside a background task that was still running (`agent spawn … && sleep 120`) also survived when the CLI killed that task at exit |
-| E17 | Bash timeouts | with `BASH_DEFAULT_TIMEOUT_MS=15000` a foreground 40 s command was moved to the background at 15 s (`is_backgrounded`), and a background `jwait --for 12h` was not stopped at 15 s; both were stopped when the `-p` run exited. The docs give background commands 30 min by default (the Bash call's `timeout` raises it, 2 h at most unless `BASH_MAX_TIMEOUT_MS`), but in a long `claude -p` session (CLI 2.1.284) a background command started without `timeout` was still running at 31 min. The skill's waiting rule passes `timeout: 3600000` with `jwait --for 55m` either way |
+| E17 | Bash timeouts | with `BASH_DEFAULT_TIMEOUT_MS=15000` a foreground 40 s command was moved to the background at 15 s (`is_backgrounded`), and a background `jwait --for 12h` was not stopped at 15 s; both were stopped when the `-p` run exited. The docs give background commands 30 min by default (the Bash call's `timeout` raises it, 2 h at most unless `BASH_MAX_TIMEOUT_MS`), but in a long `claude -p` session (CLI 2.1.284) a background command started without `timeout` was still running at 31 min. The skill's waiting rule passes `timeout: 3600000` with `jwait --for 50m` either way |
 | E18 | Foreground sub-agent | `requestShape: "foreground"` in its meta; no `<task-notification>` in the parent; the parent's `tool_result` for the meta's `toolUseId` carries its answer |
 | E19 | Which processes run | `~/.claude/sessions/<pid>.json` holds `pid` and `sessionId` for every running CLI process, headless and Desktop-hosted alike; no stale files were left by the runs above |
 | E20 | `claude --bg --remote-control <name> -n <title> --model haiku "<prompt>"` from inside a Claude Desktop session (its environment as is), cwd a trusted repository (CLI 2.1.285) | started under `claude daemon`, printed `backgrounded · <id> · <name>`, logged in with the subscription and answered; `claude logs <id>` (ANSI screen text) contains the Remote Control link `claude.ai/code/session_<…>`; `claude agents --json` lists it (`kind: background`, `id`, `sessionId`, `name`, `status`, `state`); a `SendMessage` from another session to its name was not delivered: it was held for the recipient's approval (a different permission mode) and expired — so `hub succeed` puts the takeover instruction in the CLI prompt and the two hubs talk only through the journal; it inherits the launching process's environment (`AGENT_HUB_HOME` reached it); `claude stop <id>` / `claude rm <id>` remove it |

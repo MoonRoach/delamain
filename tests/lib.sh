@@ -8,7 +8,7 @@ export AGENT_HUB_TZ=UTC
 unset HUB_TAG HUB_STAGE CLAUDE_CODE_SESSION_ID AGENT_SESSION_ID AGENT_BOARD_FILE AGENT_HUB_LOCK_RULES CLAUDE_SESSIONS_DIR \
       AGENT_HUB_MODEL_MAP AGENT_HUB_DEFAULT_EFFORT AGENT_HUB_PERMISSION_MODE CLAUDE_BIN \
       AGENT_HUB_DEFAULT_REPO AGENT_HUB_NIGHT AGENT_HUB_SEND_CAP AGENT_HUB_HANDOFF_MAX_BYTES AGENT_INIT_TIMEOUT \
-      AGENT_HUB_TAKE_MAIN_MERGE AGENT_HUB_JWAIT_MATCH AGENT_HUB_JWAIT_FOR AGENT_HUB_BG_WAIT_CEILING_MS CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS \
+      AGENT_HUB_TAKE_MAIN_MERGE AGENT_HUB_JWAIT_MATCH AGENT_HUB_JWAIT_FOR AGENT_HUB_BG_WAIT_CEILING_MS CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS AGENT_HUB_SPAWN_MCP \
       CLAUDE_CONFIG_DIR CODEX_THREAD_ID AGENT_SESSION_ID AGENT_HUB_ENGINE CODEX_BIN \
       AGENT_HUB_CODEX_MODEL_MAP AGENT_HUB_CODEX_DEFAULT_MODEL AGENT_HUB_CODEX_PERMISSION_MODE AGENT_HUB_CODEX_HOOK_TRUST \
       AGENT_HUB_SUCCESSOR_ENGINE CLAUDE_EFFORT CLAUDE_CODE_HOST_SESSION_ID \
@@ -21,6 +21,12 @@ export AGENT_HUB_NO_PROJECT=1
 # `hub start` refuses a stage name with no word about the work and wants --goal; the scripts start stages called s1, web,
 # stage-a, so they opt out the same way. t_naming.sh unsets it.
 export AGENT_HUB_NO_NAMING=1
+# The limit-pace advisor (bin/limit_pace.py) reads plan usage from $CODEX_HOME/sessions: the machine's real Codex week
+# must not decide whether a test's spawn is refused. A script that needs Codex data sets CODEX_HOME itself.
+export CODEX_HOME="$(mktemp -d)"
+# `hub start` / `hub takeover` warn when no settings file turns Claude Code's idle compaction off, which a throw-away
+# environment never does. t_cli_models.sh unsets it.
+export AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

@@ -71,10 +71,17 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    or you leave stages running while you are away; off otherwise.
    Codex app wake requires a reachable CLI runtime or a separately configured app-native heartbeat; the native
    automation consumer may use model calls. `watchdog install` alone does not install that native consumer.
+10. MCP servers of headless agents — `AGENT_HUB_SPAWN_MCP` in `config.json`: the default is `none` (no server); do the
+   project's agents need MCP servers (a browser, docs, GitLab or DB server), so that `inherit` is the project's default?
+   *Recommended:* `inherit` if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json` and its
+   agents use them, else leave the default `none`. A single task can still ask for servers with `agent spawn --mcp`.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or
-a scheduled job, and the user's settings are not edited (question 7): list the edit for the user to confirm.
+a scheduled job, and the user's settings are not edited (question 7): list the edit for the user to confirm. Question 10
+stays `none` (nobody has said that the agents need servers) and writes nothing, so an `inherit` the user set earlier
+is kept: if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json`, list `inherit` for the user to
+confirm.
 
 ## 3. Write
 
@@ -99,8 +106,19 @@ regex and leaves the file as it was. For question 6, add `"AGENT_HUB_TAKE_MAIN_M
 - if `hub home` showed the legacy `~/.claude/agent-hub`, say so and mention `hub home migrate` (a dry run first, then
   `--apply`).
 
+For question 10, when the answer is yes, add `"AGENT_HUB_SPAWN_MCP": "inherit"` to the repository's `.agent-hub/config.json`,
+not the hub home's; when it is an explicit no, add `"AGENT_HUB_SPAWN_MCP": "none"` there, so that an `inherit` from the hub home or an
+earlier project config does not stay in force (a repository's setting wins over the hub home's).
+
 For question 8, add `"AGENT_HUB_AUTO_HANDOFF": "on"` to the hub home's `config.json` (the hub home is where `hub home`
 points; create the file as `{}` first, keep its other keys) — a repository's `config.json` cannot turn it on.
+
+Idle compaction (Claude only, whatever the answers): Claude Code 2.1.290+ compacts a conversation over 200K tokens
+left idle ~54 minutes (on by default since 2.1.299), and a hub waiting on `jwait` would go on from a summary instead of
+handing over. Read `idleCompaction` in the managed settings, the project's `.claude/settings.local.json` and
+`.claude/settings.json`, and `~/.claude/settings.json` (the first file that sets it decides). Unless it is `false`,
+OFFER to add `"idleCompaction": false` to `~/.claude/settings.json` (other keys kept): show the exact edit and ask first;
+with `--defaults` or headless, list it. `hub start` and `hub takeover` print the same warning from the same check.
 
 For question 9, on yes (the hub home's settings are hub-wide; a repository's `config.json` cannot set them):
 1. `watchdog install` — writes the job (`<hub home>/.state/watchdog/run.sh`, a launchd plist or one crontab line) and

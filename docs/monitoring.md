@@ -75,6 +75,7 @@ can be woken.
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
 | R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
+| R6 | Each engine's plan week ([limit pace](reference.md#limit-pace)), for a stage with a hub. | One journal line `[pace] @hub LIMIT …` per forecast crossing, stage, window and level; the owner is notified once per window projected to run out. Forecast context only: each launch compares fresh remaining weekly quota. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -186,10 +187,21 @@ load, the cores, the threshold and `--ignore-hold`, which passes. Resumes (`agen
 work that already exists. The job must be installed for the hold to be written; `watchdog run --dry-run` shows what a
 tick would do.
 
+### Limit-pace context (R6)
+
+R6 reports forecast changes; it does not schedule work. For each launch, follow
+[limit pace](reference.md#limit-pace): compare fresh remaining weekly percentages and advise an equivalent model
+class and effort for that launch. Forecasts from the first 6 hours of the week are low-confidence display only:
+they produce neither a journal alarm nor an owner notification, and consume no crossing state;
+five-hour windows are contextual only. Neither supplies a reason to delay work until reset. Engine locks remain in
+force: ask whether to allow the other engine for this launch, with running the locked engine as the default.
+The spawn refusal uses the verified weekly quota rules in the reference, not the forecast crossing.
+
 ### What leaves the machine
 
 A notification carries the stage name, minutes, counts and an event word, for example `delamain: payments — hub silent 47
-min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`. Never line text,
+min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`, and R6's
+`delamain: Codex plan week projected to run out before its reset` (the engine's name, no stage). Never line text,
 question text, session ids, tags or paths. Channels: the local one (macOS `osascript`, elsewhere `notify-send` when
 present; `AGENT_HUB_NOTIFY_LOCAL`, on by default) and a remote one you configure, `AGENT_HUB_NOTIFY_CMD`, a JSON argv
 in the hub home's `config.json` in which `{message}` is replaced and which runs without a shell:

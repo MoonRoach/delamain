@@ -1,6 +1,6 @@
 ---
 name: status
-description: Answer questions about Delamain agents, stages and hubs, their tasks, owner questions and locks. Use for “what is running”, “which agents are alive”, “task status”, “who needs an answer”, “что сейчас работает”, “какие агенты живы”, “что с задачами”, “кто ждёт ответа” and “какие блокировки”. Not for version-control working-tree state, build/CI state, system processes/ports, or tickets/issue trackers.
+description: Answer questions about Delamain agents, stages and hubs, their tasks, owner questions, locks and idle stages. Use for “what is running”, “which agents are alive”, “task status”, “who needs an answer”, “что сейчас работает”, “какие агенты живы”, “что с задачами”, “кто ждёт ответа”, “какие блокировки” and “какие хабы можно закрыть”. Not for version-control working-tree state, build/CI state, system processes/ports, or tickets/issue trackers.
 ---
 
 # Running work
@@ -20,6 +20,9 @@ description: Answer questions about Delamain agents, stages and hubs, their task
    event, not runtime. Describe native sessions' activity-based liveness as approximate. An unread inbox is a message
    awaiting the agent, not an owner question. `questions_ok: false` means the question register is unavailable.
    Report missing data or non-timeout command failure as unavailable; an empty successful snapshot means no observed work.
+   `stage_info.<S>.idle` marks an open stage with no live agent and no activity for `idle_after_s`: name such stages
+   once as candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
+   out of the snapshot: they run nothing; mention them only when asked about old or closed work.
    Infer tasks only from titles, activity, last words or the journal; compare snapshots only when a previous one exists.
 3. Answer in a few plain-text lines in the user's language, prioritizing running work and anything needing attention.
    Summarize large stages and offer detail on request. Include question ids when they help the owner answer.

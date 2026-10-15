@@ -46,6 +46,7 @@ if __name__ == "__main__":  # fail-safe first, before anything that can fail: se
     except Exception:  # noqa: BLE001 — without it the hook is as it was
         pass
 
+import bisect
 import json
 import os
 import re
@@ -112,14 +113,27 @@ _TOKEN = re.compile(r"\x00(\d+)\x00")
 # value (`-o pipefail`) must not break the chain up to `-c`.
 _EXEC_ARG = re.compile(r"(?:^|[\s;&|(/])(?:(?:bash|sh|zsh|dash|ksh)(?:\s+(?:-\w*[oO]\s+\w+|-\S+))*?\s+-\w*c(?:\s+--)?"
                        r"|eval)\s*$")
+# Who may run such a string, for a caller that reads `data`: the command word of the segment is a shell, `eval` or a command that
+# runs the rest of its line (a wrapper, `xargs`, `find -exec`, `watch` …). `echo bash -c '…'` and `jlog bash -c '…'` only
+# print their arguments.
+_LAUNCHER = (r"(?:\S*/)?(?:sudo|doas|env|nice|ionice|nohup|exec|time|timeout|gtimeout|xargs|command|builtin|setsid|stdbuf|caffeinate"
+             r"|unbuffer|noglob|nocorrect|watch|flock|parallel|entr|find|bfs|gfind|fd|fdfind|su|runuser|setpriv|unshare|arch|xcrun"
+             r"|taskset|numactl|script|strace|systemd-run|tmux|screen|sandbox-exec)")
+_EXEC_LEAD = re.compile(r"^\s*(?:(?:[({!]|(?:if|then|else|elif|do|while|until)\b)\s*)*(?:\w+=\S+\s+)*"
+                        rf"(?:{_SHELL}\b|eval\b|{_LAUNCHER}\b)")
 _SSH = re.compile(r"(?:^|[\s;&|(/])ssh\s")
 _LOOKBEHIND = 300  # characters before a string read to decide "executed or data" (a whole-prefix search is quadratic)
 _SEQ = re.compile(r"seq\s+(?:-?\w+\s+)?(\d+)\s+(\d+)")
 _BRACE_RANGE = re.compile(r"\{(\d+)\.\.(\d+)\}")
 _FOR_LIST = re.compile(r"\bfor\s+\w+\s+in\s+([^;$({\n]+?)(?:;|\s+do\b)")
 _PGREP_F = re.compile(r"pgrep\s+(?:-\w+\s+)*-\w*f\w*\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
-# A heredoc body is a file being written, not commands being run. `<<<` is a here-string, not a heredoc opener.
-_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.MULTILINE)
+# A heredoc body is a file being written, not commands being run. The opener is `<<` or `<<-` and the delimiter word: bare
+# (`EOF`, `END-NOTES`, `\EOF`), quoted (`'END.NOTES'`, `"EOF"`) or both (`E'O'F`); `<<<` is a here-string, not an opener.
+# The terminator is looked up in a table of the command's lines (`strip_heredocs`), not by a regex that scans for it: an
+# opener with no terminator made such a regex read every blank line after it again and again, for 12 s and more.
+_HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)-?[ \t]*((?:'[^'\n]*'|\"[^\"\n]*\"|\\.|[^\s;&|<>()'\"\\])+)")
+_DELIM_QUOTES = re.compile(r"'([^']*)'|\"([^\"]*)\"|\\(.)")
+_HEREDOC_MARK = "<<_HEREDOC_"  # stands for a heredoc whose body is dropped, where the caller reads the redirections
 # Segments that print rather than run: `echo 'until …; do sleep 20; done'` (also in a subshell: `(echo '…') | bash`).
 _PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
@@ -192,15 +206,62 @@ class Config:
         self.hint = f"  • {hint.strip()}\n" if hint else DEFAULT_HINT
 
 
-def _heredoc(m) -> str:
-    """A heredoc body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`)."""
-    whole = m.string
-    line_start = whole.rfind("\n", 0, m.start()) + 1
-    before = _SEGMENT_SEP.split(whole[line_start:m.start()])[-1]
-    opening = m.group(0).split("\n", 1)[0]
-    if any(_SHELL_CONSUMER.match(c) for c in [before, *_PIPE.split(opening)[1:]]):  # any stage of the pipe
-        return "\n" + m.group(0).split("\n", 1)[-1]
-    return " "
+def _delimiter(word: str) -> str:
+    """The delimiter a word names, quotes and backslashes removed: `'END-NOTES'` -> `END-NOTES`."""
+    return _DELIM_QUOTES.sub(lambda m: next(g for g in m.groups() if g is not None), word)
+
+
+def _heredoc_lines(cmd: str) -> dict:
+    """{a line without the blanks around it: [(start, end)] of every such line, in order}: where a terminator can stand."""
+    lines, pos = {}, 0
+    for line in cmd.split("\n"):
+        key = line.strip()
+        if key:
+            lines.setdefault(key, []).append((pos, pos + len(line)))
+        pos += len(line) + 1
+    return lines
+
+
+def _heredoc(cmd: str, start: int, after: int, nl: int, end: int, keep_line: bool) -> str:
+    """What stands for the heredoc that opens at `start` (`after`: the end of its delimiter, `nl`: the end of its line,
+    `end`: the end of its terminator). A body is dropped unless its command is a shell (`bash <<EOF`, `cat <<EOF | sh`).
+    `keep_line` keeps the rest of the opening line (`cat <<EOF && find ~`: a command too) and, for a body that is
+    dropped, a `<<_HEREDOC_` mark: that command's stdin is a heredoc. A shell on another machine (`ssh host bash <<EOF`)
+    does not run the body here: with `keep_line` it is dropped like any other."""
+    line_start = cmd.rfind("\n", 0, start) + 1
+    before = _SEGMENT_SEP.split(cmd[line_start:start])[-1]
+    consumers = [c for c in [before, *_PIPE.split(cmd[start:nl])[1:]] if _SHELL_CONSUMER.match(c)]  # any stage of the pipe
+    rest = cmd[after:nl] if keep_line else ""
+    if any(not (keep_line and _REMOTE.search(c)) for c in consumers):
+        return rest + "\n" + cmd[nl + 1:end]
+    return _HEREDOC_MARK + rest if keep_line else " "
+
+
+def strip_heredocs(cmd: str, keep_line: bool = False) -> str:
+    """`cmd` with the bodies of its heredocs dropped (see `_heredoc`). Linear in the length of `cmd`: an opener with no
+    terminator, or any number of them, is left as it stands."""
+    out, last, pos, nl, lines = [], 0, 0, -2, None
+    while True:
+        m = _HEREDOC_OPEN.search(cmd, pos)
+        if not m:
+            break
+        pos, delim = m.end(), _delimiter(m.group(1))
+        if nl != -1 and nl < pos:
+            nl = cmd.find("\n", pos)  # the body starts on the next line
+        if nl == -1 or not delim:
+            continue
+        if lines is None:
+            lines = _heredoc_lines(cmd)
+        spans = lines.get(delim, ())
+        k = bisect.bisect_left(spans, (nl + 1,))
+        if k == len(spans):
+            continue
+        end = spans[k][1]
+        out.append(cmd[last:m.start()])
+        out.append(_heredoc(cmd, m.start(), pos, nl, end, keep_line))
+        last = pos = end
+    out.append(cmd[last:])
+    return "".join(out)
 
 
 def _protect(cmd: str):
@@ -225,16 +286,17 @@ def _word_start(seg: str, end: int) -> int:
     return low + gap + 1 if gap != -1 else low
 
 
-def _runs_argument(seg: str, start: int, shell_segment: bool) -> bool:
+def _runs_argument(seg: str, start: int, shell_segment: bool, exec_ok: bool = True) -> bool:
     """Does a shell run the word that starts at `start` in `seg`, or is it data? Only the tail before the word is
     read: `bash -lc` and `ssh -o … host` fit in it, and a search of the whole prefix per string is quadratic. A cheap
     check of the tail's end goes first: most strings are arguments of git or grep, not of a shell. `shell_segment` —
-    the whole segment is a shell consumer (`bash … <<< '…'`) — is computed once per segment."""
+    the whole segment is a shell consumer (`bash … <<< '…'`) — and `exec_ok` — its command word may run a `-c` string —
+    are computed once per segment."""
     head = seg[max(0, start - _LOOKBEHIND):start]
     tail = head.rstrip()
     if tail.endswith("<<<"):
         return shell_segment
-    if tail.endswith(("c", "--", "eval")) and _EXEC_ARG.search(head):
+    if tail.endswith(("c", "--", "eval")) and exec_ok and _EXEC_ARG.search(head):
         return True
     return "ssh" in head and bool(_SSH.search(head))
 
@@ -281,12 +343,13 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
     wait, ci = [], []
     pos = 0
     shell_segment = "<<<" in seg and bool(_SHELL_CONSUMER.match(seg))
+    exec_ok = data is None or bool(_EXEC_LEAD.match(seg))  # a caller that collects `data` tells a runner from a printer
     keep_strings = bool(_CI_COMMAND.match(seg))
     for m in _TOKEN.finditer(seg):
         wait.append(seg[pos:m.start()])
         ci.append(seg[pos:m.start()])
         quoted = strings[int(m.group(1))]
-        if (runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment)) and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
+        if (runs_all or _runs_argument(seg, _word_start(seg, m.start()), shell_segment, exec_ok)) and not (data is not None and _REMOTE.search(seg[max(0, m.start() - _LOOKBEHIND):m.start()])):
             inner = views(_unquote(quoted), keep_seps, data)
             wait.append(f";{inner[0]};" if data is None else f";({inner[0]});")  # a caller that reads `cd` needs the subshell
             ci.append(f";{inner[2]};")
@@ -332,7 +395,7 @@ def views(cmd: str, keep_seps: bool = False, data: list = None):
     the string of a command that runs it elsewhere (`ssh`, `docker exec`, `kubectl exec` …) stays data (hooks/scan_guard.py
     reads the arguments and the pipes of a command)."""
     # `\⏎` is a line continuation: `echo '…' \⏎ | bash` is one pipe, not two segments.
-    cmd = _HEREDOC.sub(_heredoc, cmd.replace("\x00", "").replace("\\\n", " "))
+    cmd = strip_heredocs(cmd.replace("\x00", "").replace("\\\n", " "), data is not None)
     protected, strings = _protect(cmd)
     parts = _SEGMENT_SPLIT.split(protected)
     segs, seps = parts[0::2], parts[1::2]

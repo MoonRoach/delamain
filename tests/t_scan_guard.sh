@@ -248,6 +248,97 @@ for name in ("Read", "Write", "Edit", "WebFetch", "Agent"):
     r = run({"hook_event_name": "PreToolUse", "tool_name": name, "cwd": HS, "tool_input": {"file_path": HS, "path": "~", "pattern": "**"}})
     check(verdict(r) == "pass" and not r.stdout.strip(), f"other tools are untouched: {name}")
 
+# ---- round 2 of the review (Codex Astra, PR #104): heredoc delimiters and per-command heredocs, printed `bash -c`, `env -C`, `cd` scope
+R2_PASS = [
+    # a heredoc whose delimiter has a dash or a dot, bare or quoted: its body is text, whatever it says
+    "cat <<'END-NOTES'\nfind ~ -name x\nEND-NOTES", "cat <<'END.NOTES'\nfind ~ -name x\nEND.NOTES", "cat <<\"END-NOTES\"\nfind ~ -name x\nEND-NOTES",
+    "cat <<END-NOTES\nfind ~ -name x\nEND-NOTES", "cat <<\\END-NOTES\nfind ~ -name x\nEND-NOTES", "cat <<-'END-NOTES'\n\tfind ~ -name x\n\tEND-NOTES",
+    "python3 - <<'PY-CODE'\n# example\nfind ~ -name x\nPY-CODE", "cat > notes.md <<'EOF'\nfind ~ -name x\nEOF\ncat notes.md",
+    "cat <<'EOF' > ~/notes.md\nfind ~ -name x\nEOF", "cat <<'E'\"O\"F\nfind ~ -name x\nEOF",
+    # the heredoc of a command that runs it elsewhere
+    "ssh host bash <<'EOF'\nfind ~ -name x\nEOF", "cat <<EOF | ssh host bash\nfind ~ -name x\nEOF",
+    # a string printed, logged or passed on that happens to read like `bash -c '…'`: no shell runs it
+    "echo bash -c 'find ~ -name x'", "printf '%s\\n' bash -c 'find ~ -name x'", "jlog bash -c 'find ~ -name x'", "echo sh -c \"find ~ -name x\"",
+    "echo eval 'find ~ -name x'", "echo sudo bash -c 'find ~ -name x'", "jlog PROGRESS bash -lc 'find ~ -name x' && echo ok",
+    # `cd` in a pipeline or in the background does not move the shell
+    "cd ~ | cat; find . -name x", "cd ~ & wait; find . -name x", "echo x | cd ~; find . -name x", "cd ~ |& cat; find . -name x",
+    "cd ~ && ls & find . -name x", "true & cd ~ & find . -name x",
+    # `env -C` / `--chdir` / `sudo -D` give the child its own directory
+    "env -C /tmp find . -name x", "env --chdir=/tmp find . -name x", "env --chdir /tmp find . -name x", "env -C ~/repos find . -name x",
+    "env -C /tmp -i FOO=1 find . -name x", "env -C ~/repos rg foo", "sudo -D /tmp find . -name x", "env -C \"$(mktemp -d)\" find . -name x",
+    "env -C /tmp bash -c 'find . -name x'",
+]
+for c in R2_PASS:
+    check(verdict(bash(c)) == "pass", f"round 2, allowed: {c!r}")
+for c in ("env -C /tmp find . -name x", "env --chdir=/tmp find . -name x", "env --chdir /tmp rg foo", "env -C ~/repos find . -name x", "env -C \"$(mktemp -d)\" find . -name x",
+          "rg foo <<EOF\nx\nEOF", "cat <<EOF | rg foo\nx\nEOF", "rg foo <<'END-NOTES'\nx\nEND-NOTES", "rg foo <<< \"x\"", "cat <<'E-1'\nrg foo\nE-1",
+          "cat <<'E-1'\nfind ~ -name x\nE-1\ncd repos\nrg foo"):
+    check(verdict(bash(c, cwd=HS)) == "pass", f"round 2, allowed with the session in the home: {c!r}")
+R2_REFUSED = [
+    # a heredoc that a shell reads still runs its body; what follows the opener on its line is not part of the body
+    "bash <<'END-NOTES'\nfind ~ -name x\nEND-NOTES", "cat <<'END-NOTES' | sh\nfind ~ -name x\nEND-NOTES", "bash <<END.NOTES\nfind ~ -name x\nEND.NOTES",
+    "cat <<EOF && find ~ -name x\nhi\nEOF", "cat <<'END-NOTES'; find ~ -name x\nhi\nEND-NOTES", "cat <<EOF | xargs find ~ -name\nhi\nEOF",
+    "cat <<'END-NOTES'\nhi\nEND-NOTES\nfind ~ -name x", "cat <<-EOF\n\thi\n\tEOF\nfind / -name x", "bash <<'EOF' && find ~ -name x\ncd /tmp\nEOF",
+    # more than a hundred `<<` is no reason to stop reading
+    "echo x " + "<<A " * 150 + "; find ~ -name x", "echo '<<' " * 150 + "; find ~ -name x",
+    # a `bash -c` / `eval` string at the command position, behind every wrapper, still runs
+    "bash -c 'find ~ -name x'", "sudo bash -c 'find ~ -name x'", "env FOO=1 bash -c 'find ~ -name x'", "timeout 5 bash -c 'find ~ -name x'",
+    "nohup bash -c 'find ~ -name x' &", "echo x | xargs -I{} sh -c 'find ~ -name x'", "time bash -lc 'find ~ -name x'", "(bash -c 'find ~ -name x')",
+    "if bash -c 'find ~ -name x'; then echo y; fi", "env -C /tmp bash -c 'find ~ -name x'", "bash -eo pipefail -c 'find ~ -name x'",
+    "find . -name y -exec bash -c 'find ~ -name x' _ {} \;", "watch bash -c 'find ~ -name x'", "FOO=bar bash -c 'find ~ -name x'",
+    "echo ok; bash -c 'find ~ -name x'", "echo ok && eval 'find ~ -name x'", "echo \"$(find ~ -name x)\"", "jlog \"$(find ~ -name x)\"",
+    "echo bash -c \"$(find ~ -name x)\"", "printf 'find ~ -name x' | bash",
+    # `env -C` moves the child into the home
+    "env -C ~ find . -name x", "env -C @H@ rg foo", "env --chdir=$HOME find . -name x", "env --chdir ~ du -sh *", "env -C ~ -i find . -name x",
+    "env -C ~/repos find ~ -name x", "sudo -D ~ find . -name x", "env -C ~ FOO=1 find -name x",
+    # `cd` that does move the shell
+    "cd ~ && find . -name x", "cd ~ || true; find . -name x", "cd ~ && ls | head; find . -name x", "true & cd ~; find . -name x",
+    "(cd ~ | cat) && cd ~ && find . -name x",
+    # a heredoc belongs to its own command, not to every search after it
+    "bash -c 'cd ~' ; cat <<EOF\nx\nEOF\nfind ~ -name x",
+]
+for c in R2_REFUSED:
+    check(verdict(bash(c)) == "deny", f"round 2, refused: {c!r}")
+for c in ("cat <<EOF\nx\nEOF\nrg foo", "cat <<'EOF' >/dev/null\nx\nEOF\ngrep -r foo", "echo \"x<<y\"; rg foo", "cat <<EOF; rg foo\nx\nEOF",
+          "cat <<EOF >out && rg foo\nx\nEOF", "cd repos | cat; find . -name x", "cd repos & find . -name x", "cd repos && ls & find . -name x",
+          "echo x | cd repos; rg foo", "env -C ~ find . -name x", "env -C ~/repos find ~ -name x", "echo bash -c 'x'; rg foo"):
+    check(verdict(bash(c, cwd=HS)) == "deny", f"round 2, refused with the session in the home: {c!r}")
+for c in ("env -C ~ find . -name x", "env -C ~/repos find ~ -name x"):
+    check(verdict(bash(c, cwd=HS + "/repos")) == "deny", f"round 2, refused from a project under the home: {c!r}")
+
+
+import time
+
+
+def timed(cmd, **extra):
+    """(verdict, seconds) of a command; a hook that does not answer within the harness's 10 s counts as broken."""
+    t0 = time.time()
+    try:
+        r = subprocess.run([sys.executable, str(HOOK)], capture_output=True, env=env(**extra), timeout=15,
+                           input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": WS, "tool_input": {"command": cmd}}).encode())
+    except subprocess.TimeoutExpired:
+        return "broken", time.time() - t0
+    return verdict(r), time.time() - t0
+
+
+# the reviewer's input: one heredoc opener inside quotes, 50000 blank lines and no terminator took 12 s and more (a regex holds the
+# interpreter, so the fail-safe's timer cannot answer for it); the answer now has to come in well under the harness's 10 s
+LATENCY = {
+    "50000 blank lines after an opener with no terminator": "printf '%s' '<<EOF\n" + "\n" * 50000 + "END'",
+    "50000 blank lines, then the terminator": "cat <<EOF\n" + "\n" * 50000 + "EOF\nrg foo",
+    "20000 openers, one per line, no terminator": "cat <<EOF\n" * 20000,
+    "10000 distinct delimiters, no terminator": "".join(f"cat <<D{i}\n" for i in range(10000)),
+    "10000 heredocs one after another": "cat <<A\nx\nA\n" * 10000 + "find ~ -name x",
+    "10000 `bash -c` words after echo": "echo " + "bash -c 'a' " * 10000,
+    "10000 `bash -c` words after xargs": "xargs " + "bash -c 'a' " * 10000,
+    "a 200 kB line of heredoc openers": "cat " + "<<A " * 50000 + "\nA",
+}
+for label, cmd in LATENCY.items():
+    v, sec = timed(cmd)
+    check(v != "broken" and sec < 2.0, f"latency ({label}): answered in {sec:.2f} s, {v}")
+check(timed("printf '%s' '<<EOF\n" + "\n" * 50000 + "END'")[0] == "pass", "latency: the reviewer's input is an ordinary printf, allowed")
+check(timed("cat <<A\nx\nA\n" * 10000 + "find ~ -name x")[0] == "deny", "latency: a walk after 10000 heredocs is still refused")
+
 # ---- fail-open: malformed input, a broken configuration, a broken sibling module, pathological commands
 deep = b"[" * 60000 + b"]" * 60000
 BAD = {

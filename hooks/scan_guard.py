@@ -90,7 +90,6 @@ class _Ctx:
         self.home = _norm(env_home) if env_home.startswith("/") and _norm(env_home) != "/" else (self.homes[0] if self.homes else None)
         self.cwd = _norm(cwd) if isinstance(cwd, str) and cwd.startswith("/") else None
         self.data = []
-        self.heredoc = False
         # the refused roots and why each one is refused: by case-folded path for a plain word (the usual macOS volume is
         # case-insensitive), by segments as typed for a glob (the shell matches names case-sensitively)
         self.targets = {"/": "the whole filesystem"}
@@ -276,10 +275,13 @@ def _hit(ctx: _Ctx, word_raw: str, cwd, shell: bool = True):
 
 _KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "eval", "coproc"}
 # wrappers that run the rest of the command, and the options of each that take a value
-_WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T"), "doas": ("-u", "-C"),
-             "env": ("-u", "-C", "-S", "-P"), "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"),
+_WRAPPERS = {"sudo": ("-u", "-g", "-C", "-D", "-h", "-p", "-R", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir"),
+             "doas": ("-u", "-C"), "env": ("-u", "-C", "-S", "-P", "-a", "--chdir", "--unset", "--split-string", "--argv0"),
+             "nice": ("-n",), "ionice": ("-n", "-c", "-p"), "caffeinate": ("-t", "-w"),
              "time": ("-f", "-o"), "exec": ("-a",), "stdbuf": (), "setsid": (), "nohup": (), "command": (), "builtin": (),
              "unbuffer": (), "noglob": (), "nocorrect": ()}
+# the options of a wrapper that give its child another working directory
+_CHDIR = {"env": ("-C", "--chdir"), "sudo": ("-D", "--chdir")}
 _INFO = {"--version", "--help", "-V", "--list-file-types", "--help-types", "--man"}  # prints and exits: no walk
 
 
@@ -307,11 +309,29 @@ def _strip_redirects(words):
     return out, stdin
 
 
+def _chdir(words, i: int, end: int, flags):
+    """The word that `env -C DIR` / `--chdir=DIR` / `--chdir DIR` (`flags`) names in `words[i:end]`, the last one, or None."""
+    found = None
+    for k in range(i, min(end, len(words))):
+        w = words[k]
+        for flag in flags:
+            if w == flag and k + 1 < len(words):
+                found = words[k + 1]
+            elif w.startswith(flag + "=") and flag.startswith("--"):
+                found = _W(w.partition("=")[2])
+                found.raw = w.raw.partition("=")[2]
+            elif w.startswith(flag) and len(w) > 2 and flag[1] != "-" and not w.startswith("--"):  # `-C/tmp`
+                found = _W(w[2:])
+                found.raw = w.raw[2:]
+    return found
+
+
 def _command(words):
-    """(name, arguments, via xargs) of the command a stage runs: assignments, keywords and wrappers are skipped. None
-    for a stage that runs nothing a walk could come from."""
+    """(name, arguments, via xargs, directory) of the command a stage runs: assignments, keywords and wrappers are
+    skipped. The directory is the word `env -C` / `sudo -D` gave the command, or None. None for a stage that runs nothing
+    a walk could come from."""
     words = list(words)
-    n, i, xargs = len(words), 0, False
+    n, i, xargs, chdir = len(words), 0, False, None
     while i < n:
         w = words[i]
         base = str(w).rsplit("/", 1)[-1]
@@ -324,7 +344,9 @@ def _command(words):
         elif base in _WRAPPERS:
             if base == "command" and i + 1 < n and words[i + 1] in ("-v", "-V"):
                 return None  # only looks the name up
-            i = _skip_flags(words, i + 1, _WRAPPERS[base])
+            j = _skip_flags(words, i + 1, _WRAPPERS[base])
+            chdir = _chdir(words, i + 1, j, _CHDIR.get(base, ())) or chdir
+            i = j
         elif base in ("timeout", "gtimeout"):
             i = _skip_flags(words, i + 1, ("-k", "-s")) + 1
         elif base == "xargs":
@@ -335,7 +357,7 @@ def _command(words):
     if i >= n:
         return None
     name = str(words[i]).rsplit("/", 1)[-1]
-    return name, list(words[i + 1:]), xargs
+    return name, list(words[i + 1:]), xargs, chdir
 
 
 class _Walk:
@@ -512,8 +534,8 @@ _WALKERS = {"find": _find, "gfind": _find, "bfs": _find, "fd": _fd, "fdfind": _f
 
 
 class _Stage:
-    def __init__(self, name, args, xargs, stdin):
-        self.name, self.args, self.xargs, self.stdin = name, args, xargs, stdin
+    def __init__(self, name, args, xargs, stdin, chdir=None):
+        self.name, self.args, self.xargs, self.stdin, self.chdir = name, args, xargs, stdin, chdir
 
 
 def _parse_stage(ctx: _Ctx, stage: str, closing: int):
@@ -524,7 +546,7 @@ def _parse_stage(ctx: _Ctx, stage: str, closing: int):
         words = words[:-1] + ([last] if last else [])
         closing -= 1
     cmd = _command(words)
-    return _Stage(cmd[0], cmd[1], cmd[2], stdin) if cmd else None
+    return _Stage(cmd[0], cmd[1], cmd[2], stdin, cmd[3]) if cmd else None
 
 
 def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
@@ -533,6 +555,9 @@ def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
     walk = parse(st.args) if parse and not any(a in _INFO for a in st.args) else None
     if walk is None or (walk.depth is not None and walk.depth <= 1):
         return None  # not a walk, or one that never leaves the first level
+    if st.chdir:  # `env -C DIR`: the command starts there, whatever the shell's directory is
+        where = _expand(ctx, st.chdir.raw, cwd)
+        cwd = where[0] if where and not where[1] else None
     if walk.base:
         base = _expand(ctx, walk.base.raw, cwd)
         cwd = base[0] if base and not base[1] else None
@@ -542,7 +567,7 @@ def _walk_reason(ctx: _Ctx, st: _Stage, cwd, piped_in: bool):
             if why:
                 return why
         return None
-    if st.xargs or (walk.stdin_default and (piped_in or st.stdin or ctx.heredoc)):
+    if st.xargs or (walk.stdin_default and (piped_in or st.stdin)):
         return None  # the roots come from stdin, which cannot be read here
     why = ctx.targets.get(cwd.casefold()) if cwd else None
     return f"the current directory, which is {why.split(',')[0]}" if why else None
@@ -565,7 +590,7 @@ def _cd(ctx: _Ctx, st: _Stage, cwd):
 
 def _scan(ctx: _Ctx, text: str, cwd, depth: int = 0):
     """(stage, why) of the first walk of the home or `/` in a command text that starts in `cwd`, or None."""
-    stack, prev = [], None
+    stack, prev, list_cwd = [], None, cwd  # list_cwd: the directory where the current `;`-list started
     for stage, sep in kg._split(text):
         piped_in = prev in ("|", "|&")
         prev = sep
@@ -581,10 +606,15 @@ def _scan(ctx: _Ctx, text: str, cwd, depth: int = 0):
                 found = _scan(ctx, body, cwd, depth + 1)
                 if found:
                     return found
-        cwd = _cd(ctx, st, cwd)
+        if not piped_in and sep not in ("|", "|&"):  # a `cd` in a pipeline runs in a subshell of its own
+            cwd = _cd(ctx, st, cwd)
+        if sep == "&":  # a background list runs in a subshell: its `cd` does not move this shell
+            cwd = list_cwd
         for _ in range(min(-balance, _MAX_GROUPS) if balance < 0 else 0):  # a `)` closes a subshell: its cd is undone
             if stack:
                 cwd = stack.pop()
+        if sep in (";", "\n", "&"):
+            list_cwd = cwd
     return None
 
 
@@ -592,10 +622,7 @@ def check(command: str, cwd=None):
     """The reason of a denial for a Bash command, or None."""
     ctx = _Ctx(cwd)
     command = command.replace("\x01", "")
-    ctx.heredoc = "<<" in command.replace("<<<", "")
-    if command.count("<<") > 100:
-        return None  # polling_guard's heredoc pattern is quadratic in the openers; the answer would come too late
-    executed = pg.views(kg._drop_ssh(command), True, ctx.data)[0]
+    executed = pg.views(kg._drop_ssh(command, True), True, ctx.data)[0]
     found = _scan(ctx, executed, ctx.cwd)
     if not found:
         return None

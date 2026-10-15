@@ -1035,7 +1035,8 @@ def locked_takeover(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir() and not (getattr(a, "start", False) and a.dry_run):
         raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
-                            f'`hub start --stage {stage} --goal "<what the stage delivers>" --session <your session id>`')
+                            f'`hub start --stage {stage} --goal "<what the stage delivers>" --session <your session id>`'
+                            + hc.elsewhere_hint(stage))
     # Serialize role migration with launch/bind and other takeovers. Desktop validation precedes locks/roles/journal.
     with contextlib.nullcontext() if a.dry_run else autopilot.state_lock(hc.check_stage(a.stage)):
         request = getattr(a, "desktop_request", None)
@@ -1063,7 +1064,8 @@ def _cmd_takeover(a) -> int:
     starting = getattr(a, "start", False)
     if not (hc.root() / stage).is_dir() and not (starting and a.dry_run):
         raise hc.UsageError(f"no stage directory {hc.root() / stage} — the first hub of a stage runs "
-                            f"`hub start --stage {stage} --goal \"<what the stage delivers>\" --session <your session id>`")
+                            f"`hub start --stage {stage} --goal \"<what the stage delivers>\" --session <your session id>`"
+                            + hc.elsewhere_hint(stage))
     a.session = resolve_self(a.session)
     session, cli, kind, title = new_hub_session(a.session)
     handoff = Path(a.handoff).expanduser() if a.handoff else (None if starting else latest("HANDOFF-hub-*.md", stage))
@@ -1607,7 +1609,7 @@ def successor_cwd(stage: str, given) -> tuple:
 def cmd_succeed(a) -> int:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
-        raise hc.UsageError(f"no stage directory {hc.root() / stage}")
+        raise hc.UsageError(f"no stage directory {hc.root() / stage}" + hc.elsewhere_hint(stage))
     if a.replace and (a.again or a.fallback or a.headless):
         raise hc.UsageError("--replace goes alone (with --force, --handoff, --model…): it starts the successor again the way it was started")
     if not (autopilot.enabled() or a.force or a.dry_run):
@@ -1787,7 +1789,7 @@ def cmd_rename(a) -> int:
     if old == new:
         raise hc.UsageError("rename: --to is the stage's own name")
     if not src.is_dir():
-        raise hc.UsageError(f"no stage directory {src}")
+        raise hc.UsageError(f"no stage directory {src}" + hc.elsewhere_hint(old))
     if dst.exists():
         raise hc.UsageError(f"stage {new} already exists ({dst})")
     if hc.naming_enforced() and (problem := hc.stage_name_problem(new)) is not None:
@@ -1961,7 +1963,7 @@ def cmd_close(a) -> int:
 def close_stage(a, say) -> str:
     stage = hc.check_stage(a.stage)
     if not (hc.root() / stage).is_dir():
-        raise hc.UsageError(f"no stage {stage} in {hc.root()}")
+        raise hc.UsageError(f"no stage {stage} in {hc.root()}" + hc.elsewhere_hint(stage))
     closed = hc.stage_closed(stage)
     if closed:
         return (f"stage {stage} is already closed ({closed.get('at')}: {closed.get('why')}); "

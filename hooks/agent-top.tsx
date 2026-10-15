@@ -20,6 +20,7 @@ import {
   agentKey,
   capToasts,
   clip,
+  closeTarget,
   countsOf,
   findByRole,
   footerHolds,
@@ -111,10 +112,12 @@ async function callCli($: Api, args: string[]): Promise<Called> {
 }
 
 /** `bin/hub <args>` (close only: the module does nothing else with it). The first line of stdout on success, of stderr on a refusal. */
-async function callHub($: Api, args: string[]): Promise<HubCalled> {
+async function callHub($: Api, args: string[], home: string | null = null): Promise<HubCalled> {
   const bin = `${$.plugin.root}/bin/hub`
   try {
-    const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env: { PYTHONDONTWRITEBYTECODE: '1' } })
+    // a stage of another hub home is closed in that home: the tools resolve their own and would not find it
+    const env = { PYTHONDONTWRITEBYTECODE: '1', ...(home ? { AGENT_HUB_HOME: home } : {}) }
+    const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env })
     if (r.exitCode === 127) return { ok: false, error: `hub cannot run (${bin})` }
     if (r.exitCode !== 0) return { ok: false, error: firstLine(r.stderr) || firstLine(r.stdout) || `hub exited with ${r.exitCode}` }
     // the summary line; when the hub session still runs it carries the ATTENTION with how to end it, so it is kept long
@@ -353,7 +356,8 @@ async function closeStage($: Api, stage: string): Promise<void> {
   closeNote = null
   $.ui.invalidate('ui.render')
   try {
-    const c = await callHub($, ['close', '--stage', stage, '--why', CLOSE_WHY])
+    const t = closeTarget(paneSnap(), stage)
+    const c = await callHub($, ['close', '--stage', t.name, '--why', CLOSE_WHY], t.home)
     closeNote = c.ok
       ? { text: c.line, isError: false, isWarn: c.line.includes('ATTENTION:') }
       : { text: `${stage}: ${c.error}`, isError: true }

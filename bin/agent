@@ -702,6 +702,7 @@ def cmd_spawn(a) -> int:
         # a finished agent of the same name: keep its files, start a clean directory
         d.rename(d.with_name(f"{a.role}.{time.strftime('%Y%m%d-%H%M%S')}"))
     d.mkdir(parents=True)
+    hc.register_home()  # the stage now has an agents/ directory: its home is one agent-top lists (registry of homes)
     tag = a.tag or a.role
     shutil.copyfile(brief, d / "brief.md")
     (d / "inbox.md").write_text(f"# Inbox of agent {a.role}\n\n", encoding="utf-8")
@@ -1049,7 +1050,8 @@ def cmd_status(a) -> int:
     live_roles = hc.roles_load(stage)["roles"]
     names = [n for n in names if n in live_roles] if not a.all else names
     if not names:
-        print("no headless agents" + ("" if a.all else " (--all includes retired ones)"))
+        print("no headless agents" + ("" if a.all else " (--all includes retired ones)")
+              + ("" if base.is_dir() else hc.elsewhere_hint(stage)))
         return 0
     for n in names:
         print(status_line(stage, n))

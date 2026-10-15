@@ -60,7 +60,14 @@ export type StageInfo = {
   idle_s: number | null
   idle: boolean
   live: number
+  /** The stage's own name, the hub home it lives in and that home's short label ("" for ~/agent-hub); absent from an older CLI. */
+  name?: string
+  home?: string
+  home_label?: string
 }
+
+/** One known hub home of `agent-top --json` `homes`; `stages` are the ids (keys of `stage_info`) of the stages shown from it. */
+export type HomeRow = { path: string; label: string; layer: string; repo: string | null; stages: string[] }
 
 export type Snapshot = {
   generated_at: string
@@ -73,6 +80,10 @@ export type Snapshot = {
   questionsOk: boolean
   /** Per stage of `stages`; {} from an older CLI. */
   stage_info: Record<string, StageInfo>
+  /** Every known hub home (the CLI lists the registry's, ~/agent-hub and the current one); [] from an older CLI. */
+  homes: HomeRow[]
+  /** Stages come from more than one home: a stage outside ~/agent-hub is then called `stage · label`. false from an older CLI. */
+  multi_home: boolean
   /** The closed stages the default view leaves out of `stages` (--all shows them); [] from an older CLI. */
   closed_hidden: string[]
   /** The idle threshold in seconds; null from an older CLI. */
@@ -203,9 +214,27 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
         idle_s: numOrNull(i.idle_s),
         idle: i.idle === true,
         live: numOr(i.live, 0),
+        ...(typeof i.name === 'string' ? { name: i.name } : {}),
+        ...(typeof i.home === 'string' ? { home: i.home } : {}),
+        ...(typeof i.home_label === 'string' ? { home_label: i.home_label } : {}),
       }
     }
   }
+  const homes: HomeRow[] = Array.isArray(data.homes)
+    ? data.homes.filter(isObject).flatMap(h =>
+        typeof h.path === 'string'
+          ? [
+              {
+                path: h.path,
+                label: str(h.label),
+                layer: str(h.layer),
+                repo: typeof h.repo === 'string' ? h.repo : null,
+                stages: Array.isArray(h.stages) ? h.stages.filter((x): x is string => typeof x === 'string') : [],
+              },
+            ]
+          : [],
+      )
+    : []
   const limits = isObject(data.limits) && isObject(data.limits.info) ? (data.limits as Snapshot['limits']) : null
   const codex: Snapshot['codex_limits'] = {}
   if (isObject(data.codex_limits)) {
@@ -222,6 +251,8 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
     questions,
     questionsOk: data.questions_ok === true,
     stage_info: stageInfo,
+    homes,
+    multi_home: data.multi_home === true,
     closed_hidden: Array.isArray(data.closed_hidden) ? data.closed_hidden.filter((x): x is string => typeof x === 'string') : [],
     idle_after_s: numOrNull(data.idle_after_s),
     limits,
@@ -416,6 +447,19 @@ export function notices(prev: Memory, s: Snapshot): string[] {
 export function capToasts(texts: string[], max = 3): string[] {
   return texts.length <= max ? texts : [...texts.slice(0, max - 1), `+${texts.length - (max - 1)} more events (open /agent-top)`]
 }
+
+/**
+ * What `hub close` is run with for a stage id of the snapshot: the stage's own name (the id of a stage outside ~/agent-hub is
+ * `name · label` while homes are many) and the hub home to run it in (`AGENT_HUB_HOME`; null from an older CLI, which only
+ * ever listed the home the tools resolve themselves).
+ */
+export function closeTarget(s: Snapshot | null, stage: string): { name: string; home: string | null } {
+  const info = s?.stage_info[stage]
+  return { name: info?.name ?? stage, home: info?.home ?? null }
+}
+
+/** Columns the stage id gets in a row: the label of a home makes it longer than a stage name. */
+export const stageCols = (s: Snapshot | null): number => (s?.multi_home ? 28 : 16)
 
 // ---------------------------------------------------------------- stage filter (client side)
 

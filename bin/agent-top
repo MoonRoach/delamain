@@ -21,6 +21,12 @@ agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), bri
 filter, `s` — stages, locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
 `agent send` / `agent stop`, `c` closes a stage through `hub close`, each after a y/N confirmation; nothing else is ever
 written.
+Homes: it shows the stages of every known hub home, not only the one the working directory resolves to: the resolved
+home, ~/agent-hub, the legacy home, $AGENT_HUB_HOME and the homes in the registry (${XDG_CONFIG_HOME:-~/.config}/delamain/
+homes.json, written when a stage is registered in a home; hubcore.known_homes). While stages come from more than one
+home, a stage outside ~/agent-hub is named `stage · <repo>` (the repository of a project home, else the ~-path): that
+name is its `stage` in --json and what --stage accepts (a bare name matches that stage in every home); `home` and
+`home_label` of each stage record and the top-level `homes` list say where it lives. With one home nothing changes.
 Stages: a stage closed by `hub close` (stage.json "closed") is left out unless --all or named by --stage (`closed_hidden`
 in --json lists the ones left out). `stage_info` gives each shown stage's goal, closed record, live agents and last
 activity (newest of its journal, agent logs, roles and questions); a stage that is open, has no live agent and was quiet
@@ -48,6 +54,7 @@ Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import curses
 import datetime as dt
 import html
@@ -64,6 +71,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
@@ -89,6 +97,7 @@ _TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([\w.]+)"')
 _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _DONE_RE = re.compile(r"\bDONE\b")
+HOME_SEP = " · "                  # between a stage and its home label while stages come from more than one home
 ASK_LINE_RE = re.compile(r"^(\S+) — open (\d+), overdue (\d+)")
 QUESTION_ID_RE = re.compile(r"^(Q-[A-Za-z0-9]+-\d+)(?=\s|$)")  # the unindented id line of `ask list`; blocks:/asked are indented
 
@@ -752,27 +761,62 @@ class Feed:
 
 # ---------------------------------------------------------------- collecting
 
-def discover_stages(only, show_all: bool = False) -> tuple:
-    """(stages to show, closed stages left out): every stage with agents or a role registry, or the ones named; a stage
-    closed by `hub close` only with --all or by name."""
-    if only:
-        return [hc.check_stage(s) for s in only], []
-    root = hc.root()
+class StageRef(NamedTuple):
+    sid: str        # what agent-top calls the stage: its name, plus HOME_SEP and the home's label while homes are many
+    name: str       # the stage's own name
+    home: object    # hubcore.KnownHome
+
+
+def home_stage_names(kh) -> list:
+    """The stages of one home that agent-top lists: a directory with agents/ or a role registry."""
     try:
-        names = sorted(d.name for d in root.iterdir() if d.is_dir() and hc.STAGE_RE.fullmatch(d.name)
-                       and ((d / "agents").is_dir() or (d / "roles.json").exists()))
+        return sorted(d.name for d in kh.path.iterdir() if d.is_dir() and hc.STAGE_RE.fullmatch(d.name)
+                      and ((d / "agents").is_dir() or (d / "roles.json").exists()))
     except OSError:
-        names = []
+        return []
+
+
+def discover_stages(only, show_all: bool = False) -> tuple:
+    """(stages to show as StageRef, ids of the closed stages left out, homes with stages): every stage with agents or a
+    role registry in any known home (hubcore.known_homes), or the ones named (by name: in every home that has one; by
+    `name · label`: that home's); a stage closed by `hub close` only with --all or by name. A stage is its
+    home's and name: two homes may each have a stage of one name."""
+    per = [(kh, home_stage_names(kh)) for kh in hc.known_homes()]
+    multi = sum(1 for _, names in per if names) > 1
+
+    def ref(kh, name):
+        return StageRef(f"{name}{HOME_SEP}{kh.label}" if multi and kh.label else name, name, kh)
+
+    if only:
+        out = []
+        for raw in only:
+            name, sep, label = raw.partition(HOME_SEP)
+            hit = [ref(kh, name) for kh, _ in per if (kh.path / name).is_dir() and (not sep or kh.label == label)]
+            if not hit:   # not found anywhere: the resolved home's (empty) stage, as before
+                hit = [ref(per[0][0], name)] if not sep else []
+                with hc.in_home(per[0][0].path, per[0][0].layer):
+                    hc.check_stage(name)
+            for r in hit:
+                if r not in out:
+                    out.append(r)
+        return out, [], multi
+    refs = [ref(kh, n) for kh, names in per for n in names]
     if show_all:
-        return names, []
-    closed = [n for n in names if hc.stage_closed(n)]
-    return [n for n in names if n not in closed], closed
+        return refs, [], multi
+    closed = []
+    for r in refs:
+        with hc.in_home(r.home.path, r.home.layer):
+            if hc.stage_closed(r.name):
+                closed.append(r.sid)
+    return [r for r in refs if r.sid not in closed], closed, multi
 
 
-def stage_activity(stage: str):
+def stage_activity(ref: StageRef):
     """The mtime of the stage's newest journal file, agent log, roles.json or questions.md; None when there is none."""
-    base = hc.root() / stage
-    paths = [base / "roles.json", base / "questions.md", *hc.work_dir(stage).glob("journal-*.md"),
+    base = ref.home.path / ref.name
+    with hc.in_home(ref.home.path, ref.home.layer):
+        work = hc.work_dir(ref.name)
+    paths = [base / "roles.json", base / "questions.md", *work.glob("journal-*.md"),
              *base.glob("agents/*/log.jsonl")]
     newest = None
     for p in paths:
@@ -784,15 +828,18 @@ def stage_activity(stage: str):
     return newest
 
 
-def stage_info(stage: str, agents: list, now: float) -> dict:
-    """What the stage is and whether it is still in use: goal, closed record, live agents, last activity, idle."""
-    closed = hc.stage_closed(stage)
-    at = stage_activity(stage)
-    live = sum(1 for a in agents if a["stage"] == stage and a["state"] == "live")
+def stage_info(ref: StageRef, agents: list, now: float) -> dict:
+    """What the stage is and whether it is still in use: goal, closed record, live agents, last activity, idle; and where
+    it lives (name, home, home_label)."""
+    with hc.in_home(ref.home.path, ref.home.layer):
+        closed, goal = hc.stage_closed(ref.name), hc.stage_goal(ref.name)
+    at = stage_activity(ref)
+    live = sum(1 for a in agents if a["stage"] == ref.sid and a["state"] == "live")
     idle_s = None if at is None else max(0, int(now - at))
-    return {"goal": hc.stage_goal(stage), "closed": closed, "live": live,
+    return {"goal": goal, "closed": closed, "live": live,
             "last_activity_at": None if at is None else dt.datetime.fromtimestamp(at, hc.TZ).isoformat(timespec="seconds"),
-            "idle_s": idle_s, "idle": not closed and live == 0 and (idle_s is None or idle_s >= IDLE_S)}
+            "idle_s": idle_s, "idle": not closed and live == 0 and (idle_s is None or idle_s >= IDLE_S),
+            "name": ref.name, "home": str(ref.home.path), "home_label": ref.home.label}
 
 
 def load_ask():
@@ -815,6 +862,7 @@ class External:
         self.thread = None
 
     def poll(self, stages: list, wait: bool = False) -> dict:
+        """`stages`: StageRef of the shown stages; the answer is keyed by their ids."""
         """Starts a refresh when the last one is older than TTL; `wait` waits for the one in flight (a snapshot
         starts it early and waits at its end, so the registers are read while the logs are)."""
         if not self.busy and time.monotonic() - self.at > self.TTL:
@@ -827,45 +875,59 @@ class External:
 
     def _fetch(self, stages: list) -> None:
         try:
-            out = {}
-            r = self._ask(["summary"])
-            for ln in (r or "").splitlines():
-                m = ASK_LINE_RE.match(ln)
-                if m and m.group(1) in stages:
-                    out[m.group(1)] = {"open": int(m.group(2)), "overdue": int(m.group(3)), "line": ln.strip(),
-                                       "items": [], "ids": []}
-            for stage, q in out.items():
-                if q["open"]:
-                    lst = self._ask(["list", "--stage", stage, "--open"])
-                    q["items"] = [ln.rstrip() for ln in (lst or "").splitlines() if ln.strip()][:12]
-                    # `items` are display lines cut to 12; `ids` are all open question ids of the untruncated output
-                    # (None: the list failed and the set is unknown), so a consumer diffs sets, not truncated text.
-                    q["ids"] = None if lst is None else [m.group(1) for m in map(QUESTION_ID_RE.match, lst.splitlines()) if m]
-            self.ok = r is not None
+            out, ok = {}, True
+            homes = list(dict.fromkeys((r.home.path, r.home.layer) for r in stages))
+            for path, layer in homes:             # one register per home: `ask` reads the home it is pointed at
+                mine = {r.name: r.sid for r in stages if r.home.path == path}
+                with hc.in_home(path, layer):
+                    r = self._ask(["summary"], path)
+                    ok = ok and r is not None
+                    got = {}
+                    for ln in (r or "").splitlines():
+                        m = ASK_LINE_RE.match(ln)
+                        if m and m.group(1) in mine:
+                            got[m.group(1)] = {"open": int(m.group(2)), "overdue": int(m.group(3)), "line": ln.strip(),
+                                               "items": [], "ids": []}
+                    for name, q in got.items():
+                        if q["open"]:
+                            lst = self._ask(["list", "--stage", name, "--open"], path)
+                            q["items"] = [ln.rstrip() for ln in (lst or "").splitlines() if ln.strip()][:12]
+                            # `items` are display lines cut to 12; `ids` are all open question ids of the untruncated output
+                            # (None: the list failed and the set is unknown), so a consumer diffs sets, not truncated text.
+                            q["ids"] = None if lst is None else [m.group(1) for m in map(QUESTION_ID_RE.match, lst.splitlines()) if m]
+                for name, q in got.items():
+                    out[mine[name]] = q
+            self.ok = ok
             self.data = out
         finally:
             self.at, self.busy = time.monotonic(), False
 
     @classmethod
-    def _ask(cls, args: list):
-        """stdout of `ask summary` / `ask list --stage S --open`, or None when it fails (an unreadable register)."""
+    def _ask(cls, args: list, path=None):
+        """stdout of `ask summary` / `ask list --stage S --open` in the home `path`, or None when it fails (an
+        unreadable register)."""
         try:
             if cls._mod is None:
                 cls._mod = load_ask()
+            if path is not None:
+                cls._mod.ROOT = Path(path)       # the register's home (ask resolves it once, at import)
             return cls._mod.summary_text() if args == ["summary"] else cls._mod.open_text(args[2])
         except BaseException:  # noqa: BLE001 — `ask` exits on a bad register; that is "unknown", not a crash
             return None
 
 
-def open_store():
-    """The disk cache of the readers (bin/topcache.py), dropped whenever one of the modules that fill it changes; a
-    store that keeps nothing when the hub home does not exist (agent-top never creates one)."""
-    if not hc.root().is_dir():
+def open_store(kh=None):
+    """The disk cache of one home's readers (bin/topcache.py), dropped whenever one of the modules that fill it changes; a
+    store that keeps nothing when the hub home does not exist (agent-top never creates one). `kh`: a hubcore.KnownHome
+    (default: the resolved home)."""
+    path, layer = (kh.path, kh.layer) if kh is not None else (hc.root(), hc.home().layer)
+    if not path.is_dir():
         return topcache.Null()
     here = Path(__file__).resolve()
     mods = [here] + [BIN / m for m in ("subagents.py", "codex_rollouts.py", "engines.py", "topcache.py")]
-    return topcache.Store(hc.state_dir() / "agent-top" / "cache.sqlite",
-                          topcache.code_signature(*map(str, mods), extra=f"scan_max={SCAN_MAX}"))
+    with hc.in_home(path, layer):
+        cache = hc.state_dir() / "agent-top" / "cache.sqlite"
+    return topcache.Store(cache, topcache.code_signature(*map(str, mods), extra=f"scan_max={SCAN_MAX}"))
 
 
 class Collector:
@@ -873,7 +935,15 @@ class Collector:
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
         self.transcripts, self.transcript_paths = {}, {}
-        self.store = open_store()
+        self.where: dict = {}                 # stage id -> StageRef of the last snapshot
+        self.homes = hc.known_homes()
+        self.stores: dict = {}                # one cache per home (one, when $AGENT_HUB_STATE_DIR puts every home's in one file)
+        self._caches: dict = {}
+        for kh in self.homes:
+            store = open_store(kh)
+            self.stores[str(kh.path)] = self._caches.setdefault(self._cache_key(store), store)
+        # what is not a home's own (sub-agent transcripts, Codex rollouts) goes to the first existing home's cache
+        self.store = next((self.stores[str(kh.path)] for kh in self.homes if kh.path.is_dir()), topcache.Null())
         self.flushed_at = time.monotonic()
         codex_rollouts.INDEX.store = self.store
         self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts, self.store)
@@ -882,61 +952,88 @@ class Collector:
         self.feed = None
 
     # -- agents
+    @staticmethod
+    def _cache_key(store):
+        return getattr(store, "path", None) or id(store)
+
+    def store_of(self, path: Path):
+        """The cache of the home a log lies in; the shared one for a log outside every home."""
+        for kh in self.homes:
+            if kh.path in path.parents:
+                return self.stores[str(kh.path)]
+        return self.store
+
+    def flush(self) -> None:
+        for store in {id(x): x for x in [self.store, *self.stores.values()]}.values():
+            store.flush()
+
     def log_state(self, path: Path) -> LogState:
         """The log's reader: this process's, else resumed from the disk cache, else new; then brought up to date."""
         st = self.logs.get(path)
+        store = self.store_of(path)
         if st is None:
             st = self.logs[path] = LogState(path)
-            topcache.load_into(st, self.store.get("log", str(path)), {"rollout": codex_rollouts.Normalizer})
+            topcache.load_into(st, store.get("log", str(path)), {"rollout": codex_rollouts.Normalizer})
         before = (st.ino, st.offset)
         st.update()
         if (st.ino, st.offset) != before:
-            self.store.put("log", str(path), st)
+            store.put("log", str(path), st)
             if time.monotonic() - self.flushed_at > FLUSH_S:
-                self.store.flush()          # a first run killed by its caller's timeout still leaves what it read
+                self.flush()                # a first run killed by its caller's timeout still leaves what it read
                 self.flushed_at = time.monotonic()
         return st
 
     def snapshot(self, wait_ext: bool = False) -> dict:
         now = time.time()
         ps = subagents.process_table_start()     # `ps` runs while the registers and the role files are read
-        stages, closed_hidden = discover_stages(self.stages_arg, self.show_all)
-        self.ext.poll(stages)
+        refs, closed_hidden, multi = discover_stages(self.stages_arg, self.show_all)
+        self.where = {r.sid: r for r in refs}
+        stages = [r.sid for r in refs]
+        self.ext.poll(refs)
         agents, roles_by_stage, rate = [], {}, None
-        for stage in stages:
+        for r in refs:
             try:
-                roles_by_stage[stage] = hc.roles_load(stage)["roles"]
+                with hc.in_home(r.home.path, r.home.layer):
+                    roles_by_stage[r.sid] = hc.roles_load(r.name)["roles"]
             except hc.Failure:
-                roles_by_stage[stage] = {}
+                roles_by_stage[r.sid] = {}
         codex_rollouts.INDEX.update()
         table = subagents.process_table_finish(ps)
         live = live_sessions(table)
-        for stage in stages:
+        for r in refs:
+            stage = r.sid
             reg = {"roles": roles_by_stage[stage]}
-            base = hc.root() / stage / "agents"
+            base = r.home.path / r.name / "agents"
+            mine = []
             for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
                 info = self._agent(stage, mp, reg["roles"], table, now)
                 if info:
-                    agents.append(info)
-                    r = info.pop("_rate")
-                    if r and (rate is None or r[1] > rate[1]):
-                        rate = r
-            agents += self._native_sessions(stage, reg["roles"], base, table, live, now)
-            agents += self._subagents(stage, reg["roles"], table, live, now)
+                    mine.append(info)
+                    rt = info.pop("_rate")
+                    if rt and (rate is None or rt[1] > rate[1]):
+                        rate = rt
+            mine += self._native_sessions(stage, reg["roles"], base, table, live, now)
+            mine += self._subagents(stage, reg["roles"], table, live, now)
+            for info in mine:   # where the stage lives, for a consumer that has to act on it (the stage id is not its name)
+                info.update(stage_name=r.name, home=str(r.home.path), home_label=r.home.label)
+            agents += mine
         agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
         locks = self._locks(now)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
-        costs = {s: self._stage_costs(s, rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
+        costs = {s: self._stage_costs(self.where[s], rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
         rates = self.token_rates()                                                  # prices must not depend on the list's filter
         spend = {s: self._spend(rs, rates, *costs[s]) for s, rs in roles_by_stage.items()}
         out = {"generated_at": dt.datetime.fromtimestamp(now, hc.TZ).isoformat(timespec="seconds"), "now": now,
                "stages": stages, "closed_hidden": closed_hidden, "idle_after_s": IDLE_S,
-               "stage_info": {s: stage_info(s, agents, now) for s in stages}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
+               "homes": [{"path": str(kh.path), "label": kh.label, "layer": kh.layer, "repo": kh.repo,
+                          "stages": [r.sid for r in refs if r.home == kh]} for kh in self.homes],
+               "multi_home": multi,
+               "stage_info": {r.sid: stage_info(r, agents, now) for r in refs}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(stages, wait=wait_ext), "questions_ok": self.ext.ok,
                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
                "codex_limits": self.codex_limits.snapshot()}
-        self.store.flush()
+        self.flush()
         return out
 
     def _agent(self, stage: str, meta_path: Path, registry: dict, table, now: float):
@@ -1092,14 +1189,14 @@ class Collector:
             self.store.put("transcript", str(path), tr)
         return tr
 
-    def _stage_costs(self, stage: str, roles: dict) -> tuple:
+    def _stage_costs(self, ref: StageRef, roles: dict) -> tuple:
         """(the hub's logged dollars or None, the other agents' logged dollars) over every agent folder of the stage:
         what the list hides by age or archive is spend all the same. Only Claude headless logs carry dollars (a Codex
         agent adds nothing). The hub's are those of the agent registered as the hub's session, when it is a headless one
         too; a predecessor's archived folder is an agent like the others."""
         rec = roles.get("hub") or {}
         hub_sids = {v for v in (rec.get("cli_session_id"), rec.get("session")) if isinstance(v, str) and v}
-        hub_cost, agents_usd, base = None, 0.0, hc.root() / stage / "agents"
+        hub_cost, agents_usd, base = None, 0.0, ref.home.path / ref.name / "agents"
         for mp in sorted(base.glob("*/meta.json")) if base.is_dir() else []:
             meta = read_json(mp)
             if not isinstance(meta, dict):
@@ -1144,6 +1241,7 @@ class Collector:
                  "value": r.get("value") or ""} for r in recs]
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
+        ref = self.where[stage]
         lines = self.journal_lines(stage, 1) + self.journal_lines(stage, 0)   # oldest first: today's lines are met first from the end
         newest = {}   # base tag -> its newest line: what hc.tag_is(line tag, base) finds first from the end
         for day_off, hhmm, t, _ in reversed(lines):
@@ -1154,7 +1252,8 @@ class Collector:
                 for i in range(1, len(parts) + 1):
                     newest.setdefault("/".join(parts[:i]), (day_off, hhmm))
         out = []
-        goal = hc.title_goal(hc.stage_goal(stage))
+        with hc.in_home(ref.home.path, ref.home.layer):
+            goal = hc.title_goal(hc.stage_goal(ref.name))
         for name, rec in roles.items():
             tag = rec.get("tag") or name
             title = rec.get("title") or ""
@@ -1176,7 +1275,9 @@ class Collector:
     # -- journal
     def journal_lines(self, stage: str, day_off: int) -> list:
         """[(day_off, "HH:MM", tag, text)] of one day's journal of the stage; re-read only when the file changed."""
-        path = hc.journal_path(stage, hc.now().date() - dt.timedelta(days=day_off))
+        ref = self.where[stage]
+        with hc.in_home(ref.home.path, ref.home.layer):
+            path = hc.journal_path(ref.name, hc.now().date() - dt.timedelta(days=day_off))
         try:
             st = os.stat(path)
         except OSError:
@@ -1309,12 +1410,12 @@ def header_row(snap: dict, width: int, view_label: str) -> Row:
     return Row(bits + [(" " * fillw, "head"), (clock, "head")], fill="head")
 
 
-def list_layout(width: int, multi: bool, turns_w: int = 5) -> list:
+def list_layout(width: int, multi: bool, turns_w: int = 5, stage_w: int = 8) -> list:
     """Columns [(name, width)] that fit; the last text column takes what is left. turns_w: the TURN column grows when
     a resumed agent shows "last run/total"."""
     cols = [("glyph", 2), ("role", 10)]
     if multi:
-        cols.insert(1, ("stage", 8))
+        cols.insert(1, ("stage", stage_w))
     optional = [("state", 7, 90), ("tag", 15, 122), ("model", 14, 100), ("age", 6, 0), ("turns", turns_w, 0),
                 ("ctx", 5, 78), ("cost", 6, 96), ("unread", 3, 60)]
     for name, w, min_w in optional:
@@ -1418,7 +1519,10 @@ def list_rows(snap: dict, width: int, sel_key, height=None, detail: bool = True)
     """(rows, index of the selected agent row) for the list view; height=None — no windowing (--once)."""
     agents = snap["agents"]
     multi = len({a["stage"] for a in agents}) > 1
-    cols = list_layout(width, multi, max([5] + [dispw(turns_label(a)) + 1 for a in agents]))
+    stage_w = 8
+    if snap.get("multi_home"):   # "stage · repo" ids are longer than a stage name
+        stage_w = max(8, min(28, max([0] + [dispw(a["stage"]) + 1 for a in agents])))
+    cols = list_layout(width, multi, max([5] + [dispw(turns_label(a)) + 1 for a in agents]), stage_w)
     rows = [list_head_row(cols, width)]
     if not agents:
         rows.append(R((" no agents (a — show all, including old ones)", "dim")))
@@ -1533,13 +1637,14 @@ def brief_rows(path: str, width: int, unread_msgs=()) -> list:
 def journal_rows(lines: list, width: int, multi: bool, flt: str, tag_flt) -> tuple:
     rows, shown = [], 0
     f = flt.lower()
+    sw = max([7] + [min(28, dispw(s)) for s, *_ in lines]) if any(HOME_SEP in s for s, *_ in lines) else 7
     for stage, hhmm, tag, text in lines:
         if tag_flt and not (hc.tag_is(tag, tag_flt) or hc.mentions(text, tag_flt)):
             continue
         if f and f not in f"[{tag}] {text}".lower():
             continue
         shown += 1
-        lead = f"{hhmm} " + (f"{stage[:7]:7} " if multi else "")
+        lead = f"{hhmm} " + (f"{stage[:sw]:{sw}} " if multi else "")
         head = f"[{tag}] "
         body = wrap(text, width - dispw(lead) - dispw(head) if width > 50 else width, "", "")
         segs_first = [(lead, "dim"), (head, tag_style(tag))]
@@ -1672,7 +1777,9 @@ def pace_lines(snap: dict) -> list:
         return []
     cache = hc.state_dir() / "agent-top" / "limit-pace.json" if os.environ.get("AGENT_TOP_CACHE", "1") != "0" else None
     paces = limit_pace.read_all(now=snap["now"], cache=cache)
-    stage = snap["stages"][0] if len(snap["stages"]) == 1 else None
+    stage = None
+    if len(snap["stages"]) == 1:   # the stage's own name, which the advisor looks up in the current home's records
+        stage = (snap["stage_info"].get(snap["stages"][0]) or {}).get("name") or snap["stages"][0]
     return [(e, paces[e].get("7d"), limit_pace.summary(e, paces, stage)) for e in limit_pace.ENGINES]
 
 
@@ -1793,7 +1900,7 @@ def render_widget(snap: dict) -> str:
 def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> dict:
     agents = [{k: v for k, v in a.items() if not k.startswith("_")} for a in snap["agents"]]
     out = {"generated_at": snap["generated_at"], "stages": snap["stages"], "closed_hidden": snap["closed_hidden"],
-           "idle_after_s": snap["idle_after_s"], "stage_info": snap["stage_info"], "counts": snap["counts"], "agents": agents,
+           "homes": snap["homes"], "multi_home": snap["multi_home"], "idle_after_s": snap["idle_after_s"], "stage_info": snap["stage_info"], "counts": snap["counts"], "agents": agents,
            "roles": snap["roles"], "spend": snap["spend"], "locks": snap["locks"], "questions": snap["questions"],
            "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
            "codex_limits": snap.get("codex_limits", {}),
@@ -2184,23 +2291,38 @@ class App:
 
     def _run_action(self, act: dict):
         if act["kind"] == "close":
-            argv = [os.environ.get("AGENT_TOP_HUB_BIN") or str(BIN / "hub"), "close", "--stage", act["stage"],
+            name, env = self._stage_target(act["stage"])
+            argv = [os.environ.get("AGENT_TOP_HUB_BIN") or str(BIN / "hub"), "close", "--stage", name,
                     "--why", "closed from agent-top"]
             self.busy = f"hub close {act['stage']}…"
-            threading.Thread(target=self._action_thread, args=(argv, dict(os.environ), act["stage"], "close"), daemon=True).start()
+            threading.Thread(target=self._action_thread, args=(argv, env, act["stage"], "close"), daemon=True).start()
             return
         a = act["a"]
         agent_bin = os.environ.get("AGENT_TOP_AGENT_BIN") or str(BIN / "agent")
+        name, env = self._stage_target(a["stage"])
         if act["kind"] == "send":
-            argv = [agent_bin, "send", a["role"], "--stage", a["stage"], "--", act["text"]]
+            argv = [agent_bin, "send", a["role"], "--stage", name, "--", act["text"]]
             self.busy = f"agent send {a['role']}…"
         else:
-            argv = [agent_bin, "stop", a["role"], "--stage", a["stage"]]
+            argv = [agent_bin, "stop", a["role"], "--stage", name]
             self.busy = f"agent stop {a['role']}…"
-        env = dict(os.environ)
-        if not hc.caller_tag(a["stage"]):
+        ref = self.coll.where.get(a["stage"])
+        with hc.in_home(ref.home.path, ref.home.layer) if ref else contextlib.nullcontext():
+            owned = hc.caller_tag(name)
+        if not owned:
             env["HUB_TAG"] = "owner"              # journal lines of a message typed here are the owner's
         threading.Thread(target=self._action_thread, args=(argv, env, a["role"], act["kind"]), daemon=True).start()
+
+    def _stage_target(self, sid: str) -> tuple:
+        """(the stage's own name, the environment to run a hub tool for it in): the tools address the stage in the home
+        they resolve, so a stage of another home gets that home in $AGENT_HUB_HOME."""
+        ref = self.coll.where.get(sid)
+        env = dict(os.environ)
+        if ref is None:
+            return sid, env
+        if str(ref.home.path) != str(hc.root()):
+            env["AGENT_HUB_HOME"] = str(ref.home.path)
+        return ref.name, env
 
     def _action_thread(self, argv: list, env: dict, role: str, kind: str):
         try:
@@ -2338,7 +2460,7 @@ def run_ui(cfg) -> int:
 
 def main(argv: list) -> int:
     p = argparse.ArgumentParser(prog="agent-top", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--stage", action="append", help="stage (repeatable); default: every stage that has agents or roles")
+    p.add_argument("--stage", action="append", help="stage (repeatable; a bare name matches it in every home, `name · label` in one); default: every stage of every known home that has agents or roles")
     p.add_argument("--all", action="store_true", help="also finished agents older than 24 h and the archive folders of old runs")
     p.add_argument("--once", action="store_true", help="print a text picture and exit")
     p.add_argument("--json", action="store_true", help="the same data as JSON, for scripts")

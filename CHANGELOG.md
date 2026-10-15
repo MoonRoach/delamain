@@ -6,6 +6,22 @@
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
   needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by
   @Cartograf666 in #76.
+- **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
+  per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never
+  appeared in the shared `agent-top`, which listed the resolved home only, though its agents run on the same machine. A
+  project home lives inside an arbitrary repository, so it cannot be found by scanning: the tools now record a home in
+  `${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json` when a stage is registered in it (`roles_save`, `agent spawn`:
+  `roles set`, `hub start`, `hub takeover`, …; atomic, under a lock, at most once a day per home, a missing home dropped on
+  the next write). `agent-top`, `--once`, `--json`, `--widget` and the pane list the stages of the resolved home,
+  `~/agent-hub`, the legacy home, `$AGENT_HUB_HOME` and the registered homes that exist (`hubcore.known_homes()`), each with
+  its own cache; while stages come from more than one home a stage outside `~/agent-hub` is `stage · <repo>`, and two
+  stages of one name in two homes are two entries. `--json` keeps every field and adds `home`, `home_label`, `name` and
+  `stage_name` to the stage and agent records and the top-level `homes` and `multi_home`; with one home the text and
+  widget output are byte-identical to before. The console's `c` / `m` / `x` and the pane's `close` act on the selected
+  stage in its own home. `tell`, `agent`, `hub` still address the resolved home only, but a "no such stage" error now adds
+  *stage S exists in home <path>; run from that project or set `AGENT_HUB_HOME=<path>`*, and the refusal for a stage that
+  lives in `~/agent-hub` or the legacy home is unchanged. A registry that cannot be read or written never fails a tool.
+  Found by @Cartograf666 in #76.
 
 ## 1.0.12 — 2026-10-15
 

@@ -75,7 +75,7 @@ flowchart LR
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
-| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
+| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. It shows the stages of every known hub home, not only the resolved one ([the registry of homes](#where-the-hubs-files-live)). Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
 
 More diagrams and the file formats: [docs/architecture.md](architecture.md).
 
@@ -494,6 +494,24 @@ headless successor get `AGENT_HUB_HOME=<the parent's home>`, so parent and child
 `--add-dir <home>` when the home is not under their directory. A stage that is not in the resolved home but exists in
 `~/agent-hub` or the legacy home is refused with an error naming where it is: migrate the legacy home (or `mv` that one
 stage when the home is another one), set `AGENT_HUB_HOME` to that place, or `mkdir -p <home>/<stage>` to start afresh.
+
+**The registry of homes.** A project home lives inside an arbitrary repository, so nothing can find it by scanning. The
+tools therefore record every home a stage is registered in (`roles set`, `hub start`, `hub takeover`, `agent spawn`) in
+one file outside every home: `${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json`, entries `{path, layer, repo,
+first_seen, last_seen}` (`repo` is the main checkout of a project home). It is written atomically under a lock, at
+most once a day per home when nothing else changed, and an entry whose directory is gone is dropped on the next write. It
+is a convenience: a registry that cannot be read or written never fails a tool (a hook says nothing, another tool at most
+one stderr line), and the home a tool resolves is chosen as above, never from the registry. `agent-top` shows the stages
+of every *known* home: the resolved one, `~/agent-hub`, the legacy one while it exists, `$AGENT_HUB_HOME` and the
+registered ones that still exist (`known_homes()` in `bin/hubcore.py`). While stages come from more than one home, a
+stage outside `~/agent-hub` is named `stage · <repo>` (the repository's directory name for a project home, else the
+`~`-path), in the console, `--once`, `--widget` and the pane; with one home nothing changes. In `--json` the same name is
+the stage's `stage`, `stage_info[<name>]` gains `name`, `home` and `home_label`, every agent `stage_name`, `home` and
+`home_label`, and the top level `homes` (path, label, layer, repo, stages) and `multi_home`; `--stage` takes the bare name
+(in every home that has it) or `name · label`. `tell`, `agent`, `hub` and the other tools still address the resolved
+home only: a "no such stage" error adds *stage S exists in home <path>; run from that project or set
+`AGENT_HUB_HOME=<path>`* when a known home has it. A stage of another project's home is not a conflict: a stage of the same
+name can be created in this one. The refusal above for `~/agent-hub` and the legacy home is unchanged.
 
 ```bash
 hub effort [--session ID] [--json]   # the effort this (or that) Claude Code session runs at now, and where it was read

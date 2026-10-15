@@ -162,6 +162,15 @@ denied 'kill $(pidof node)  # kill-ok: my node'; check $? 1 "the escape passes a
 kg 'pkill -f x -P 1' | grep -q 'procps'; check $? 0 "the trap reason is true on Linux too: procps reads the option, BSD does not (L6)"
 denied 'pkill -f "[s]leep 300" 2>/dev/null  # kill-ok: my test sleeps'; check $? 1 "  a redirection after the pattern is not read as a pattern"
 AGENT_HUB_KILL_GUARD=off kg "$INCIDENT" | grep -q deny; check $? 1 "AGENT_HUB_KILL_GUARD=off turns it off"
+python3 - "$HOOKS/kill_guard.py" <<'PY'; check $? 0 "deeply nested and long commands: exit 0 within 5 s, no traceback"
+import json, subprocess, sys, time
+for cmd in ["x=$(" * 800 + "pgrep a" + ")" * 800 + "; kill $x", "$(a " * 500 + "pgrep x" + ")" * 500, "a | " * 5000 + "b",
+            "pkill " + "-f x " * 20000]:
+    t = time.time()
+    r = subprocess.run([sys.executable, sys.argv[1]], input=json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+                       capture_output=True, text=True, timeout=10)
+    assert r.returncode == 0 and "Traceback" not in r.stderr and time.time() - t < 5, (r.returncode, r.stderr[-200:])
+PY
 echo '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/etc/hosts"}}' | python3 $HOOKS/kill_guard.py > $R/kg-read.out
 check "$?:$(wc -c < $R/kg-read.out | tr -d ' ')" "0:0" "other tools untouched"
 

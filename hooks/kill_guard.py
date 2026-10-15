@@ -188,24 +188,29 @@ def _substitutions(stage: str):
     return bodies
 
 
-def _has_source(stages) -> bool:
+_MAX_NESTING = 8  # `$(…)` inside `$(…)`: deeper text is not read (and cannot exhaust the stack)
+
+
+def _has_source(stages, depth: int = 0) -> bool:
     """Do these stage texts (of one pipeline, or of a `$(…)` body) produce pids by a name lookup: `pgrep`, `pidof`, or
     a `grep` after `ps`?"""
     for k, stage in enumerate(stages):
         if _PGREP.match(stage) or (_GREP.match(stage) and any(_PS.match(prev) for prev in stages[:k])):
             return True
-        if any(_has_source([st for st, _ in _split(body)]) for body in _substitutions(stage)):
+        if depth < _MAX_NESTING and any(_has_source([st for st, _ in _split(body)], depth + 1)
+                                        for body in _substitutions(stage)):
             return True
     return False
 
 
-def _levels(text: str):
+def _levels(text: str, depth: int = 0):
     """Every list of [(stage, separator)] in a command: the top level, then those inside every `$(…)` / backtick."""
     stages = _split(text)
     yield stages
-    for stage, _ in stages:
-        for body in _substitutions(stage):
-            yield from _levels(body)
+    if depth < _MAX_NESTING:
+        for stage, _ in stages:
+            for body in _substitutions(stage):
+                yield from _levels(body, depth + 1)
 
 
 def _pipelines(stages):

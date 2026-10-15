@@ -13,6 +13,10 @@
   `pkill` with an option or a second pattern after the first. `AGENT_HUB_KILL_GUARD=off` turns it off.
   `tests/t_kill_guard.sh` also pins the detachment: an agent of either engine outlives SIGTERM and SIGHUP to its host's
   process group, the host alone, and the host's group killed while `agent spawn` still waits for the init event.
+  The guard reads `pidof` and a `grep` of `ps` output as pid sources like `pgrep` (at any stage of a pipeline), the loop
+  and variable forms in one command (`for p in $(pgrep …); do kill $p`, `pgrep … | while read p; do kill $p`,
+  `P=$(pgrep …); kill $P`), `eval` and `killall5`; a single `&` separates statements (`pkill -x node &` is an ordinary
+  overridable deny); a segment whose command word is `ssh` is not read.
 
 ## 1.0.8 — 2026-10-15
 

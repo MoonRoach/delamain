@@ -282,7 +282,8 @@ def _segment_views(seg: str, strings: list, runs_all: bool, keep_seps: bool = Fa
             ci.append(quoted if keep_strings else '""')
             for body in _substitutions(quoted):
                 inner = views(body, keep_seps)
-                wait.append(f";{inner[0]};")
+                # keep_seps: the substitution stays where it stood, `kill "$(pgrep x)"` is still one command
+                wait.append(f"$({inner[0]})" if keep_seps else f";{inner[0]};")
                 ci.append(f";{inner[2]};")
         pos = m.end()
     wait.append(seg[pos:])

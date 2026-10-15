@@ -18,6 +18,9 @@ new_home
 printf '%s\n' "$AGENT_HUB_HOME"
 mkdir -p "$AGENT_HUB_HOME/fixture"
 mktemp -d
+mktemp
+mktemp "$TMPDIR/explicit.XXXXXX"
+mktemp -d "$TMPDIR/explicit-dir.XXXXXX"
 exit "$2"
 ''', 'test-temp', lib, str(status), str(custom), outer], env={**os.environ, 'TMPDIR': outer + '/'}, capture_output=True, text=True)
         assert result.returncode == status, result.returncode
@@ -26,11 +29,11 @@ exit "$2"
         leaked = [p for p in paths if p.exists()]
         import shutil
         for p in leaked:
-            shutil.rmtree(p)
-        assert not leaked, f'standalone test left {len(leaked)} temporary directories'
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
+        assert not leaked, f'standalone test left {len(leaked)} temporary files and directories'
         marker = Path(outer) / 'marker'
         assert marker.exists() == custom, 'custom EXIT trap must still run'
         marker.unlink(missing_ok=True)
         assert list(Path(outer).iterdir()) == []
-print('PASS standalone temporary directories removed on success and failure; exit status preserved')
+print('PASS standalone temporary files and directories removed on success and failure; exit status preserved')
 PY

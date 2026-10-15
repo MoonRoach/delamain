@@ -6,9 +6,11 @@ export TMPDIR=$TEST_TMP_ROOT
 test_cleanup(){ rm -rf "$TEST_TMP_ROOT"; }
 trap test_cleanup EXIT
 # BSD mktemp's default template does not honour TMPDIR on every macOS version.
-# Keep plain `mktemp -d` allocations inside the owned root on both BSD and GNU.
+# Keep default file and directory allocations inside the owned root on both BSD and GNU.
 mktemp(){
-  if [ "$#" = 1 ] && [ "$1" = -d ]; then
+  if [ "$#" = 0 ]; then
+    command mktemp "$TEST_TMP_ROOT/tmp.XXXXXX"
+  elif [ "$#" = 1 ] && [ "$1" = -d ]; then
     command mktemp -d "$TEST_TMP_ROOT/tmp.XXXXXX"
   else
     command mktemp "$@"

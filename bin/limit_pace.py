@@ -52,6 +52,7 @@ LOG_MAX = 64                  # at most this many Claude logs ...
 ROLLOUT_MAX = 32              # ... and Codex rollouts, newest first
 TAIL_BYTES = 256_000
 CLAUDE_SCAN_BYTES = 8 * 1024 * 1024  # bounded backwards search for a Claude rate-limit event
+CACHE_PARSER_VERSION = 1      # bump when parsing changes so unchanged logs are read again after an upgrade
 CONTEXT_CAP = "~200k"
 LEVELS = ("ok", "ahead", "exhaust")
 TAG = "pace"                  # the journal tag of the advisor's own lines
@@ -135,7 +136,7 @@ def _claude_lines(path: Path):
 
 
 class _Cache:
-    """What each log's tail held, by path, size and mtime: a log only grows, so an unchanged one is not read again
+    """What each log's tail held, by path, size, mtime and parser version: a log only grows, so an unchanged one is not read again
     (agent-top --json runs every few seconds). Kept in the file the caller names (agent-top: in its own cache directory);
     entries of files not seen in a read are dropped, so it never grows beyond the recent logs."""
 
@@ -149,7 +150,7 @@ class _Cache:
         self.new: dict = {}
 
     def get(self, path: Path, st, parse):
-        key, stamp = str(path), [st.st_size, st.st_mtime_ns]
+        key, stamp = str(path), [st.st_size, st.st_mtime_ns, CACHE_PARSER_VERSION]
         hit = self.old.get(key)
         if isinstance(hit, list) and len(hit) == 2 and hit[0] == stamp and isinstance(hit[1], list):
             got = hit[1]

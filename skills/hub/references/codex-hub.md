@@ -83,3 +83,15 @@ The Codex-only sentences of *Talking*; the journal `tell` of the core `SKILL.md`
   [Immediate Codex tell delivery](../../../docs/codex.md#immediate-codex-tell-delivery) and handle pending native-caller
   handoffs immediately. Explicit queued follow-ups may use `codex queue --thread <registered UUID> --message "…"`
   when supported; queue acceptance does not establish immediate steer. Use the UUID, never a display name.
+
+## Grilling session on Codex
+
+The Codex side of *Grilling in a session of its own* (`owner-and-planning.md`). In a Codex app thread `hub grill
+--stage <S>` prints `create_thread` arguments whose `target.projectId` is a placeholder, and the `project_root`. The
+owner's request to be grilled, in the current turn, is the explicit human authority for this one thread (pass their
+words with `--owner-words`); it grants nothing else. Then, as the app agent: native `list_projects`, take the one saved
+project whose path, normalized to its Git main checkout, is `project_root`, put its projectId into `target`, and call
+native `create_thread` once. An unknown result is not retried — the new thread announces itself with a `grill join`
+line in the journal; no matching project: tell the owner and run `hub grill --stage <S> --host manual --again`. In a
+terminal Codex hub `hub grill` prints the command the owner runs in a terminal of their own. Either way the new thread
+joins as role `grill` with its CODEX_THREAD_ID and reports with `@hub GRILLED …`.

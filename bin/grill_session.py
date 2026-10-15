@@ -229,7 +229,7 @@ When the frontier is empty or the owner stops the grilling:
 
 It writes one journal line to the hub (`@hub GRILLED …`, counted from the register) and retires your role. Then tell
 the owner that the answers are recorded, the hub acts on them, and this session may be closed. A question for the hub
-meanwhile: `{jlog} "@hub …"` (its answer comes through the owner or `tell {stage} --role grill`).
+meanwhile: `{jlog} --stage {stage} "@hub …"` (its answer comes through the owner or `tell {stage} --role grill`).
 """
 
 

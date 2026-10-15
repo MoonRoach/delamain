@@ -21,6 +21,13 @@
   stage in its own home. `tell`, `agent`, `hub` still address the resolved home only, but a "no such stage" error now adds
   *stage S exists in home <path>; run from that project or set `AGENT_HUB_HOME=<path>`*, and the refusal for a stage that
   lives in `~/agent-hub` or the legacy home is unchanged. A registry that cannot be read or written never fails a tool.
+  A stage is identified by its home and own name, never by the `stage · label` shown (which depends on how many homes have
+  stages): the console's stop/send/close, the pane's `close` and a card are bound to that pair when armed, so another home
+  gaining a stage of the same name cannot redirect a pending confirmation. `--stage` takes `NAME` (every home),
+  `NAME@label` or `NAME@/path` (one home), also in `/agent-top`, whose filter keeps `alpha · repo` for `--stage alpha`. A
+  child tool's registration (its pinned `AGENT_HUB_HOME` reads as `env`) never downgrades a project entry. The limit-pace
+  advice reads a stage's settings in its home and the logs of every home. Tests never touch the real HOME or registry
+  (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
   Found by @Cartograf666 in #76.
 
 ## 1.0.12 — 2026-10-15

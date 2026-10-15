@@ -349,11 +349,19 @@ def registry_path() -> Path:
     return base / "delamain" / "homes.json"
 
 
-def _real(path) -> str:
+def real_path(path) -> str:
     try:
         return str(Path(path).expanduser().resolve())
     except (OSError, ValueError, RuntimeError):
         return str(path)
+
+
+_real = real_path
+
+# How much a registry entry says about where a home came from: a child tool resolves its home from the pinned
+# $AGENT_HUB_HOME (child_env), so the same home is seen as "env" by a child and as "project" by its parent; a
+# registration never replaces a more specific provenance with a less specific one.
+_LAYER_RANK = {"env": 0, "registry": 0, "legacy": 1, "user": 2, "default": 2, "project": 3}
 
 
 def _tilde(path) -> str:
@@ -387,9 +395,17 @@ def _registry_warn(msg: str) -> None:
         _warn(msg)
 
 
-def _home_repo(h: Home) -> Optional[str]:
-    """The main checkout whose .agent-hub/local/ is the project home `h`, else None."""
-    return str(h.path.parent.parent) if h.layer == "project" else None
+def _home_provenance(h: Home) -> tuple:
+    """(layer, repo) of the home `h`: a project home (the layer says so, or the path has the shape of one — a child's
+    pinned $AGENT_HUB_HOME names it) has its main checkout as `repo`."""
+    if h.layer == "project" or (h.path.name == LOCAL_HOME and h.path.parent.name == CONFIG_DIRNAME):
+        return "project", str(h.path.parent.parent)
+    return h.layer, None
+
+
+def _more_specific(layer: str, repo: Optional[str], entry: dict) -> bool:
+    old_layer = entry.get("layer") if isinstance(entry.get("layer"), str) else "env"
+    return _LAYER_RANK.get(layer, 0) > _LAYER_RANK.get(old_layer, 0) or (bool(repo) and not entry.get("repo"))
 
 
 def register_home(h: Optional[Home] = None) -> None:
@@ -407,7 +423,8 @@ def register_home(h: Optional[Home] = None) -> None:
             _registry_warn(f"{registry_path()} is unreadable or not a registry of homes: delete it to start a new one "
                            "(agent-top lists the current home and ~/agent-hub meanwhile)")
             return
-        if _registry_current(ents, path):
+        layer, repo = _home_provenance(h)
+        if _registry_current(ents, path, layer, repo):
             return
         reg = registry_path()
         with Flock(reg.with_name(reg.name + ".lock")):
@@ -421,8 +438,10 @@ def register_home(h: Optional[Home] = None) -> None:
                 elif Path(e["path"]).is_dir():  # a deleted home is dropped on the next write
                     keep.append(e)
             if found is None:
-                found = {"path": path, "layer": h.layer, "repo": _home_repo(h), "first_seen": stamp}
-            found.update(path=path, layer=h.layer, repo=_home_repo(h), last_seen=stamp)
+                found = {"path": path, "layer": layer, "repo": repo, "first_seen": stamp}
+            elif _more_specific(layer, repo, found):   # never downgrade: only a more specific provenance replaces it
+                found.update(layer=layer, repo=repo)
+            found.update(path=path, last_seen=stamp)
             atomic_write(reg, json.dumps({"version": 1, "homes": keep + [found]}, ensure_ascii=False, indent=1) + "\n")
     except Exception as e:  # noqa: BLE001 — the registry must never fail the tool that called it
         try:
@@ -431,16 +450,16 @@ def register_home(h: Optional[Home] = None) -> None:
             pass
 
 
-def _registry_current(ents: list, path: str) -> bool:
-    """Whether the registry already says what a registration would write: the home is in it, seen within a day, and no
-    entry of a deleted home is left to drop."""
+def _registry_current(ents: list, path: str, layer: str, repo: Optional[str]) -> bool:
+    """Whether the registry already says what a registration would write: the home is in it with at least this
+    provenance, seen within a day, and no entry of a deleted home is left to drop."""
     found = None
     for e in ents:
         if _real(e["path"]) == path:
             found = e
         elif not Path(e["path"]).is_dir():
             return False
-    if found is None:
+    if found is None or _more_specific(layer, repo, found):
         return False
     try:
         seen = dt.datetime.fromisoformat(str(found.get("last_seen")))
@@ -459,12 +478,16 @@ def known_homes() -> list:
 
     def add(path, layer, repo=None, must_exist=True):
         real = _real(path)
-        if real in seen or (must_exist and not Path(real).is_dir()):
+        if real in seen:   # the same home seen twice: the more specific provenance names it
+            if _more_specific(layer, repo, {"layer": seen[real][1], "repo": seen[real][2]}):
+                seen[real][1:] = [layer, repo]
+            return
+        if must_exist and not Path(real).is_dir():
             return
         seen[real] = [Path(path), layer, repo]
 
     cur = home()
-    add(cur.path, cur.layer, _home_repo(cur), must_exist=False)
+    add(cur.path, *_home_provenance(cur), must_exist=False)
     add(user_home(), "default")
     add(legacy_home(), "legacy")
     raw = os.environ.get(HOME_KEY)

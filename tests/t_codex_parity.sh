@@ -3,6 +3,7 @@
 # PARITY_CASE selects identity, wait, runtime, helpers, agents_cell, helpers_whitespace,
 # helpers_invalid, helpers_zero_doc, or a host_* control (host runs all host controls).
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 PARITY_ROOT="${BIN:-$(cd "$(dirname "$0")/../bin" && pwd)}"
 PARITY_TMP="$(mktemp -d)"
 trap 'rm -rf "$PARITY_TMP"' EXIT

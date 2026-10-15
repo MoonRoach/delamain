@@ -2,6 +2,7 @@
 # Tests for agent-top on fake stages (no real agent, stand or role is touched): states of agents incl. negative controls,
 # --once/--json, big-log tail reading, "writes nothing" fingerprint, narrow widths, curses UI in a pty with a stub `agent`.
 set -u
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME, ~/agent-hub or the registry of homes
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONDONTWRITEBYTECODE=1

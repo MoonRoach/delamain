@@ -176,23 +176,143 @@ mkdir -p $DH/onlydefault/coordinator/work
 grep -q "is not in the hub home $PH" $S/g1.err; check $? 0 "(g) …with the old message"
 (cd $S/proj && $B/jlog --stage beta --tag t "x" > /dev/null 2>&1); check $? 0 "(g) control: a stage the project home has works"
 
-# ---- (h) the TUI actions address a stage of another home by its own name, in its home
-python3 - "$B" "$PH" <<'PY'
-import importlib.machinery, importlib.util, os, sys, types
-b, ph = sys.argv[1:3]
+# ---- (h) a selector names a stage by (name, home): NAME@label, NAME@path, `name · label`; a bare name keeps every home's
+sel(){ (cd $S/plain && $B/agent-top --json "$@" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(d["stages"]) or "-")'); }
+check "$(sel --stage beta@proj)" "beta · proj" "(h) --stage name@label picks that stage of that home"
+check "$(sel --stage beta@$PH)" "beta · proj" "(h) --stage name@/path/of/home picks it by the home's path"
+check "$(sel --stage 'beta · proj')" "beta · proj" "(h) the displayed 'name · label' still works"
+check "$(sel --stage alpha@)" "alpha" "(h) name@ (an empty label) is the ~/agent-hub one"
+mkdir -p $PH/alpha/agents
+check "$(sel --stage alpha)" "alpha alpha · proj" "(h) a bare name keeps that stage of every home"
+check "$(sel --stage beta@nowhere)" "-" "(h) negative: a label no home has selects nothing (exit 0)"
+
+# ---- (i) the TUI's actions hold the stage's home and own name from the moment they are armed, whatever the id becomes
+SQ=$(mktemp -d); export HOME=$SQ/home XDG_CONFIG_HOME=$SQ/xdg; mkdir -p $HOME $SQ/plain $SQ/lone
+(cd $SQ/lone && git init -q && mkdir .agent-hub && echo '{"AGENT_HUB_HOME": "project"}' > .agent-hub/config.json && $B/roles set hub $H1 --tag hub-1 --stage only > /dev/null 2>&1)
+QH=$(cd $SQ/lone && python3 -c 'import os; print(os.path.realpath(".agent-hub/local"))'); mkagent $QH only w1
+cat > $SQ/stub <<'STUB'
+#!/bin/sh
+echo "HOME=${AGENT_HUB_HOME:-} ARGS=$*" >> "$STUB_OUT"
+STUB
+chmod +x $SQ/stub
+cat > $SQ/tui.py <<'PY'
+import importlib.machinery, importlib.util, os, sys, time, types
+b, sq = sys.argv[1:3]
 sys.path.insert(0, b)
 loader = importlib.machinery.SourceFileLoader("agent_top_mod", os.path.join(b, "agent-top"))
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_top_mod", loader))
 loader.exec_module(mod)
-coll = mod.Collector(None, False)
-coll.snapshot()
-ui = types.SimpleNamespace(coll=coll)
-other = next(s for s in coll.where if s.endswith(" · proj"))
-name, env = mod.App._stage_target(ui, other)
-here, env_here = mod.App._stage_target(ui, "alpha")
-ok = name == other.split(" · ")[0] and env.get("AGENT_HUB_HOME") == str(coll.where[other].home.path) \
-    and here == "alpha" and env_here.get("AGENT_HUB_HOME") == os.environ.get("AGENT_HUB_HOME")
+coll = mod.Collector(None, True)
+ui = object.__new__(mod.App)
+ui.coll, ui.cfg, ui.view = coll, types.SimpleNamespace(read_only=False), "list"
+ui.snap = coll.snapshot()
+assert ui.snap["stages"] == ["only"], ui.snap["stages"]       # one home with stages: the id is the bare name
+ui._confirm_close("only")                                      # arm a close of it
+close = ui.confirm
+ui.sel_key = mod.agent_key(ui.snap["agents"][0])
+a = ui.selected()
+stop = {"kind": "stop", "a": a, "prompt": ""}                  # and a stop of its agent
+# the default home gains an `only` of its own: the id `only` now names that one, B's is `only · lone`
+os.makedirs(os.path.join(sq, "home", "agent-hub", "only"))
+open(os.path.join(sq, "home", "agent-hub", "only", "roles.json"), "w").write('{"version": 1, "roles": {}}')
+ui.snap = coll.snapshot()
+assert sorted(ui.snap["stages"]) == ["only", "only · lone"], ui.snap["stages"]
+ui._run_action(close)
+time.sleep(1.5)
+ui._run_action(stop)
+time.sleep(1.5)
+PY
+export STUB_OUT=$SQ/stub.out AGENT_TOP_HUB_BIN=$SQ/stub AGENT_TOP_AGENT_BIN=$SQ/stub
+(cd $SQ/plain && python3 $SQ/tui.py $B $SQ > $SQ/tui.out 2>&1); check $? 0 "(i) setup: an action armed on B's stage, then ~/agent-hub gains a stage of the same name"
+grep -qxF "HOME=$QH ARGS=close --stage only --why closed from agent-top" $SQ/stub.out; check $? 0 "(i) the confirmed close runs for the armed stage's own name in the home it was armed on"
+grep -qxF "HOME=$QH ARGS=stop w1 --stage only" $SQ/stub.out; check $? 0 "(i) …and so does a stop of its agent"
+[ "$(wc -l < $SQ/stub.out)" -eq 2 ]; check $? 0 "(i) …and nothing else ran"
+
+# ---- (j) the limit-pace advisor of a stage is read in that stage's home (stage lock, mode, cache), not the resolved one
+export HOME=$S/home XDG_CONFIG_HOME=$S/xdg; unset STUB_OUT AGENT_TOP_HUB_BIN AGENT_TOP_AGENT_BIN
+echo '{"AGENT_HUB_STAGE_ENGINES": {"beta": {"engine": "claude", "decision": "pinned in the project home"}}}' > $PH/config.json
+(cd $S/plain && AGENT_TOP_CACHE=1 python3 - $B $PH > $S/j.out 2>&1 <<'PY'
+import importlib.machinery, importlib.util, os, sys
+sys.path.insert(0, sys.argv[1])
+loader = importlib.machinery.SourceFileLoader("agent_top_mod", os.path.join(sys.argv[1], "agent-top"))
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_top_mod", loader))
+loader.exec_module(mod)
+import hubcore as hc, limit_pace
+seen = {}
+real_read = limit_pace.read_all
+def read_all(now=None, cache=None, homes=None):
+    seen["cache"] = str(cache)
+    seen["homes"] = sorted(str(h) for h in homes or [])
+    return real_read(now=now, cache=None, homes=homes)
+def summary(engine, paces, stage=None):
+    seen["root"] = str(hc.root()); seen["stage"] = stage; seen["lock"] = limit_pace.stage_lock(stage)
+    return "x"
+limit_pace.read_all, limit_pace.summary = read_all, summary
+snap = mod.Collector(["beta@proj"], False).snapshot()
+mod.pace_lines(snap)
+ok = (seen["root"] == sys.argv[2] and seen["stage"] == "beta" and (seen["lock"] or {}).get("engine") == "claude"
+      and "/proj/.agent-hub/local/.state/agent-top" in seen["cache"] and len(seen["homes"]) == 2)
+print("ok" if ok else f"bad {seen}")
 sys.exit(0 if ok else 1)
 PY
-check $? 0 "(h) a stage of another home: its own name and AGENT_HUB_HOME=<its home>; a stage of the current home: neither changes"
+); check $? 0 "(j) one stage in view: the advisor reads that stage's home (its lock, its cache dir) and the logs of every home"
+rm -f $PH/config.json
+
+# ---- (k) the slow path of a snapshot polls the questions with the same stage refs
+(cd $S/plain && AGENT_HUB_HOME=$PH $B/ask add --stage beta --blocks x --default nothing --due 2099-01-01T00:00 --by t --source t "A question?" > $S/k0.out 2>&1); check $? 0 "(k) setup: an open owner question in the project home"
+(cd $S/plain && python3 - $B > $S/k.out 2>&1 <<'PY'
+import importlib.machinery, importlib.util, os, sys, threading
+sys.path.insert(0, sys.argv[1])
+loader = importlib.machinery.SourceFileLoader("agent_top_mod", os.path.join(sys.argv[1], "agent-top"))
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("agent_top_mod", loader))
+loader.exec_module(mod)
+errors = []
+threading.excepthook = lambda a: errors.append(repr(a.exc_value))
+coll = mod.Collector(None, False)
+coll.ext.TTL = 0                         # every poll starts a fetch, as a snapshot that outlives the TTL does
+orig = coll.ext.poll
+coll.ext.poll = lambda stages, wait=False: orig(stages, wait=True)   # a fetch is over before the next poll starts
+snap = coll.snapshot(wait_ext=True)
+ok = not errors and snap["questions"].get("beta · proj", {}).get("open") == 1 and snap["questions_ok"]
+print("ok" if ok else f"bad {errors} {snap['questions']}")
+sys.exit(0 if ok else 1)
+PY
+); check $? 0 "(k) both polls of a snapshot take stage refs: no thread error, the question of the other home is there"
+
+# ---- (l) a registration never downgrades an entry's provenance (a child pins AGENT_HUB_HOME, so it sees the home as "env")
+prov(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=[h for h in d["homes"] if h["path"]==sys.argv[2]]; print(e[0]["layer"], e[0]["repo"] or "-")' $REG $PH; }
+repo=$(cd $S/proj && python3 -c 'import os; print(os.getcwd() and os.path.realpath("."))')
+check "$(prov)" "project $repo" "(l) setup: the project home is registered as project, with its repository"
+touch -t 202001010000 $REG   # irrelevant to the entry's age; the point is a second, child-style registration:
+(cd $S/plain && AGENT_HUB_HOME=$PH $B/roles set c1 $H3 --tag c-1 --stage beta > /dev/null 2>&1); check $? 0 "(l) a child-style registration (AGENT_HUB_HOME=<the project home>) succeeds"
+check "$(prov)" "project $repo" "(l) …and the entry keeps layer project and its repository (it is not downgraded to env/null)"
+python3 - $REG "$PH" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["homes"]:
+    if e["path"] == sys.argv[2]:
+        e["last_seen"] = "2020-01-01T00:00:00+00:00"      # stale: the next registration writes, which is when a downgrade would happen
+json.dump(d, open(sys.argv[1], "w"))
+PY
+(cd $S/plain && AGENT_HUB_HOME=$PH $B/roles set c2 $H4 --tag c-2 --stage beta > /dev/null 2>&1)
+check "$(prov)" "project $repo" "(l) …also when the registration rewrites the file"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print([e["last_seen"] for e in d["homes"] if e["path"]==sys.argv[2]][0] > "2021")' $REG $PH | grep -q True; check $? 0 "(l) …and only last_seen moved"
+# the same for any layer: ~/agent-hub registered as "default" stays so when a child (which sees "env") registers it again
+python3 - $REG <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["homes"]:
+    e["last_seen"] = "2020-01-01T00:00:00+00:00"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+layer_of(){ python3 -c 'import json,sys,os; d=json.load(open(sys.argv[1])); print([e["layer"] for e in d["homes"] if os.path.realpath(e["path"])==os.path.realpath(sys.argv[2])][0])' $REG "$1"; }
+check "$(layer_of $DH)" default "(l) setup: ~/agent-hub is registered as default"
+(cd $S/plain && AGENT_HUB_HOME=$DH $B/roles set c3 $H4 --tag c-3 --stage alpha > /dev/null 2>&1); check $? 0 "(l) a child-style registration of ~/agent-hub succeeds"
+check "$(layer_of $DH)" default "(l) …and the entry stays default (env is less specific)"
+# first seen by a child: the shape of the path says it is a project home
+SR=$(mktemp -d); export XDG_CONFIG_HOME=$SR/xdg; mkdir -p $SR/p/.agent-hub/local
+(cd $S/plain && AGENT_HUB_HOME=$SR/p/.agent-hub/local $B/roles set c1 $H3 --tag c-1 --stage z > /dev/null 2>&1)
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); e=d["homes"][0]; print(e["layer"], e["repo"].endswith("/p"))' $XDG_CONFIG_HOME/delamain/homes.json | grep -qx "project True"; check $? 0 "(l) a home first registered through a child's pinned path is still recorded as a project home"
+export XDG_CONFIG_HOME=$S/xdg
+
 exit $fail

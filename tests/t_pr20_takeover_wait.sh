@@ -3,6 +3,7 @@
 # Every case uses a throwaway home and stand-in CLIs; no model or native app is called.
 # Select L1, L2, L3, L3_cli, L3_desktop, L3_skill or M3 with PR20_CASE (default: all).
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT

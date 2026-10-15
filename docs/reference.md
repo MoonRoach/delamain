@@ -505,10 +505,16 @@ one stderr line), and the home a tool resolves is chosen as above, never from th
 of every *known* home: the resolved one, `~/agent-hub`, the legacy one while it exists, `$AGENT_HUB_HOME` and the
 registered ones that still exist (`known_homes()` in `bin/hubcore.py`). While stages come from more than one home, a
 stage outside `~/agent-hub` is named `stage · <repo>` (the repository's directory name for a project home, else the
-`~`-path), in the console, `--once`, `--widget` and the pane; with one home nothing changes. In `--json` the same name is
-the stage's `stage`, `stage_info[<name>]` gains `name`, `home` and `home_label`, every agent `stage_name`, `home` and
-`home_label`, and the top level `homes` (path, label, layer, repo, stages) and `multi_home`; `--stage` takes the bare name
-(in every home that has it) or `name · label`. `tell`, `agent`, `hub` and the other tools still address the resolved
+`~`-path), in the console, `--once`, `--widget` and the pane; with one home nothing changes. That name is for display
+(and the key within one snapshot): the identity of a stage is its home and own name, and every action of the console and
+the pane (stop, send, close, a card) is bound to that pair when it is armed, so another home gaining a stage of the same
+name never redirects it. In `--json` the same name is the stage's `stage`, `stage_info[<id>]` gains `name`, `home` and
+`home_label`, every agent `stage_name`, `home` and `home_label`, and the top level `homes` (path, label, layer, repo, stages)
+and `multi_home`. `--stage` (and `/agent-top --stage`) takes `NAME` (that stage in every home that has it), `NAME@LABEL` or
+`NAME@/path/of/home` (one home's; `NAME@` is the `~/agent-hub` one) — a selector with no spaces — and the displayed `name · label`.
+The plan-limit advice reads the logs of every known home, and, for one stage in view, that stage's settings in its home.
+A registration never replaces a more specific provenance by a less specific one (a child tool pins `AGENT_HUB_HOME`, so it
+sees a project home as `env`): the entry keeps `project` and its repository. `tell`, `agent`, `hub` and the other tools still address the resolved
 home only: a "no such stage" error adds *stage S exists in home <path>; run from that project or set
 `AGENT_HUB_HOME=<path>`* when a known home has it. A stage of another project's home is not a conflict: a stage of the same
 name can be created in this one. The refusal above for `~/agent-hub` and the legacy home is unchanged.

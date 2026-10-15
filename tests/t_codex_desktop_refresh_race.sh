@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Native self-refresh races at the real hub/Plan seam; synthetic state, no models or app API.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT

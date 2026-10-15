@@ -23,7 +23,10 @@ import {
   planRun,
   remember,
   ringTarget,
+  inStages,
   stageCols,
+  stageMatches,
+  stageSelector,
   statusText,
   tagColor,
   taskText,
@@ -1599,14 +1602,14 @@ test('parseSnapshot reads homes, multi_home and where a stage lives; an older CL
   expect(s.homes).toEqual(HOMES)
   expect(s.multi_home).toBe(true)
   expect(s.stage_info['retro · proj']).toMatchObject({ name: 'retro', home: PROJ_HOME, home_label: 'proj' })
-  expect(closeTarget(s, 'retro · proj')).toEqual({ name: 'retro', home: PROJ_HOME })
-  expect(closeTarget(s, 'stage-a')).toEqual({ name: 'stage-a', home: '/home/u/agent-hub' })
+  expect(closeTarget(s, 'retro · proj')).toEqual({ name: 'retro', home: PROJ_HOME, key: `${PROJ_HOME}\u0000retro` })
+  expect(closeTarget(s, 'stage-a')).toEqual({ name: 'stage-a', home: '/home/u/agent-hub', key: '/home/u/agent-hub\u0000stage-a' })
   expect([stageCols(s), stageCols(null)]).toEqual([28, 16])
 
   const older = parseSnapshot(withStages({ retro: stageInfo() }), 0) // an older CLI: no home fields at all
   expect([older.homes, older.multi_home]).toEqual([[], false])
   expect(older.stage_info.retro).toEqual({ goal: 'Ship the retro fixes', closed: null, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: true, live: 0 })
-  expect(closeTarget(older, 'retro')).toEqual({ name: 'retro', home: null }) // the old call, unchanged
+  expect(closeTarget(older, 'retro')).toEqual({ name: 'retro', home: null, key: 'retro' }) // the old call, unchanged
   expect(stageCols(older)).toBe(16)
 
   const odd = parseSnapshot(snapshot([agent()], { homes: [5, { label: 'x' }, { path: '/p', stages: ['a', 7], repo: 3 }], multi_home: 'yes' }), 0)
@@ -1662,4 +1665,165 @@ test('closing a stage of another home runs `hub close` with the stage\'s own nam
   expect(oldHub.map(c => c.argv.slice(1))).toEqual([CLOSE_ARGV('retro')])
   expect(oldHub[0]?.env.AGENT_HUB_HOME).toBeUndefined()
   await old.unmount()
+})
+
+const DEFAULT_HOME = '/home/u/agent-hub'
+/** One home's `alpha` (the project's) idle beside the live `stage-a`: what the pane sees while only that home has an `alpha`. */
+const onlyProjectAlpha = (): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', 'alpha'],
+    multi_home: false,
+    stage_info: {
+      'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'stage-a', home: DEFAULT_HOME, home_label: '' }),
+      alpha: stageInfo({ name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+    },
+  })
+/** The same after ~/agent-hub gained an `alpha` too: the id `alpha` is now the default home's, the project's is `alpha · proj`. */
+const bothAlphas = (): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', 'alpha', 'alpha · proj'],
+    multi_home: true,
+    stage_info: {
+      'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'stage-a', home: DEFAULT_HOME, home_label: '' }),
+      alpha: stageInfo({ name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+      'alpha · proj': stageInfo({ name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+    },
+  })
+
+test('an armed close belongs to the stage (home, name), not to the id on its Button: another home gaining an `alpha` moves the id, never the confirmation', async ($, on) => {
+  mock.clock(on)
+  const calls: { argv: string[]; env: Record<string, string> }[] = []
+  let json = onlyProjectAlpha()
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => {
+    calls.push({ argv: [...e.argv], env: { ...(e.init?.env ?? {}) } })
+    return (HUB.test(e.argv[0] ?? '') ? ran('closed stage alpha\n') : ran(json)) as ReturnType<typeof ran>
+  })
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:alpha' }) // armed on the project home's `alpha`
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('confirm close')
+
+  json = bothAlphas() // ~/agent-hub gains an `alpha`: the id `alpha` now names the default home's stage
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('close') // the other stage is not armed
+  expect((await ui.find({ key: 'close:alpha · proj' }))?.props.label).toBe('confirm close') // the armed one moved with its identity
+  calls.length = 0
+  await ui.press({ key: 'close:alpha' }) // the press that would have confirmed on the old id
+  expect(calls.filter(c => HUB.test(c.argv[0] ?? ''))).toEqual([]) // …runs nothing: it arms the default home's stage instead
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('confirm close')
+  expect((await ui.find({ key: 'close:alpha · proj' }))?.props.label).toBe('close')
+
+  await ui.press({ key: 'close:alpha · proj' }) // arms the project home's again…
+  await ui.press({ key: 'close:alpha · proj' }) // …and confirms it
+  const hub = calls.filter(c => HUB.test(c.argv[0] ?? ''))
+  expect(hub.map(c => c.argv.slice(1))).toEqual([CLOSE_ARGV('alpha')])
+  expect(hub[0]?.env.AGENT_HUB_HOME).toBe(PROJ_HOME)
+
+  // and the other way: armed on the id as it is when the confirming press comes, even if the id changed in between
+  calls.length = 0
+  json = onlyProjectAlpha()
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'close:alpha' })
+  json = bothAlphas()
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'close:alpha · proj' })
+  expect(calls.filter(c => HUB.test(c.argv[0] ?? '')).map(c => c.env.AGENT_HUB_HOME)).toEqual([PROJ_HOME]) // acts on the armed stage's home
+  await ui.unmount()
+})
+
+test('--stage NAME keeps that stage of every home, NAME@label (or @path, or the displayed `name · label`) one home\'s; the pane, journal, questions and /agent-top <role> agree', async ($, on) => {
+  mock.clock(on)
+  const two = snapshot(
+    [
+      agent({ stage: 'alpha', role: 'a-w', dir_name: 'a-w', stage_name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+      agent({ stage: 'alpha · proj', role: 'p-w', dir_name: 'p-w', stage_name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+      agent({ stage: 'beta · proj', role: 'b-w', dir_name: 'b-w', stage_name: 'beta', home: PROJ_HOME, home_label: 'proj' }),
+    ],
+    {
+      stages: ['alpha', 'alpha · proj', 'beta · proj'],
+      multi_home: true,
+      homes: HOMES,
+      stage_info: {
+        alpha: stageInfo({ idle: false, name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+        'alpha · proj': stageInfo({ idle: false, name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+        'beta · proj': stageInfo({ idle: false, name: 'beta', home: PROJ_HOME, home_label: 'proj' }),
+      },
+      questions: { 'alpha · proj': { open: 1, overdue: 0, line: 'alpha · proj — open 1', items: ['Q-A-001 ?'], ids: ['Q-A-001'] }, 'beta · proj': { open: 1, overdue: 0, line: 'beta · proj — open 1', items: ['Q-B-001 ?'], ids: ['Q-B-001'] } },
+      journal_tail: [
+        { stage: 'alpha', time: '12:01', tag: 'a-w', text: 'default home line' },
+        { stage: 'alpha · proj', time: '12:02', tag: 'p-w', text: 'project home line' },
+        { stage: 'beta · proj', time: '12:03', tag: 'b-w', text: 'beta line' },
+      ],
+    },
+  )
+  const snap = parseSnapshot(two, 0)
+  const ids = (sel: string[]) => inStages(snap.agents, sel, snap).map(a => a.stage)
+  expect(ids([])).toEqual(['alpha', 'alpha · proj', 'beta · proj'])
+  expect(ids(['alpha'])).toEqual(['alpha', 'alpha · proj']) // a bare name: that stage in every home
+  expect(ids(['alpha@proj'])).toEqual(['alpha · proj'])
+  expect(ids([`alpha@${PROJ_HOME}`])).toEqual(['alpha · proj'])
+  expect(ids(['alpha@'])).toEqual(['alpha']) // the default home's label is empty
+  expect(ids(['alpha · proj'])).toEqual(['alpha · proj']) // as displayed
+  expect(ids(['beta@elsewhere', 'gamma'])).toEqual([])
+  expect(inStages([{ stage: 'x' }, { stage: 'y · r' }], ['y'], null).map(r => r.stage)).toEqual(['y · r']) // no stage_info: the id's own words
+  expect(stageMatches('a@b', { name: 'a', home: '/h', label: 'b' })).toBe(true)
+  expect(stageSelector({ stage: 'alpha · proj', stage_name: 'alpha', home: PROJ_HOME })).toBe(`alpha@${PROJ_HOME}`)
+  expect(stageSelector({ stage: 'old' })).toBe('old')
+
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => (calls.push([...e.argv]), ran(two)))
+  await run($, '--stage alpha')
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  expect(await ui.find({ key: 'open:alpha/a-w' })).toBeDefined()
+  expect(await ui.find({ key: 'open:alpha · proj/p-w' })).toBeDefined() // `--stage alpha` does not hide the project home's
+  expect(await ui.find({ key: 'open:beta · proj/b-w' })).toBeUndefined()
+  await ui.press({ key: 'view-journal' })
+  expect(await ui.find({ type: 'Text', text: 'project home line' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'default home line' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'beta line' })).toBeUndefined()
+  await ui.press({ key: 'view-summary' })
+  expect(await ui.find({ key: 'q:alpha · proj' })).toBeDefined()
+  expect(await ui.find({ key: 'q:beta · proj' })).toBeUndefined()
+  await ui.unmount()
+  expect(calls.some(c => c.includes('--stage') && c[c.indexOf('--stage') + 1] === 'alpha')).toBe(true)
+})
+
+test('a card is asked for by `name@home`, so its stage is the one that was opened whatever its id is called by the next refresh', async ($, on) => {
+  mock.clock(on)
+  const a = agent({ stage: 'alpha · proj', role: 'p-w', dir_name: 'p-w', stage_name: 'alpha', home: PROJ_HOME, home_label: 'proj' })
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => (calls.push([...e.argv]), ran(e.argv.includes('--feed') ? cardJson(a, []) : snapshot([a], { stages: ['alpha · proj'], multi_home: true }))))
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'open:alpha · proj/p-w' })
+  const feed = calls.find(c => c.includes('--feed'))
+  expect(feed?.[feed.indexOf('--stage') + 1]).toBe(`alpha@${PROJ_HOME}`)
+  await ui.unmount()
+})
+
+test('parseArgs takes a qualified selector without spaces: --stage alpha@proj', async () => {
+  expect(parseArgs('--stage alpha@proj --stage=beta@/work/p worker')).toEqual({ role: 'worker', stages: ['alpha@proj', 'beta@/work/p'], isAll: false })
+  expect(onceArgs(parseArgs('--stage alpha@proj'))).toContain('alpha@proj')
 })

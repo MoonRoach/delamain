@@ -1,6 +1,7 @@
 # Shared helpers for the Delamain test scripts (bash). Source it: . "$(dirname "$0")/lib.sh"
 # Every test runs against a throw-away hub home; nothing here may touch the real one.
 set -u
+. "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"   # first: no test touches the real HOME, ~/agent-hub or the registry of homes
 T="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 B="${BIN:-$(cd "$T/../bin" && pwd)}"
 HOOKS="$(cd "$T/../hooks" && pwd)"
@@ -27,9 +28,6 @@ export CODEX_HOME="$(mktemp -d)"
 # `hub start` / `hub takeover` warn when no settings file turns Claude Code's idle compaction off, which a throw-away
 # environment never does. t_cli_models.sh unsets it.
 export AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1
-# The registry of hub homes (bin/hubcore.py: ${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json) records every home a stage is
-# registered in: a test must neither add its throw-away homes to the real one nor list the real homes in agent-top.
-export XDG_CONFIG_HOME="$(mktemp -d)"
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
 new_home(){ export AGENT_HUB_HOME="$(mktemp -d)"; }

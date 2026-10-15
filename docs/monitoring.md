@@ -32,7 +32,8 @@ Journal (last 5 lines):
 the home the working directory resolves to (a project's `.agent-hub/local/`) and of every other home in the registry of
 homes (`${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json`, filled when a stage is registered; see
 [Where the hub's files live](reference.md#where-the-hubs-files-live)). While stages come from more than one home, one outside
-`~/agent-hub` reads `stage · repo-name` (two stages of one name in two homes are two entries); with one home the picture is
+`~/agent-hub` reads `stage · repo-name` (two stages of one name in two homes are two entries; select one with `--stage name@repo-name`, `/agent-top --stage name@repo-name`);
+with one home the picture is
 what it always was. Only the display spans homes: `tell`, `agent` and `hub` act on the resolved home, and `c` / `m` / `x` in
 the console and the pane's `close` run them in the selected stage's own home.
 

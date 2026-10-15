@@ -29,6 +29,7 @@ import {
   fmtK,
   fmtResetShort,
   idleStages,
+  inStages,
   journalColor,
   levelColor,
   modelLabel,
@@ -560,7 +561,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
 
   // ---------------------------------------------------------------- Journal: time, tag pill, the line coloured by its first word
   function journalView(): RenderChildren[] {
-    const lines = m.shown ? (m.stages.length ? m.shown.journal_tail.filter(l => m.stages.includes(l.stage)) : m.shown.journal_tail) : []
+    const lines = m.shown ? inStages(m.shown.journal_tail, m.stages, m.shown) : []
     if (lines.length === 0) return [t(m.shown ? 'the journal is empty' : 'loading…', { dim: true })]
     const isMulti = new Set(lines.map(l => l.stage)).size > 1
     const tagW = Math.max(3, Math.min(isCompact ? 8 : 12, w - 17, Math.max(4, ...lines.map(l => len(l.tag)))))
@@ -716,7 +717,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
 
     // ---- owner questions: per stage, open count and an OVERDUE pill; the first items
     const qRows: RenderChildren[] = []
-    const qs = Object.entries(s.questions).filter(([st]) => m.stages.length === 0 || m.stages.includes(st))
+    const qs = Object.entries(s.questions).filter(([st]) => inStages([{ stage: st }], m.stages, s).length > 0)
     const stW = Math.min(16, Math.max(6, ...qs.map(([st]) => len(st))))
     for (const [st, q] of qs) {
       const open = `  ${q.open} open  `

@@ -200,6 +200,25 @@ def worktree_git_roots(cwd):
     return [str(p) for p in [*state, common / "objects", *refs]]
 
 
+def prepare_worktree_sandbox(meta, env):
+    """Restore pinned leaf parents outside the sandbox and keep Git maintenance out of it."""
+    roots = [Path(p) for p in meta.get("sandbox_git_roots", [])]
+    common_dirs = [p.parent for p in roots if p.name == "objects"]
+    for common in common_dirs:
+        for root in roots:
+            if any(root.is_relative_to(common / prefix) for prefix in ("refs/heads", "logs/refs/heads")):
+                root.parent.mkdir(parents=True, exist_ok=True)
+    # Append rather than replace: callers can carry safe.directory or other Git overrides.
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+        if count < 0:
+            raise ValueError
+    except ValueError:
+        raise hc.UsageError("GIT_CONFIG_COUNT must be a nonnegative integer") from None
+    env.update({"GIT_CONFIG_COUNT": str(count + 1), f"GIT_CONFIG_KEY_{count}": "maintenance.auto",
+                f"GIT_CONFIG_VALUE_{count}": "false"})
+
+
 def workspace_write_roots(meta):
     policy = meta.get("sandbox_policy") or {}
     if is_review_role(meta):

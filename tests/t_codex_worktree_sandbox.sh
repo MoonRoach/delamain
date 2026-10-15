@@ -96,8 +96,19 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     verify('N1 packed nested refs stay leaf-only with missing parent', lambda: require(
         set(engines.worktree_git_roots(wt)) == expected and branch_roots <= expected and
         not granted(common/'refs/heads/nested/neighbour', expected), 'packed refs widened roots'))
-    # Restore the loose leaf for the spawn/resume controls below.
-    git('update-ref', 'refs/heads/nested/task', git('rev-parse', 'HEAD', cwd=wt), cwd=repo)
+    # Launch must explicitly restore missing parents, without creating a loose ref as a side effect.
+    # Capture configuration at the child boundary without changing the shared CLI fixture.
+    wrapper = base/'codex-config-probe.py'
+    wrapper.write_text('#!/usr/bin/env python3\n' +
+        'import json, os, subprocess, sys\n' +
+        'from pathlib import Path\n' +
+        'if sys.argv[1:] != ["--version"]:\n' +
+        ' with open("git-config-probe.jsonl", "a") as f:\n' +
+        '  f.write(json.dumps({k: subprocess.run(["git", "config", "--get", k], capture_output=True, text=True).stdout.strip() for k in ("maintenance.auto", "test.marker")})+"\\n")\n' +
+        'os.execv(' + repr(os.environ['CODEX_BIN']) + ', [' + repr(os.environ['CODEX_BIN']) + '] + sys.argv[1:])\n')
+    wrapper.chmod(0o755)
+    os.environ['CODEX_BIN'] = str(wrapper)
+    os.environ.update({'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'test.marker', 'GIT_CONFIG_VALUE_0': 'preserved'})
     brief = home/'brief.md'
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,
@@ -106,9 +117,21 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     verify('variant A warns about unsupported rebase',lambda: require(
         executor.stderr.count('rebase is unsupported') == 1 and 'may move HEAD' in executor.stderr,executor.stderr))
     assert 'rebase is unsupported' in (wt/'codex-prompts.log').read_text()
+    verify('M1 spawn restores nested ref parents', lambda: require(
+        (common/'refs/heads/nested').is_dir(), 'spawn left pruned ref parent missing'))
+    # Remove both parents to exercise resume recovery, including a missing reflog directory.
+    import shutil
+    shutil.rmtree(common/'refs/heads/nested', ignore_errors=True)
+    shutil.rmtree(common/'logs/refs/heads/nested')
     git('symbolic-ref', 'HEAD', 'refs/heads/other-branch', cwd=wt)
     run(bins/'agent', 'send', 'executor', 'continue with the same sandbox')
     wait('executor')
+    verify('M1 resume restores pinned ref AND reflog parents after HEAD changed', lambda: require(
+        all((common/p).is_dir() for p in ('refs/heads/nested', 'logs/refs/heads/nested')),
+        'resume left a pinned parent missing'))
+    configs = [json.loads(l) for l in (wt/'git-config-probe.jsonl').read_text().splitlines()]
+    verify('L1 spawn and resume disable auto-maintenance and preserve inherited config', lambda: require(
+        configs == [{'maintenance.auto': 'false', 'test.marker': 'preserved'}] * 2, configs))
     rows = [json.loads(l) for l in (wt/'codex-argv.jsonl').read_text().splitlines()]
     assert len(rows) == 2 and rows[1][:2] == ['exec', 'resume'], rows
     for index,row in enumerate(rows):

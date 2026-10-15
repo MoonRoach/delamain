@@ -4,7 +4,9 @@
 
 - **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
   and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
-  discovery ignores inherited `GIT_*` selectors. The review brief directs Codex temporary copies into its cwd.
+  discovery ignores inherited `GIT_*` selectors. Spawn/resume restores pruned leaf parents outside the sandbox;
+  the child disables automatic Git maintenance to avoid misleading lock errors. The review brief directs Codex
+  temporary copies into its cwd. Existing executors retain their pinned roots: respawn them to apply narrower grants.
 
 - **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
   (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer

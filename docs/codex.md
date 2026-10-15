@@ -204,10 +204,24 @@ For linked Git worktrees, executors additionally receive individual operation-st
 commit/merge messages and pseudorefs), their own logs and common objects.
 `commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
 refs/reflogs are limited to the worktree's initial branch and its lock files. Nested branch names also receive only leaf files, so sibling branches and reflogs stay read-only.
-If pack-refs prunes a leaf's parent directory, branch writes fail closed until that directory is restored outside
-the sandbox; no namespace directory is granted. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+If pack-refs prunes a leaf's parent directory, branch writes fail closed inside the sandbox. Executor spawn/resume
+restores missing parent directories of the pinned ref and reflog leaves outside the sandbox, without granting a
+namespace directory. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
 Git root discovery ignores inherited `GIT_*` environment variables. A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
 `reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
+
+For an already running executor after external pack-refs/gc, restore the parents outside the sandbox. From its
+worktree, replace `<initial-branch>` with the branch pinned at spawn, then run:
+
+```bash
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+ref='refs/heads/<initial-branch>'
+mkdir -p "$common/$(dirname "$ref")" "$common/logs/$(dirname "$ref")"
+```
+
+Workspace-write Codex executors receive `maintenance.auto=false` through their child environment, preserving other
+inherited Git config overrides. Automatic maintenance would otherwise emit a misleading `packed-refs.lock` denial
+after a successful commit; shared maintenance stays outside the sandbox.
 
 These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
 In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
@@ -217,7 +231,7 @@ The sandbox refuses creation of rebase state. In the macOS probe, `--merge` refu
 `--apply` could move HEAD before failing, although the original branch ref stayed unchanged. A fully early refusal
 cannot be guaranteed by this file-root policy; do not run rebase in either mode. Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
 writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
-Git may emit a nonfatal `packed-refs.lock` denial; commits with loose and packed refs were checked.
+Commits with loose and packed refs were checked; explicit maintenance inside the sandbox can still be denied.
 Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
 access; they fail closed rather than receiving the whole Git directory.
 The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.

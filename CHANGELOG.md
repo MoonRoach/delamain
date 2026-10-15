@@ -11,6 +11,17 @@
   supervisor's wait is a `FAILED … (await crashed: …)` line. A stop signal that lands between the command's start and
   the supervisor learning its pid is held and acted on instead of leaving the command running.
 
+- **Headless agents can start without the MCP servers they never use.** A Claude agent loaded every server of the
+  user's config, enabled plugins and claude.ai connectors; on the owner's machine (a dozen servers, eight of them
+  unauthenticated) that is about 3,460 input tokens in every turn's context and about a second of startup per run,
+  measured with two otherwise identical `claude -p` runs (37,470 vs 34,010 first-turn tokens). `agent spawn --mcp none`
+  starts an agent with no MCP server, `--mcp FILE[,FILE]` with only the servers of those MCP config files, and
+  `AGENT_HUB_SPAWN_MCP` (environment, hub home, or a repository's `config.json` for `inherit`/`none`) sets the default.
+  The default stays `inherit`: an agent that relies on a GitLab or database server keeps it; the setup skill offers
+  `none` (and keeps `inherit` under `--defaults`). `none` drops the project's own `.mcp.json` servers too: a repository
+  whose agents need them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice, a headless autopilot successor inherits, and Codex, which has no switch
+  for its plugins' servers, refuses the flag.
+
 - **A kill by name or pattern is refused: it, not the host, killed four agents on 14.10.** Four headless agents and
   Claude Desktop got SIGTERM at 22:56 from one `pkill` run by a fifth agent: `pkill -f "[s]leep 300" -P 1`. macOS (BSD)
   `pkill` reads options only before the first pattern, so `-P` and `1` became two more patterns, and `1` matched

@@ -310,11 +310,32 @@ class PolicyBoundaryTests(unittest.TestCase):
         self.assertTrue(self.denied(self.payload([self.shell("pgrep sleep | xargs kill")],hook="kill_guard")))
         payload["command_projection"].insert(0,{"kind":"location","path":str(self.b)})
         normalized=runtime.normalize_event(payload["event"],payload)
-        self.assertEqual([item["cwd"] for item in normalized["_desktop_commands"]],[str(self.b)]*3)
+        self.assertTrue(normalized["_desktop_commands"])
+        self.assertEqual({item["cwd"] for item in normalized["_desktop_commands"]},{str(self.b)})
         # The original hook currently exposes this switch through environment;
         # its config keys are not registered by hubcore. Preserve that contract.
         payload["env"]["AGENT_HUB_KILL_GUARD"]="off"
         self.assertFalse(self.denied(payload))
+
+    def test_kill_guard_keeps_nested_bridge_body_scopes_separate(self):
+        command="lookup | & { leaf1; $input | leaf2 }"
+        split=command.index("&")
+        slots=[("lookup",0),("leaf1",command.index("leaf1")),("leaf2",command.index("leaf2"))]
+        pipeline={"kind":"pipeline","stages":[{"script":"lookup","start":0,"end":6},
+                   {"script":command[split:],"start":split,"end":len(command)}]}
+        for first,other,sink,denied in (
+                ("pgrep sleep","true # ordinary","xargs kill",True),
+                ("pgrep sleep","true # kill-ok: other body","xargs kill",True),
+                ("pgrep sleep","true # ordinary","xargs kill # kill-ok: owns sink",False),
+                ("pgrep sleep","true # ordinary","pkill -f sleep -P 1 # kill-ok: trap",True),
+                ("pgrep sleep","true # ordinary","cat",False),
+                ("printf 12345","pgrep sleep","xargs kill",False)):
+            with self.subTest(first=first,other=other,sink=sink):
+                payload=self.payload([pipeline,*map(self.shell,(first,other,sink))],hook="kill_guard")
+                payload["event"]["tool_input"]["command"]=command
+                payload["command_replacements"]=[{"kind":"shell","script":body,"start":at,"end":at+len(slot)}
+                    for (slot,at),body in zip(slots,(first,other,sink))]
+                self.assertEqual(self.denied(payload),denied)
 
     def test_explicit_native_comments_preserve_escape_without_cross_bridge_escape(self):
         action = self.shell("git push origin HEAD:main")
@@ -780,6 +801,30 @@ class NativeBridgeTests(unittest.TestCase):
                     self.assertFalse(self.hook(shell,"kill_guard",source))
                 event={"hook_event_name":"PreToolUse","session_id":SID,"cwd":str(self.scratch),
                        "tool_name":"Bash","tool_input":{"command":pair}}
+                disabled=self.invoke(shell,["-Hook","kill_guard"],json.dumps(event),hook=True,
+                                     env={**self.env,"AGENT_HUB_KILL_GUARD":"off"})
+                self.assertEqual(disabled.returncode,0,disabled.stderr)
+                self.assertFalse(disabled.stdout.strip())
+
+    def test_kill_guard_nested_bridge_bodies_keep_stdin_and_escape_scope(self):
+        # Hook-only probes for real $input forwarding through a native stage.
+        def nested(first,other,sink):
+            return self.bridge(first)+" | & { "+self.bridge(other)+"; $input | "+self.bridge(sink)+" }"
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                for command in (nested("pgrep sleep","true # ordinary","xargs kill"),
+                                nested("pgrep sleep","true # kill-ok: other body","xargs kill"),
+                                nested("pgrep sleep","true # ordinary","pkill -f sleep -P 1 # kill-ok: trap"),
+                                nested("printf 12345","pgrep sleep # ordinary","true")+" | "+self.bridge("xargs kill")):
+                    self.assertEqual(self.hook(shell,"kill_guard",command)["hookSpecificOutput"]["permissionDecision"],"deny")
+                for command in (nested("pgrep sleep","true # ordinary","xargs kill # kill-ok: owns sink"),
+                                nested("pgrep sleep","true # ordinary","xargs kill")+" # kill-ok: outer",
+                                nested("pgrep sleep","true # ordinary","cat"),
+                                nested("printf 12345","true # ordinary","cat"),
+                                self.bridge("printf 12345")+" | & { "+self.bridge("pgrep sleep")+"; "+self.bridge("xargs kill")+" }"):
+                    self.assertFalse(self.hook(shell,"kill_guard",command))
+                event={"hook_event_name":"PreToolUse","session_id":SID,"cwd":str(self.scratch),
+                       "tool_name":"Bash","tool_input":{"command":nested("pgrep sleep","true # ordinary","xargs kill")}}
                 disabled=self.invoke(shell,["-Hook","kill_guard"],json.dumps(event),hook=True,
                                      env={**self.env,"AGENT_HUB_KILL_GUARD":"off"})
                 self.assertEqual(disabled.returncode,0,disabled.stderr)

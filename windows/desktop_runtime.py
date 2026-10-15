@@ -173,25 +173,35 @@ def kill_pipeline_views(pipeline: dict, payload: dict) -> list[dict]:
                              end=change["end"] - stage["start"])
                         for change in payload.get("command_replacements", [])
                         if stage["start"] <= change["start"] and change["end"] <= stage["end"]]
-        body = translated_command(stage["script"], replacements)
-        executed = kill_guard.pg.views(kill_guard._drop_ssh(body), True)[0]
-        levels = list(kill_guard._levels(executed))
-        if kill_guard._has_source(upstream):
-            # The original hook scans raw source for its escape marker. Keep
-            # this sink's scope, never an upstream bridge's marker. Commenting
-            # every line prevents quoted display data from becoming an action.
-            scope = "\n".join("# " + line for line in body.splitlines())
-            for level in levels:
-                for pipe in kill_guard._pipelines(level):
-                    start = pipe[0][0]
-                    # A later statement can still read native stdin (notably
-                    # while-read followed by kill). Retain the complete suffix.
-                    suffix = "".join(text + separator for text, separator in level[start:])
-                    result.append({"kind": "shell", "script":
-                                   "pgrep __desktop_pipeline_source__ | " + suffix + "\n" + scope})
-        # ps in one native stage followed by grep in another is also an original
-        # name-lookup source. Retain prior executed stages for its recognizer.
-        upstream.extend(text for level in levels for text, _ in level)
+        # Nested bridge bodies are separate programs even within one native
+        # scriptblock stage. Never inline their comments or escape scopes into
+        # siblings; the native skeleton retains only neutral command names.
+        neutral = [dict(change, kind="argv", argv=["__desktop_bridge_leaf__"])
+                   for change in replacements]
+        bodies = [translated_command(stage["script"], neutral),
+                  *(command_source(change) for change in replacements)]
+        inherited = kill_guard._has_source(upstream)
+        emitted = []
+        for body in bodies:
+            executed = kill_guard.pg.views(kill_guard._drop_ssh(body), True)[0]
+            levels = list(kill_guard._levels(executed))
+            if inherited:
+                # Match the original raw escape regex only in this body's
+                # scope. Commenting each line keeps display data inert.
+                scope = "\n".join("# " + line for line in body.splitlines())
+                for level in levels:
+                    for pipe in kill_guard._pipelines(level):
+                        start = pipe[0][0]
+                        # A later statement can still read native stdin (notably
+                        # while-read followed by kill). Retain the full suffix.
+                        suffix = "".join(text + separator for text, separator in level[start:])
+                        result.append({"kind": "shell", "script":
+                                       "pgrep __desktop_pipeline_source__ | " + suffix + "\n" + scope})
+            emitted.extend(text for level in levels for text, _ in level)
+        # Independent leaves share inherited native stdin, never each other's
+        # output. Their aggregate output is visible to the next native stage,
+        # including ps in one stage followed by grep in a later stage.
+        upstream.extend(emitted)
     return result
 
 

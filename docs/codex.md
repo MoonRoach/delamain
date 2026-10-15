@@ -209,8 +209,9 @@ These file-root boundaries were verified on macOS seatbelt: commit and non-fast-
 In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
 sequencer or rewritten-ref roots are granted. Spawn prints the limitation and includes it in the worker's brief.
 Update the branch with a merge commit from the prepared base ref (for example `git merge origin/main`).
-The sandbox refuses creation of rebase state; the manual probe checks that HEAD and branch refs remain unchanged.
-Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
+The sandbox refuses creation of rebase state. In the macOS probe, `--merge` refused before HEAD changed, but
+`--apply` could move HEAD before failing, although the original branch ref stayed unchanged. A fully early refusal
+cannot be guaranteed by this file-root policy; do not run rebase in either mode. Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
 writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
 Git may emit a nonfatal `packed-refs.lock` denial; commits with loose and packed refs were checked.
 Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory

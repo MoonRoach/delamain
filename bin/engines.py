@@ -162,7 +162,7 @@ WORKTREE_STATE_FILES = (
     "FETCH_HEAD", "FETCH_HEAD.lock",
 )
 WORKTREE_STATE_DIRS = ("logs",)
-WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported; commit and merge are supported. "
+WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported and may move HEAD before failing; commit and merge are supported. "
                          "Update the branch with a merge commit (for example from origin/main).")
 
 

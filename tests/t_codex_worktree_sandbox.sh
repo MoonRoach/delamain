@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
                          'writable_roots': [str(base/'extra')]})
     executor = spawn('executor', wt, '--sandbox-policy', policy)
     verify('variant A warns about unsupported rebase',lambda: require(
-        executor.stderr.count('rebase is unsupported') == 1,executor.stderr))
+        executor.stderr.count('rebase is unsupported') == 1 and 'may move HEAD' in executor.stderr,executor.stderr))
     assert 'rebase is unsupported' in (wt/'codex-prompts.log').read_text()
     git('symbolic-ref', 'HEAD', 'refs/heads/other-branch', cwd=wt)
     run(bins/'agent', 'send', 'executor', 'continue with the same sandbox')
@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
         assert ('cannot write its report or journal' in r.stderr) == (role == 'tagged'), r.stderr
     print('PASS review tags and effective permission mode warn; unrelated roles/writable review stay quiet')
     verify('variant A documents unsupported rebase',lambda: require(
-        'rebase is unsupported' in (bins.parent/'docs/codex.md').read_text(), 'missing rebase policy'))
+        all(t in (bins.parent/'docs/codex.md').read_text() for t in ('rebase is unsupported','--apply','move HEAD')), 'missing rebase policy/backend boundary'))
     verify('L1 alternates trust boundary is documented',lambda: require(
         'objects/info/alternates' in (bins.parent/'docs/codex.md').read_text(), 'missing alternates boundary'))
     assert not failures,failures

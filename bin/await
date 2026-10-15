@@ -99,26 +99,37 @@ def human(secs: float) -> str:
     return f"{s}s" if s < 90 else f"{s // 60}m" if s < 5400 else f"{s // 3600}h{s % 3600 // 60:02d}m"
 
 
-def signal_group(pgid: int, sig: int) -> None:
-    """killpg that treats "nothing left to signal" as success. On macOS the kernel answers EPERM, not ESRCH, when the
-    group's only members are zombies (the leader reaped, a child dying and not yet reaped by init): an unhandled
-    PermissionError here used to take the supervisor down without its journal line."""
+def signal_group(pgid: int, sig: int) -> bool:
+    """killpg; False when the kernel said EPERM, True otherwise (delivered, or ESRCH: nothing there). On macOS EPERM is
+    also the answer when the group's only members are zombies (the leader reaped, a child dying and not yet reaped by
+    init), which is a stopped command; with a live member of another uid it means the signal went nowhere. Either way
+    it must not be a traceback: that took the supervisor down without its journal line. The caller tells the two apart
+    by whether the leader exits."""
     try:
         os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         pass
+    except PermissionError:
+        return False
+    return True
 
 
-def stop_group(proc: subprocess.Popen) -> None:
+def stop_group(proc: subprocess.Popen) -> str:
     """SIGTERM to the command's process group, then, after the grace, SIGKILL to it whatever the leader did: the
-    leader's exit on SIGTERM says nothing about a grandchild that ignores it."""
-    signal_group(proc.pid, signal.SIGTERM)
+    leader's exit on SIGTERM says nothing about a grandchild that ignores it. Returns "" once the leader is gone, else
+    why the command is still running ("EPERM" when a signal was refused, "no exit after SIGKILL"); it never waits for
+    ever."""
+    refused = not signal_group(proc.pid, signal.SIGTERM)
     try:
         proc.wait(timeout=KILL_GRACE_S)
     except subprocess.TimeoutExpired:
         pass
-    signal_group(proc.pid, signal.SIGKILL)
-    proc.wait()
+    refused = not signal_group(proc.pid, signal.SIGKILL) or refused
+    try:
+        proc.wait(timeout=KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        return "EPERM" if refused else "no exit after SIGKILL"
+    return ""
 
 
 def set_signals(handler) -> None:
@@ -156,20 +167,24 @@ def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
         return word, f"exit {rc}, {took}"
     except subprocess.TimeoutExpired:
         set_signals(signal.SIG_IGN)  # a second signal must not cut the cleanup short
-        stop_group(proc)
-        return "TIMEOUT", f"stopped after {args.timeout}, no verdict yet"
+        left = stop_group(proc)
+        return "TIMEOUT", (f"could not be stopped ({left}) after {args.timeout}, no verdict yet" if left
+                           else f"stopped after {args.timeout}, no verdict yet")
     except Interrupted as e:
         set_signals(signal.SIG_IGN)
-        if proc is not None:
-            stop_group(proc)
-        return "FAILED", f"await interrupted by signal {e.signum}" + (", the command was stopped" if proc else "")
+        left = stop_group(proc) if proc is not None else ""
+        return "FAILED", f"await interrupted by signal {e.signum}" + (
+            f", the command could not be stopped ({left})" if left else ", the command was stopped" if proc else "")
     finally:
         set_signals(signal.SIG_IGN)  # the verdict is known: a late signal must not cost the line
 
 
 def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int:
     offset = log.stat().st_size if log.exists() else 0
-    word, detail = run_wait(args, cmd, log, on)
+    try:
+        word, detail = run_wait(args, cmd, log, on)
+    except Exception as e:  # a bug or a signal that slipped past run_wait: the hub still gets its one line
+        word, detail = "FAILED", f"await crashed: {e!r}"
     link = args.link or last_url(log, offset)
     text = f"@{args.to} {word} {args.label}" + (f" — {link}" if link else "") + f" ({detail}, log {log})"
     try:

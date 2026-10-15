@@ -5,8 +5,11 @@
 - **`await` no longer loses its journal line on macOS when it stops the command.** `killpg` on a process group whose
   only members are zombies answers EPERM there (Linux: ESRCH); `await` caught only the second, so a timeout or a
   SIGTERM/SIGINT on the supervisor could end in a traceback (exit 1) and no `TIMEOUT`/`FAILED` line, in about 1% of
-  stops. Both answers now mean "nothing left to signal". A stop signal that lands between the command's start and the
-  supervisor learning its pid is held and acted on instead of leaving the command running.
+  stops. An EPERM is now not an error: the supervisor waits a grace period for the command's leader to exit, and if it
+  does not (a signal the kernel refused, e.g. a process of another user), the line says `could not be stopped (EPERM)`
+  instead of claiming the command was stopped, and the supervisor does not wait for ever. Any other crash of the
+  supervisor's wait is a `FAILED … (await crashed: …)` line. A stop signal that lands between the command's start and
+  the supervisor learning its pid is held and acted on instead of leaving the command running.
 
 ## 1.0.8 — 2026-10-15
 

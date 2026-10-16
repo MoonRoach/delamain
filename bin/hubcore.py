@@ -14,6 +14,7 @@ Python 3.10+ stdlib only.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import fcntl
 import glob
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -176,6 +178,7 @@ def legacy_home() -> Path:
 
 
 _SESSION_CWD: Optional[str] = None
+_LOCAL = threading.local()  # in_home(): the home one thread works in (agent-top reads other homes than the resolved one)
 _HOME_CACHE: dict = {}
 _HOME_WARNED: set = set()
 _STAGE_GUARD = True
@@ -233,6 +236,9 @@ def _exclude_project_home(home: Path) -> None:
 def home(cwd=None) -> Home:
     """The hub home and the layer that chose it (see the order above). `cwd`: the directory whose repository's
     .agent-hub/config.json counts (default: the hook's session directory, else the working directory)."""
+    scoped = getattr(_LOCAL, "home", None)
+    if scoped is not None:
+        return scoped
     raw = os.environ.get(HOME_KEY)
     if raw:
         # absolute: a relative value pinned into a child in another directory would name another home
@@ -278,6 +284,19 @@ def root(cwd=None) -> Path:
     return home(cwd).path
 
 
+@contextlib.contextmanager
+def in_home(path, layer: str = "registry"):
+    """Within the block this thread's home() is `path`, whatever the environment and the working directory say. For a
+    reader of several homes (agent-top walks every known home); no tool that writes uses it, and the resolution order
+    above is untouched for everyone else. Per thread, so a reader's helper thread never changes the main thread's home."""
+    prev = getattr(_LOCAL, "home", None)
+    _LOCAL.home = Home(Path(path), layer, "a known home (registry of homes)")
+    try:
+        yield
+    finally:
+        _LOCAL.home = prev
+
+
 def is_protected(path) -> bool:
     """Whether `path` lies under a directory named .claude, which Claude Code protects from edits."""
     return ".claude" in Path(path).expanduser().parts
@@ -301,6 +320,213 @@ def stage_elsewhere(stage: str) -> Optional[Path]:
         if not under(other, here) and not under(here, other) and (other / stage).is_dir():
             return other
     return None
+
+
+# ---------------------------------------------------------------- registry of homes
+#
+# A project home lives inside an arbitrary repository, so nothing can find it by scanning; a tool that shows what runs on
+# the machine (agent-top) needs a list. One JSON file outside every home: ${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json,
+# {"version": 1, "homes": [{"path", "layer", "repo", "first_seen", "last_seen"}]}. A home is registered when a stage is
+# registered in it (roles_save, `agent spawn`) — not on every hook call — and `last_seen` is refreshed at most once a day,
+# so a call that changes nothing writes nothing. The registry is a convenience: failing to read or write it never fails
+# the calling tool (the current home is always known), and at most one stderr line says so, outside hooks.
+
+REGISTRY_REFRESH_S = 24 * 3600
+_REGISTERED: set = set()
+_REGISTRY_WARNED: set = set()
+
+
+class KnownHome(NamedTuple):
+    path: Path
+    label: str  # "" for ~/agent-hub, the repository's directory name for a project home, else the ~-abbreviated path
+    layer: str
+    repo: Optional[str]  # the main checkout of a project home, else None
+
+
+def registry_path() -> Path:
+    raw = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(raw).expanduser() if raw and os.path.isabs(os.path.expanduser(raw)) else Path.home() / ".config"
+    return base / "delamain" / "homes.json"
+
+
+def real_path(path) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, ValueError, RuntimeError):
+        return str(path)
+
+
+_real = real_path
+
+# How much a registry entry says about where a home came from: a child tool resolves its home from the pinned
+# $AGENT_HUB_HOME (child_env), so the same home is seen as "env" by a child and as "project" by its parent; a
+# registration never replaces a more specific provenance with a less specific one.
+_LAYER_RANK = {"env": 0, "registry": 0, "legacy": 1, "user": 2, "default": 2, "project": 3}
+
+
+def _tilde(path) -> str:
+    p = str(path)
+    h = str(Path.home())
+    return "~" + p[len(h):] if h not in ("", "/") and (p == h or p.startswith(h + "/")) else p
+
+
+def _registry_read() -> tuple:
+    """(entries, state): state is "ok", "absent" or "bad" (unreadable or not the registry's shape)."""
+    try:
+        data = json.loads(registry_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [], "absent"
+    except (OSError, ValueError):
+        return [], "bad"
+    ents = data.get("homes") if isinstance(data, dict) else None
+    if not isinstance(ents, list):
+        return [], "bad"
+    return [e for e in ents if isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]], "ok"
+
+
+def registry_load() -> list:
+    """The registered homes' entries; [] when there is no registry or it cannot be read."""
+    return _registry_read()[0]
+
+
+def _registry_warn(msg: str) -> None:
+    if _STAGE_GUARD and msg not in _REGISTRY_WARNED:  # a hook (stage_guard off) never writes to stderr
+        _REGISTRY_WARNED.add(msg)
+        _warn(msg)
+
+
+def _home_provenance(h: Home) -> tuple:
+    """(layer, repo) of the home `h`: a project home (the layer says so, or the path has the shape of one — a child's
+    pinned $AGENT_HUB_HOME names it) has its main checkout as `repo`."""
+    if h.layer == "project" or (h.path.name == LOCAL_HOME and h.path.parent.name == CONFIG_DIRNAME):
+        return "project", str(h.path.parent.parent)
+    return h.layer, None
+
+
+def _more_specific(layer: str, repo: Optional[str], entry: dict) -> bool:
+    old_layer = entry.get("layer") if isinstance(entry.get("layer"), str) else "env"
+    return _LAYER_RANK.get(layer, 0) > _LAYER_RANK.get(old_layer, 0) or (bool(repo) and not entry.get("repo"))
+
+
+def register_home(h: Optional[Home] = None) -> None:
+    """Record the resolved home (or `h`) in the registry of homes. Once per process; a missing home is dropped on the
+    way; best effort — nothing here raises."""
+    try:
+        h = h or home()
+        path = _real(h.path)
+        if path in _REGISTERED:
+            return
+        _REGISTERED.add(path)
+        ents, state = _registry_read()
+        stamp = now().isoformat(timespec="seconds")
+        if state == "bad":
+            _registry_warn(f"{registry_path()} is unreadable or not a registry of homes: delete it to start a new one "
+                           "(agent-top lists the current home and ~/agent-hub meanwhile)")
+            return
+        layer, repo = _home_provenance(h)
+        if _registry_current(ents, path, layer, repo):
+            return
+        reg = registry_path()
+        with Flock(reg.with_name(reg.name + ".lock")):
+            ents, state = _registry_read()
+            if state == "bad":
+                return
+            keep, found = [], None
+            for e in ents:
+                if _real(e["path"]) == path:
+                    found = e
+                elif Path(e["path"]).is_dir():  # a deleted home is dropped on the next write
+                    keep.append(e)
+            if found is None:
+                found = {"path": path, "layer": layer, "repo": repo, "first_seen": stamp}
+            elif _more_specific(layer, repo, found):   # never downgrade: only a more specific provenance replaces it
+                found.update(layer=layer, repo=repo)
+            found.update(path=path, last_seen=stamp)
+            atomic_write(reg, json.dumps({"version": 1, "homes": keep + [found]}, ensure_ascii=False, indent=1) + "\n")
+    except Exception as e:  # noqa: BLE001 — the registry must never fail the tool that called it
+        try:
+            _registry_warn(f"could not update {registry_path()}: {e}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _registry_current(ents: list, path: str, layer: str, repo: Optional[str]) -> bool:
+    """Whether the registry already says what a registration would write: the home is in it with at least this
+    provenance, seen within a day, and no entry of a deleted home is left to drop."""
+    found = None
+    for e in ents:
+        if _real(e["path"]) == path:
+            found = e
+        elif not Path(e["path"]).is_dir():
+            return False
+    if found is None or _more_specific(layer, repo, found):
+        return False
+    try:
+        seen = dt.datetime.fromisoformat(str(found.get("last_seen")))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=TZ)
+        return 0 <= (now() - seen).total_seconds() < REGISTRY_REFRESH_S
+    except (ValueError, TypeError):
+        return False
+
+
+def known_homes() -> list:
+    """Every hub home on this machine as far as the tools know, as KnownHome in a stable order: the resolved home (even
+    when it does not exist yet), ~/agent-hub, the legacy home and $AGENT_HUB_HOME (each while it exists), then the
+    registered homes whose path still exists; deduplicated by real path."""
+    seen: dict = {}
+
+    def add(path, layer, repo=None, must_exist=True):
+        real = _real(path)
+        if real in seen:   # the same home seen twice: the more specific provenance names it
+            if _more_specific(layer, repo, {"layer": seen[real][1], "repo": seen[real][2]}):
+                seen[real][1:] = [layer, repo]
+            return
+        if must_exist and not Path(real).is_dir():
+            return
+        seen[real] = [Path(path), layer, repo]
+
+    cur = home()
+    add(cur.path, *_home_provenance(cur), must_exist=False)
+    add(user_home(), "default")
+    add(legacy_home(), "legacy")
+    raw = os.environ.get(HOME_KEY)
+    if raw:
+        add(Path(raw).expanduser().absolute(), "env")
+    for e in sorted(registry_load(), key=lambda e: e["path"]):
+        add(e["path"], e.get("layer") if isinstance(e.get("layer"), str) else "env",
+            e.get("repo") if isinstance(e.get("repo"), str) else None)
+    user = _real(user_home())
+    labels = []
+    for real, (path, layer, repo) in seen.items():
+        if real == user:
+            labels.append("")
+        elif repo and Path(repo).name:
+            labels.append(Path(repo).name)
+        else:
+            labels.append(_tilde(path))
+    for i, (real, (path, layer, repo)) in enumerate(seen.items()):
+        if labels[i] and labels.count(labels[i]) > 1:  # two checkouts called alike: the paths tell them apart
+            labels[i] = _tilde(repo or path)
+    return [KnownHome(p, labels[i], layer, repo) for i, (p, layer, repo) in enumerate(seen.values())]
+
+
+def stage_in_known_homes(stage: str) -> list:
+    """The known homes other than the resolved one that have a directory for `stage`."""
+    here = _real(root())
+    return [k for k in known_homes() if _real(k.path) != here and (k.path / stage).is_dir()]
+
+
+def elsewhere_hint(stage: str) -> str:
+    """" — stage S exists in home <path>; …" for a "stage not found" error when a known home has it, else ""."""
+    try:
+        other = stage_in_known_homes(stage)
+    except Exception:  # noqa: BLE001 — a hint never fails the error it decorates
+        return ""
+    if not other:
+        return ""
+    k = other[0]
+    return (f" — stage {stage} exists in home {k.path}; run from that project or set AGENT_HUB_HOME={k.path}")
 
 
 # ---------------------------------------------------------------- configuration
@@ -1724,6 +1950,7 @@ def hub_number(tag) -> Optional[int]:
 
 def roles_save(stage: str, data: dict) -> None:
     atomic_write(roles_path(stage), json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    register_home()  # a stage with a registry makes its home known to agent-top (registry of homes)
 
 
 def roles_lock(stage: str) -> Flock:

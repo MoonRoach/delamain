@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Desktop contracts at actual hub command seams; no native app calls or model requests.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT

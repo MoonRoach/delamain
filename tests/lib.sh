@@ -1,6 +1,7 @@
 # Shared helpers for the Delamain test scripts (bash). Source it: . "$(dirname "$0")/lib.sh"
 # Every test runs against a throw-away hub home; nothing here may touch the real one.
 set -u
+. "$(dirname "${BASH_SOURCE[0]}")/isolate.sh"   # first: no test touches the real HOME, ~/agent-hub or the registry of homes
 . "$(dirname "${BASH_SOURCE[0]}")/temp_dirs.sh"
 T="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 B="${BIN:-$(cd "$T/../bin" && pwd)}"

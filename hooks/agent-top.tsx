@@ -20,6 +20,7 @@ import {
   agentKey,
   capToasts,
   clip,
+  closeTarget,
   countsOf,
   findByRole,
   footerHolds,
@@ -37,6 +38,7 @@ import {
   remember,
   ringTarget,
   sameTarget,
+  stageSelector,
   statusText,
 } from './agent-top-model'
 import type { Agent, Card, CommandArgs, Memory, Snapshot, Target, View } from './agent-top-model'
@@ -86,9 +88,10 @@ let ringKey: string | null = null // the element the ring was last moved onto (u
 let lastControls = '' // the drawn Buttons' keys, in order, at the last drawing
 let edges: { prev: string | null; next: string | null } = { prev: null, next: null } // the agents past the list's window
 // Summary's `close` flow: a first press arms a stage, a second runs `bin/hub close`; one at a time, whatever the stage
-let armed: string | null = null
+let armed: string | null = null // the identity (closeTarget .key) of the armed stage: its home and name, not the id it shows under
+let armedTarget: { name: string; home: string | null } | null = null // what the confirming press runs: taken when armed
 let armTimer: Timer | null = null
-let closing: string | null = null // the stage whose close is running
+let closing: string | null = null // the identity of the stage whose close is running
 let closeNote: { text: string; isError: boolean; isWarn?: boolean } | null = null // its result, drawn in the Stages section
 
 // ---------------------------------------------------------------- data
@@ -111,10 +114,12 @@ async function callCli($: Api, args: string[]): Promise<Called> {
 }
 
 /** `bin/hub <args>` (close only: the module does nothing else with it). The first line of stdout on success, of stderr on a refusal. */
-async function callHub($: Api, args: string[]): Promise<HubCalled> {
+async function callHub($: Api, args: string[], home: string | null = null): Promise<HubCalled> {
   const bin = `${$.plugin.root}/bin/hub`
   try {
-    const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env: { PYTHONDONTWRITEBYTECODE: '1' } })
+    // a stage of another hub home is closed in that home: the tools resolve their own and would not find it
+    const env = { PYTHONDONTWRITEBYTECODE: '1', ...(home ? { AGENT_HUB_HOME: home } : {}) }
+    const r = await $.process.run([bin, ...args], { timeoutMs: CALL_TIMEOUT_MS, env })
     if (r.exitCode === 127) return { ok: false, error: `hub cannot run (${bin})` }
     if (r.exitCode !== 0) return { ok: false, error: firstLine(r.stderr) || firstLine(r.stdout) || `hub exited with ${r.exitCode}` }
     // the summary line; when the hub session still runs it carries the ATTENTION with how to end it, so it is kept long
@@ -192,7 +197,7 @@ async function runOnce($: Api, isForce: boolean): Promise<void> {
   // each answer is drawn as it comes, not after the calls that follow it
   if (plan.extra === 'card' && target) {
     const t = target
-    const c = await callCli($, ['--json', ...(isAll ? ['--all'] : []), '--agent', t.dirName, '--stage', t.stage, '--feed', '30'])
+    const c = await callCli($, ['--json', ...(isAll ? ['--all'] : []), '--agent', t.dirName, '--stage', t.sel ?? t.stage, '--feed', '30'])
     if (c.ok === false && c.isMissing) note(c)
     else if (sameTarget(target, t)) {
       // the card's own failure shows in its feed area (feedNote), not as the pane's error line
@@ -301,8 +306,8 @@ function focusOn($: Api, key: string): void {
   }
 }
 
-function openCard($: Api, a: Pick<Agent, 'stage' | 'dir_name' | 'role'>): Promise<void> {
-  const next = { stage: a.stage, dirName: a.dir_name, role: a.role }
+function openCard($: Api, a: Pick<Agent, 'stage' | 'dir_name' | 'role' | 'stage_name' | 'home'>): Promise<void> {
+  const next = { stage: a.stage, dirName: a.dir_name, role: a.role, sel: stageSelector(a) }
   if (!sameTarget(target, next) || view !== 'card') {
     card = null // another agent's feed is not drawn under this one's title
     cardError = null
@@ -324,36 +329,45 @@ function disarm(): void {
   armTimer?.cancel()
   armTimer = null
   armed = null
+  armedTarget = null
 }
 
-/** The `close` Button of an idle stage: the first press arms it for ARM_MS, the second one runs the close. */
+/**
+ * The `close` Button of an idle stage: the first press arms it for ARM_MS, the second one runs the close. The Button is
+ * known by the stage's identity (its home and name, `closeTarget`), not by the id on it: the id of `alpha` of one home
+ * becomes `alpha · repo` when another home gains an `alpha`, and the Button of the other `alpha` must not inherit the arming.
+ */
 function pressClose($: Api, stage: string): void {
   if (closing !== null) return // one close at a time: presses while one runs are ignored
   ringKey = `close:${stage}` // the ring is on the pressed Button; should it vanish, the drawing moves the ring off it
-  if (armed !== stage) {
+  const t = closeTarget(paneSnap(), stage)
+  if (armed !== t.key) {
     disarm() // another stage armed meanwhile: that one is dropped
-    armed = stage
+    armed = t.key
+    armedTarget = { name: t.name, home: t.home }
     closeNote = null
     armTimer = $.clock.after(ARM_MS, () => {
-      if (armed !== stage) return
+      if (armed !== t.key) return
       armed = null
+      armedTarget = null
       armTimer = null
       $.ui.invalidate('ui.render')
     })
     $.ui.invalidate('ui.render')
     return
   }
+  const run = armedTarget ?? { name: t.name, home: t.home }
   disarm()
-  void closeStage($, stage)
+  void closeStage($, stage, t.key, run)
 }
 
-/** Runs `hub close`, says how it went in the Stages section, and refreshes at once so a closed stage leaves the list. */
-async function closeStage($: Api, stage: string): Promise<void> {
-  closing = stage
+/** Runs `hub close` for the armed stage's own name in its home, says how it went in the Stages section, and refreshes at once so a closed stage leaves the list. */
+async function closeStage($: Api, stage: string, key: string, t: { name: string; home: string | null }): Promise<void> {
+  closing = key
   closeNote = null
   $.ui.invalidate('ui.render')
   try {
-    const c = await callHub($, ['close', '--stage', stage, '--why', CLOSE_WHY])
+    const c = await callHub($, ['close', '--stage', t.name, '--why', CLOSE_WHY], t.home)
     closeNote = c.ok
       ? { text: c.line, isError: false, isWarn: c.line.includes('ATTENTION:') }
       : { text: `${stage}: ${c.error}`, isError: true }
@@ -536,7 +550,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     isOpen = true
     const shown = paneSnap()
-    const agents = shown ? inStages(shown.agents, stages) : []
+    const agents = shown ? inStages(shown.agents, stages, shown) : []
     const model: PaneModel = {
       view,
       cols: Math.max(20, e.props.bodyColumns), // the drawing's own floor: below 20 columns rows are cut by the surface
@@ -555,9 +569,10 @@ export const register: Register = on => {
       isAutoFocus,
       nowMs: shown?.fetchedAt ?? 0,
       // armed only while the stage is still idle: a stage that stopped being so has no Button to confirm on
+      // (the view compares ids: those of the stages that now have the armed or the running identity)
       closing: {
-        armed: armed !== null && shown && idleStages(shown, stages).some(r => r.stage === armed) ? armed : null,
-        running: closing,
+        armed: armed !== null && shown ? (idleStages(shown, stages).find(r => closeTarget(shown, r.stage).key === armed)?.stage ?? null) : null,
+        running: closing !== null && shown ? (shown.stages.find(st => closeTarget(shown, st).key === closing) ?? closing) : closing,
         note: closeNote,
       },
     }

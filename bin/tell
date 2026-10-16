@@ -71,7 +71,7 @@ def holder(stage: str, role: str) -> dict:
         return rec
     why = f"stage {stage!r} has no registry" if not hc.roles_path(stage).is_file() else f"stage {stage!r} has no {role!r} in its registry"
     have = ", ".join(stages_with(role)) or "none"
-    raise hc.Failure(f"{why} ({hc.roles_path(stage)}); stages with a {role!r}: {have}")
+    raise hc.Failure(f"{why} ({hc.roles_path(stage)}); stages with a {role!r}: {have}" + hc.elsewhere_hint(stage))
 
 
 def claude_name(rec: dict) -> str:

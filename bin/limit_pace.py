@@ -190,18 +190,22 @@ def _claude_file(path: Path) -> list:
     return []
 
 
-def claude_samples(home: Optional[Path] = None, now: Optional[float] = None, cache: Optional[_Cache] = None) -> dict:
-    """{"7d": [Sample…], "5h": […]} from the last rate_limit_event of each recently written headless agent's log."""
+def claude_samples(home: Optional[Path] = None, now: Optional[float] = None, cache: Optional[_Cache] = None,
+                   homes: Optional[list] = None) -> dict:
+    """{"7d": [Sample…], "5h": […]} from the last rate_limit_event of each recently written headless agent's log, in
+    `home` (default: the resolved one) or in each of `homes` (the plan's limits are the account's: agent-top reads every
+    known home)."""
     now = time.time() if now is None else now
-    home = home or hc.root()
+    roots = [Path(h) for h in homes] if homes else [home or hc.root()]
     logs = []
-    for p in home.glob("*/agents/*/log.jsonl"):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        if st.st_mtime >= now - LOG_HOURS * 3600:
-            logs.append((st.st_mtime, p, st))
+    for root in dict.fromkeys(roots):
+        for p in root.glob("*/agents/*/log.jsonl"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            if st.st_mtime >= now - LOG_HOURS * 3600:
+                logs.append((st.st_mtime, p, st))
     out: dict = {"7d": [], "5h": []}
     for mtime, path, st in sorted(logs, key=lambda x: x[0], reverse=True)[:LOG_MAX]:
         try:
@@ -261,14 +265,14 @@ def codex_samples(now: Optional[float] = None, cache: Optional[_Cache] = None) -
     return out
 
 
-def read_all(now: Optional[float] = None, cache: Optional[Path] = None) -> dict:
+def read_all(now: Optional[float] = None, cache: Optional[Path] = None, homes: Optional[list] = None) -> dict:
     """{engine: {window: Pace}} for both engines, every window that has samples, and the 7d window always. `cache`
     (agent-top, which runs every few seconds) is a file that keeps what each log held; without it nothing is written,
     so a dry run stays a dry run."""
     now = time.time() if now is None else now
     out = {}
     cache = _Cache(cache) if cache else None
-    for engine, reader in (("claude", lambda: claude_samples(now=now, cache=cache)),
+    for engine, reader in (("claude", lambda: claude_samples(now=now, cache=cache, homes=homes)),
                            ("codex", lambda: codex_samples(now, cache=cache))):
         try:
             series = reader()

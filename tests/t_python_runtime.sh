@@ -1,6 +1,7 @@
 #!/bin/bash
 # Interpreter discovery and hook execution with isolated PATH fixtures.
 set -eu
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 T="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$T/.." <<'PY'
 import importlib.machinery

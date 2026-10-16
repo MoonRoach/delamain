@@ -1,6 +1,7 @@
 #!/bin/bash
 # Standalone lib users clean all mktemp allocations, including on failure.
 set -u
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 T="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$T" <<'PY'
 import os, subprocess, sys, tempfile
@@ -13,7 +14,7 @@ with tempfile.TemporaryDirectory() as outer:
 if [ "$3" = True ]; then
   trap 'printf cleaned > "$4/marker"; test_cleanup' EXIT
 fi
-printf '%s\n' "$CODEX_HOME"
+printf '%s\n' "$CODEX_HOME" "$DELAMAIN_TEST_SANDBOX"
 new_home
 printf '%s\n' "$AGENT_HUB_HOME"
 mkdir -p "$AGENT_HUB_HOME/fixture"
@@ -22,7 +23,7 @@ mktemp
 mktemp "$TMPDIR/explicit.XXXXXX"
 mktemp -d "$TMPDIR/explicit-dir.XXXXXX"
 exit "$2"
-''', 'test-temp', lib, str(status), str(custom), outer], env={**os.environ, 'TMPDIR': outer + '/'}, capture_output=True, text=True)
+''', 'test-temp', lib, str(status), str(custom), outer], env={**{k: v for k, v in os.environ.items() if k != 'DELAMAIN_TEST_SANDBOX'}, 'TMPDIR': outer + '/'}, capture_output=True, text=True)
         assert result.returncode == status, result.returncode
         paths = [Path(p) for p in result.stdout.splitlines()]
         assert all("//" not in str(p) for p in result.stdout.splitlines()), "temporary paths must be normalized"

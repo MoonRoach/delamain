@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
+  per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never
+  appeared in the shared `agent-top`, which listed the resolved home only, though its agents run on the same machine. A
+  project home lives inside an arbitrary repository, so it cannot be found by scanning: the tools now record a home in
+  `${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json` when a stage is registered in it (`roles_save`, `agent spawn`:
+  `roles set`, `hub start`, `hub takeover`, …; atomic, under a lock, at most once a day per home, a missing home dropped on
+  the next write). `agent-top`, `--once`, `--json`, `--widget` and the pane list the stages of the resolved home,
+  `~/agent-hub`, the legacy home, `$AGENT_HUB_HOME` and the registered homes that exist (`hubcore.known_homes()`), each with
+  its own cache; while stages come from more than one home a stage outside `~/agent-hub` is `stage · <repo>`, and two
+  stages of one name in two homes are two entries. `--json` keeps every field and adds `home`, `home_label`, `name` and
+  `stage_name` to the stage and agent records and the top-level `homes` and `multi_home`; with one home the text and
+  widget output are byte-identical to before. The console's `c` / `m` / `x` and the pane's `close` act on the selected
+  stage in its own home. `tell`, `agent`, `hub` still address the resolved home only, but a "no such stage" error now adds
+  *stage S exists in home <path>; run from that project or set `AGENT_HUB_HOME=<path>`*, and the refusal for a stage that
+  lives in `~/agent-hub` or the legacy home is unchanged. A registry that cannot be read or written never fails a tool.
+  A stage is identified by its home and own name, never by the `stage · label` shown (which depends on how many homes have
+  stages): the console's stop/send/close, the pane's `close` and a card are bound to that pair when armed, so another home
+  gaining a stage of the same name cannot redirect a pending confirmation. `--stage` takes `NAME` (every home),
+  `NAME@label` or `NAME@/path` (one home), also in `/agent-top`, whose filter keeps `alpha · repo` for `--stage alpha`. A
+  child tool's registration (its pinned `AGENT_HUB_HOME` reads as `env`) never downgrades a project entry. The limit-pace
+  advice reads a stage's settings in its home and the logs of every home. The Locks list reads the board of every home
+  whose stages are shown (a lock of another home carries its label). `/agent-top --stage "alpha@my repo"` accepts quotes;
+  a label or path may hold `@` or spaces (the name ends at the first `@` or ` · `), and the pane normalises a path selector
+  like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
+  (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
+  Found by @Cartograf666 in #76.
+
 ## 1.0.13 — 2026-10-15
 
 - **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level

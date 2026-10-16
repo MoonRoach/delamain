@@ -28,6 +28,15 @@ Journal (last 5 lines):
 14:00 [hub] @hub-3-builder after the suite, push and open the PR
 ```
 
+`agent-top` shows what runs on this machine, whichever hub home the stage's files live in: the stages of `~/agent-hub`, of
+the home the working directory resolves to (a project's `.agent-hub/local/`) and of every other home in the registry of
+homes (`${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json`, filled when a stage is registered; see
+[Where the hub's files live](reference.md#where-the-hubs-files-live)). While stages come from more than one home, one outside
+`~/agent-hub` reads `stage · repo-name` (two stages of one name in two homes are two entries; select one with `--stage name@repo-name`, `/agent-top --stage name@repo-name`);
+with one home the picture is
+what it always was. Only the display spans homes: `tell`, `agent` and `hub` act on the resolved home, and `c` / `m` / `x` in
+the console and the pane's `close` run them in the selected stage's own home.
+
 Interactively, `agent-top` adds a live feed per agent (thoughts ✎, commands ▸, results ◂), its brief and inbox, the
 journal with a filter, and `m` / `x` to message or stop an agent after a y/N prompt.
 
@@ -50,8 +59,8 @@ Desktop Code tab:
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.
 - **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
-  result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
-  writes one file, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
+  result (the Summary's `close` runs `bin/hub close` for the stage's own name, in its home, as `AGENT_HUB_HOME`). Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
+  writes one file per home it reads, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
   log offsets of the last run, so the next one reads only what the logs gained. `AGENT_TOP_CACHE=0` turns it off.
 - **When data is slow.** Each answer is drawn when it comes. A card whose call failed or took over 60 s says
   `feed unavailable: <reason> · retrying` in its feed area, and the next refresh asks again.

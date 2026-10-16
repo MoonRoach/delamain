@@ -29,12 +29,14 @@ import {
   fmtK,
   fmtResetShort,
   idleStages,
+  inStages,
   journalColor,
   levelColor,
   modelLabel,
   nowText,
   oneLine,
   padEnd,
+  stageCols,
   tagColor,
   taskText,
   turnsLabel,
@@ -403,7 +405,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
 
     // the title line: badge, role, pid and age; the stage on the right
     const who = `${a.alive && a.pid ? ` · pid ${a.pid}` : ''} · ${fmtAge(a.age_s)} ago`
-    const stage = cw >= 40 ? clip(a.stage, 16) : ''
+    const stage = cw >= 40 ? clip(a.stage, stageCols(m.shown)) : ''
     const titleRoom = cw - len(b.label) - 2 - 1 - (stage ? len(stage) + 1 : 0)
     const roleShown = clip(a.role, Math.max(3, Math.min(len(a.role), titleRoom - Math.min(len(who), 8))))
     lines.push(
@@ -559,7 +561,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
 
   // ---------------------------------------------------------------- Journal: time, tag pill, the line coloured by its first word
   function journalView(): RenderChildren[] {
-    const lines = m.shown ? (m.stages.length ? m.shown.journal_tail.filter(l => m.stages.includes(l.stage)) : m.shown.journal_tail) : []
+    const lines = m.shown ? inStages(m.shown.journal_tail, m.stages, m.shown) : []
     if (lines.length === 0) return [t(m.shown ? 'the journal is empty' : 'loading…', { dim: true })]
     const isMulti = new Set(lines.map(l => l.stage)).size > 1
     const tagW = Math.max(3, Math.min(isCompact ? 8 : 12, w - 17, Math.max(4, ...lines.map(l => len(l.tag)))))
@@ -614,7 +616,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     const shownIdle = idle.slice(0, MAX_IDLE_ROWS)
     const shownClosed = closed.slice(0, MAX_CLOSED_ROWS)
     const { armed, running, note } = m.closing
-    const stageW = Math.min(16, Math.max(6, ...shownIdle.map(r => len(r.stage)), ...shownClosed.map(r => len(r.stage))))
+    const stageW = Math.min(stageCols(s), Math.max(6, ...shownIdle.map(r => len(r.stage)), ...shownClosed.map(r => len(r.stage))))
     const buttonW = len('confirm close') + 4 // the widest label: the rest of the row does not move with the press
     const isStacked = sw < 40 // the Button under the name when the row has no room beside it
     const leftRoom = sw - buttonW - 1
@@ -715,7 +717,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
 
     // ---- owner questions: per stage, open count and an OVERDUE pill; the first items
     const qRows: RenderChildren[] = []
-    const qs = Object.entries(s.questions).filter(([st]) => m.stages.length === 0 || m.stages.includes(st))
+    const qs = Object.entries(s.questions).filter(([st]) => inStages([{ stage: st }], m.stages, s).length > 0)
     const stW = Math.min(16, Math.max(6, ...qs.map(([st]) => len(st))))
     for (const [st, q] of qs) {
       const open = `  ${q.open} open  `
@@ -736,7 +738,9 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     const lockRows: RenderChildren[] = []
     s.locks.forEach((lk, i) => {
       const until = lk.until.slice(5, 16).replace('T', ' ')
-      const rest = ` ${lk.repo}  until ${until}  ${lk.owner_name}: ${lk.why}`
+      // while stages come from several homes a lock of another home says whose it is, as a stage does
+      const where = s.multi_home && lk.home_label ? ` (${lk.home_label})` : ''
+      const rest = ` ${lk.repo}${where}  until ${until}  ${lk.owner_name}: ${lk.why}`
       const kind = clip(lk.kind, Math.max(3, Math.floor(sw / 2)))
       lockRows.push(
         row(`lock:${i}`, [

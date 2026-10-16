@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Review M1/M2 controls: synthetic launcher ownership and journal transitions, no models/app APIs.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 R1_BIN="$(cd "$(dirname "$0")/../bin" && pwd)"
 R1_TMP="$(mktemp -d)"
 trap 'rm -rf "$R1_TMP"' EXIT

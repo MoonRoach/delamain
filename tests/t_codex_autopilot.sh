@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Codex successors use a detached fake CLI. No real model requests or owner state.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT

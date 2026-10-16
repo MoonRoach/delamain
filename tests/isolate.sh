@@ -16,6 +16,7 @@ if [ -z "${DELAMAIN_TEST_SANDBOX:-}" ]; then
   DELAMAIN_TEST_SANDBOX="$(TMPDIR=/tmp mktemp -d)"
   export DELAMAIN_TEST_SANDBOX HOME="$DELAMAIN_TEST_SANDBOX/home" XDG_CONFIG_HOME="$DELAMAIN_TEST_SANDBOX/home/.config"
   export AGENT_HUB_HOME="$HOME/hub-home"   # as run_all.sh sets it: inside the sandbox, never the caller's
+  DELAMAIN_TEST_SANDBOX_OWNED=1            # not exported; temp_dirs.sh's test_cleanup removes it (a script without temp_dirs.sh leaves it)
   mkdir -p "$HOME"
 fi
 export TMPDIR="$DELAMAIN_TEST_SANDBOX/tmp"

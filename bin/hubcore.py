@@ -1402,13 +1402,15 @@ def cli_version(path: str, cwd=None, persist: bool = True) -> Optional[tuple]:
 
 def desktop_cli() -> Optional[tuple]:
     """(version, path) of the newest CLI bundled with Claude Desktop on macOS (the directory name is the version);
-    None when there is none."""
+    None when there is none. Both layouts: <version>/claude.app and <version>/<build hash>/claude.app (Desktop since
+    2.1.29x)."""
     base = Path.home() / "Library/Application Support/Claude/claude-code"
     found = []
-    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
-        v = parse_version(d.parents[3].name)
-        if v:
-            found.append((v, str(d)))
+    for pattern in ("*/claude.app/Contents/MacOS/claude", "*/*/claude.app/Contents/MacOS/claude"):
+        for d in base.glob(pattern):
+            v = parse_version(d.relative_to(base).parts[0])
+            if v and os.access(d, os.X_OK):
+                found.append((v, str(d)))
     return max(found) if found else None
 
 
@@ -1955,12 +1957,26 @@ def roles_lock(stage: str) -> Flock:
     return Flock(root() / check_stage(stage) / ".roles.lock")
 
 
+def session_matches(rec: dict, sid: str, host: str = "") -> bool:
+    """Match an explicit session id to a registry record, including a verified Desktop restart.
+
+    An inherited host id alone proves nothing: Desktop must name this CLI session. Keep this read-only and
+    lightweight, since session hooks use it too; callers that refresh the registry own their locks and writes.
+    """
+    if not isinstance(rec, dict) or not isinstance(sid, str) or not sid:
+        return False
+    if sid in (rec.get("session"), rec.get("cli_session_id")):
+        return True
+    return bool(isinstance(host, str) and host.startswith("local_") and rec.get("session") == host
+                and (desktop_session(host) or {}).get("cliSessionId") == sid)
+
+
 def role_for_session(stage: str, sid: str) -> Optional[tuple]:
     """(role, record) whose session or cli session id is sid."""
     if not sid:
         return None
     for name, rec in roles_load(stage).get("roles", {}).items():
-        if sid in (rec.get("session"), rec.get("cli_session_id")):
+        if session_matches(rec, sid):
             return name, rec
     return None
 
@@ -1989,7 +2005,7 @@ def role_for_caller(stage: str) -> Optional[tuple]:
         return None
     for name, rec in roles_load(stage)["roles"].items():
         if rec.get("session") == host:  # the registry first: Desktop's metadata is only read for a candidate
-            if (desktop_session(host) or {}).get("cliSessionId") != sid:
+            if not session_matches(rec, sid, host):
                 return None
             try:
                 with roles_lock(stage):
@@ -1998,7 +2014,7 @@ def role_for_caller(stage: str) -> Optional[tuple]:
                     # matches neither writes nor gets the candidate's tag
                     data = roles_load(stage)
                     now = data["roles"].get(name) or {}
-                    if now.get("session") != host or (desktop_session(host) or {}).get("cliSessionId") != sid:
+                    if now.get("session") != host or not session_matches(now, sid, host):
                         return role_for_session(stage, sid)
                     data["roles"][name]["cli_session_id"] = sid
                     roles_save(stage, data)

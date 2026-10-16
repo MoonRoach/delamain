@@ -51,6 +51,8 @@ LOG_HOURS = 12                # logs and rollouts touched within this many hours
 LOG_MAX = 64                  # at most this many Claude logs ...
 ROLLOUT_MAX = 32              # ... and Codex rollouts, newest first
 TAIL_BYTES = 256_000
+CLAUDE_SCAN_BYTES = 8 * 1024 * 1024  # bounded backwards search for a Claude rate-limit event
+CACHE_PARSER_VERSION = 1      # bump when parsing changes so unchanged logs are read again after an upgrade
 CONTEXT_CAP = "~200k"
 LEVELS = ("ok", "ahead", "exhaust")
 TAG = "pace"                  # the journal tag of the advisor's own lines
@@ -109,8 +111,32 @@ def _tail_lines(path: Path, limit: int = TAIL_BYTES) -> list:
         return f.read(limit).splitlines(keepends=True)
 
 
+def _claude_lines(path: Path):
+    """Complete lines, newest first, reading at most CLAUDE_SCAN_BYTES in fixed chunks.
+
+    Carry the partial leading line into the next chunk; never parse a fragment at the scan boundary.
+    A giant line without a newline costs at most the cap, including when the log is still being written.
+    """
+    with path.open("rb") as f:
+        pos = f.seek(0, 2)
+        start = max(0, pos - CLAUDE_SCAN_BYTES)
+        pending = b""
+        while pos > start:
+            size = min(TAIL_BYTES, pos - start)
+            pos -= size
+            f.seek(pos)
+            lines = (f.read(size) + pending).split(b"\n")
+            pending = lines[0]
+            # The last fragment at EOF is an incomplete line; after the first chunk it is empty.
+            for line in reversed(lines[1:-1]):
+                yield line + b"\n"
+            pending += b"\n" if len(lines) > 1 else b""
+        if pos == 0 and pending.endswith(b"\n"):
+            yield pending
+
+
 class _Cache:
-    """What each log's tail held, by path, size and mtime: a log only grows, so an unchanged one is not read again
+    """What each log's tail held, by path, size, mtime and parser version: a log only grows, so an unchanged one is not read again
     (agent-top --json runs every few seconds). Kept in the file the caller names (agent-top: in its own cache directory);
     entries of files not seen in a read are dropped, so it never grows beyond the recent logs."""
 
@@ -124,7 +150,7 @@ class _Cache:
         self.new: dict = {}
 
     def get(self, path: Path, st, parse):
-        key, stamp = str(path), [st.st_size, st.st_mtime_ns]
+        key, stamp = str(path), [st.st_size, st.st_mtime_ns, CACHE_PARSER_VERSION]
         hit = self.old.get(key)
         if isinstance(hit, list) and len(hit) == 2 and hit[0] == stamp and isinstance(hit[1], list):
             got = hit[1]
@@ -144,7 +170,7 @@ class _Cache:
 
 def _claude_file(path: Path) -> list:
     """[[window, used, resets_at], …] of the log's last rate_limit_event."""
-    for line in reversed(_tail_lines(path)):
+    for line in _claude_lines(path):
         if not line.endswith(b"\n") or b'"rate_limit_event"' not in line:
             continue
         try:

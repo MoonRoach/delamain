@@ -7,7 +7,9 @@ T="$(cd "$(dirname "$0")" && pwd)"; B="$(cd "$T/../bin" && pwd)"
 # TMPDIR before any mktemp: an inherited one may lie inside the real home or hub. The suite's sandbox is made under /tmp
 # (the directory of the logs is the caller's: $1).
 SANDBOX="$(TMPDIR=/tmp mktemp -d)"; mkdir -p "$SANDBOX/tmp"; export TMPDIR="$SANDBOX/tmp"
-OUT="${1:-$(mktemp -d)}"; mkdir -p "$OUT"
+OUT="${1:-$(TMPDIR=/tmp mktemp -d)}"; mkdir -p "$OUT"
+DELAMAIN_TEST_SANDBOX_OWNED=1   # not exported: temp_dirs.sh removes the sandbox on exit, the logs above stay
+. "$T/temp_dirs.sh"
 export HOME="$SANDBOX/home"; mkdir -p "$HOME"; export AGENT_HUB_HOME="$HOME/hub-home"; export XDG_CONFIG_HOME="$HOME/.config" DELAMAIN_TEST_SANDBOX="$SANDBOX"
 # Positive control: the tools honour AGENT_HUB_HOME, and without it they fall back to $HOME/agent-hub — of a throw-away
 # HOME, never the real one; a HOME of its own, run from it (no repository's .agent-hub/ around): a stage in the test
@@ -25,7 +27,7 @@ JOBS="${TEST_JOBS:-$((CPUS * 2 > 8 ? CPUS * 2 : 8))}"
 case "$JOBS" in ''|*[!0-9]*|0) JOBS=8;; esac
 run_one() {  # run_one <script>: its own sandbox, log and exit-code file under $OUT
   t="$1"; name=$(basename "$t" .sh)
-  S=$(mktemp -d); mkdir -p "$S/home" "$S/tmp"
+  S=$(command mktemp -d "$TMPDIR/script.XXXXXX"); mkdir -p "$S/home" "$S/tmp"
   export HOME="$S/home" AGENT_HUB_HOME="$S/home/hub-home" TMPDIR="$S/tmp" XDG_CONFIG_HOME="$S/home/.config" DELAMAIN_TEST_SANDBOX="$S"
   bash "$t" > "$OUT/$name.log" 2>&1; echo $? > "$OUT/$name.rc"
   rm -rf "$S"

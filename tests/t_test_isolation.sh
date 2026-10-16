@@ -68,7 +68,7 @@ EOF2
 check "$(env -u DELAMAIN_TEST_SANDBOX PATH=$S/fakebin:$PATH HOME=$REAL/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "a script started alone makes its temporary directories in its sandbox, not under an inherited TMPDIR"
 check "$(env DELAMAIN_TEST_SANDBOX=$SB PATH=$S/fakebin:$PATH HOME=$SB/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "…and so does one run by run_all.sh"
 # the suite's bootstrap: a copy of run_all.sh over one probe test, with the caller's TMPDIR pointing at a "real" place
-mkdir -p $S/suite/tests $S/suite/bin; cp $T/run_all.sh $T/isolate.sh $S/suite/tests/; cp $T/../bin/jlog $T/../bin/hubcore.py $S/suite/bin/
+mkdir -p $S/suite/tests $S/suite/bin; cp $T/run_all.sh $T/isolate.sh $T/temp_dirs.sh $S/suite/tests/; cp $T/../bin/jlog $T/../bin/hubcore.py $S/suite/bin/
 printf '#!/bin/bash\n. "$(dirname "$0")/isolate.sh"\nmktemp -d > /dev/null\necho "PASS probe"\n' > $S/suite/tests/t_probe.sh
 (cd $S && env -u DELAMAIN_TEST_SANDBOX PATH=$S/fakebin:$PATH TMPDIR=$REAL/tmp bash $S/suite/tests/run_all.sh $S/out > $S/suite.out 2>&1)
 check "$(find $REAL/tmp | wc -l | tr -d ' ')" 1 "the suite's bootstrap (HOME, sandboxes, logs' scratch) allocates nothing under an inherited TMPDIR"

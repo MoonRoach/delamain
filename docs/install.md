@@ -53,6 +53,9 @@ Paths with spaces are supported. Nothing is downloaded or installed.
 Use `--min-version 3.11` before the script for Codex tools. Native Codex hooks use this minimum automatically;
 the Claude hook manifest and direct CLI shebangs remain unchanged and still use `python3` on `PATH`.
 An agent's exit journal uses the interpreter that launched `agent`, even if the child's `PATH` differs.
+A detached `agent` writes its exit line to the journal with that same interpreter. If the interpreter is removed
+while the worker runs (for example a Homebrew major upgrade followed by `brew cleanup`, or a deleted venv), the
+journal line is lost, while the worker's exit code is still propagated.
 
 ### What installing changes
 

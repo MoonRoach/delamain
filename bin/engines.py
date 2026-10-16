@@ -168,12 +168,14 @@ WORKTREE_SANDBOX_NOTE = ("Codex workspace-write worktree: rebase is unsupported 
 
 def worktree_git_roots(cwd):
     """Grant operation state and this branch's refs, leaving Git config/pointers read-only."""
+    # Discover cwd's repository, never a repository selected by the hub's Git environment.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
-            cwd=cwd, capture_output=True, text=True, timeout=5)
+            cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
         branch = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
-                                cwd=cwd, capture_output=True, text=True, timeout=5)
+                                cwd=cwd, env=env, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return []
     paths = result.stdout.strip().splitlines()
@@ -190,16 +192,27 @@ def worktree_git_roots(cwd):
         name = branch.stdout.strip()
         if not name.startswith("refs/heads/") or any(p in (".", "..") for p in Path(name).parts):
             raise hc.UsageError("cannot grant sandbox roots for an invalid worktree branch")
-        if len(Path(name).parts) > 3:
-            # pack-refs prunes empty namespace directories; allow recreating the first one.
-            namespace = Path(*Path(name).parts[:3])
-            refs = [common / namespace, common / "logs" / namespace]
-        else:
-            ref = common / name
-            log = common / "logs" / name
-            refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
+        # Keep leaf grants even if pack-refs prunes the parent: fail closed, never widen.
+        ref = common / name
+        log = common / "logs" / name
+        refs = [ref, Path(str(ref) + ".lock"), log, Path(str(log) + ".lock")]
     state = [gitdir / name for name in (*WORKTREE_STATE_FILES, *WORKTREE_STATE_DIRS)]
     return [str(p) for p in [*state, common / "objects", *refs]]
+
+
+def prepare_worktree_sandbox(meta, env):
+    """Restore pinned leaf parents outside the sandbox and keep Git maintenance out of it."""
+    roots = [Path(p) for p in meta.get("sandbox_git_roots", [])]
+    common_dirs = [p.parent for p in roots if p.name == "objects"]
+    for common in common_dirs:
+        for root in roots:
+            if any(root.is_relative_to(common / prefix) for prefix in ("refs/heads", "logs/refs/heads")):
+                root.parent.mkdir(parents=True, exist_ok=True)
+    # Git's quoted -c transport survives Codex's default *KEY* environment exclusion.
+    # Preserve inherited parameters verbatim; the final value overrides earlier maintenance settings.
+    inherited = env.get("GIT_CONFIG_PARAMETERS", "")
+    env["GIT_CONFIG_PARAMETERS"] = (inherited + " " if inherited else "") + "'maintenance.auto=false'"
+
 
 
 def workspace_write_roots(meta):

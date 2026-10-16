@@ -8,7 +8,7 @@ R=$AGENT_HUB_HOME; W=$R/w; mkdir -p $W; echo "brief: send race, the code word is
 M=$R/stage-a/agents
 meta(){ python3 -c "import json,sys;m=json.load(open(sys.argv[1]));print(eval(sys.argv[2]))" $M/$1/meta.json "$2"; }
 wait_gone(){ for i in $(seq 1 40); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.25; done; return 1; }
-trap 'for r in s1 s2; do $B/agent stop $r >/dev/null 2>&1; done' EXIT
+trap 'for r in s1 s2; do $B/agent stop $r >/dev/null 2>&1; done; test_cleanup' EXIT
 
 # 1. a message B queued while send A's resume waits for init survives A's save of the meta
 FAKE_HOLD=60 $B/agent spawn --role s1 --cwd $W --model haiku --brief $W/b.md > $R/sp1.out 2>&1; check $? 0 "spawn s1"

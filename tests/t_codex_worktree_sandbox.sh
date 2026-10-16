@@ -59,7 +59,8 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     common = repo/'.git'
     gitdir = Path(git('rev-parse', '--absolute-git-dir', cwd=wt))
     required = {str(home), str(common/'objects')}
-    branch_roots = {str(common/'refs/heads/nested'), str(common/'logs/refs/heads/nested')}
+    branch_roots = {str(common/p) for p in ('refs/heads/nested/task', 'refs/heads/nested/task.lock',
+                                          'logs/refs/heads/nested/task', 'logs/refs/heads/nested/task.lock')}
     forbidden = {str(gitdir), str(common), str(repo), str(common/'refs/heads'),
                  str(common/'logs/refs/heads'), str(common/'packed-refs'), str(common/'packed-refs.lock')}
     state_files = {'HEAD', 'HEAD.lock', 'ORIG_HEAD', 'ORIG_HEAD.lock', 'index', 'index.lock', 'COMMIT_EDITMSG',
@@ -74,6 +75,47 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
             path=Path(root)
             if path.is_relative_to(gitdir):
                 assert str(path.relative_to(gitdir)) in state_files|state_dirs,root
+    sys.path.insert(0, str(bins))
+    import engines
+    from unittest.mock import patch
+    expected = set(engines.worktree_git_roots(wt))
+    # A namespace grant would include a neighbour even when no explicit neighbour root appears.
+    def granted(path, rs):
+        return any(path == Path(root) or Path(root) in path.parents for root in rs)
+    verify('N1 nested refs grant leaf files without sibling branches or reflogs', lambda: require(
+        branch_roots <= expected and
+        not any(granted(common/p, expected) for p in
+                ('refs/heads/nested/neighbour', 'logs/refs/heads/nested/neighbour')), expected))
+    with patch.dict(os.environ, {'GIT_DIR': str(common), 'GIT_COMMON_DIR': str(common),
+                                 'GIT_WORK_TREE': str(repo), 'GIT_NAMESPACE': 'foreign'}):
+        verify('L3 Git discovery ignores inherited repository selectors', lambda: require(
+            set(engines.worktree_git_roots(wt)) == expected, 'inherited Git environment changed roots'))
+    # Git prunes empty nested ref directories; the recalculated policy must never widen.
+    git('pack-refs', '--all', '--prune', cwd=repo)
+    assert not (common/'refs/heads/nested').exists()
+    verify('N1 packed nested refs stay leaf-only with missing parent', lambda: require(
+        set(engines.worktree_git_roots(wt)) == expected and branch_roots <= expected and
+        not granted(common/'refs/heads/nested/neighbour', expected), 'packed refs widened roots'))
+    child_config = {'GIT_CONFIG_PARAMETERS': "'test.marker=preserved with spaces'"}
+    engines.prepare_worktree_sandbox({}, child_config)
+    verify('H1 Git config transport survives default Codex secret-name exclusions', lambda: require(
+        not any(word in key.upper() for key in child_config for word in ('KEY', 'SECRET', 'TOKEN')) and
+        child_config['GIT_CONFIG_PARAMETERS'].startswith("'test.marker=preserved with spaces' "),
+        'Git config transport uses an excluded name or overwrites inherited parameters'))
+    # Launch must explicitly restore missing parents, without creating a loose ref as a side effect.
+    # Capture configuration at the child boundary without changing the shared CLI fixture.
+    wrapper = base/'codex-config-probe.py'
+    wrapper.write_text('#!/usr/bin/env python3\n' +
+        'import json, os, subprocess, sys\n' +
+        'from pathlib import Path\n' +
+        'child_env = {k:v for k,v in os.environ.items() if not any(w in k.upper() for w in ("KEY", "SECRET", "TOKEN"))}\n' +
+        'if sys.argv[1:] != ["--version"]:\n' +
+        ' with open("git-config-probe.jsonl", "a") as f:\n' +
+        '  f.write(json.dumps({k: subprocess.run(["git", "config", "--get", k], capture_output=True, text=True, env=child_env).stdout.strip() for k in ("maintenance.auto", "test.marker")})+"\\n")\n' +
+        'os.execv(' + repr(os.environ['CODEX_BIN']) + ', [' + repr(os.environ['CODEX_BIN']) + '] + sys.argv[1:])\n')
+    wrapper.chmod(0o755)
+    os.environ['CODEX_BIN'] = str(wrapper)
+    os.environ['GIT_CONFIG_PARAMETERS'] = "'test.marker=preserved with spaces'"
     brief = home/'brief.md'
     brief.write_text('Read the repository and report findings.\n')
     policy = json.dumps({'type': 'workspace-write', 'network_access': False,
@@ -82,9 +124,21 @@ with tempfile.TemporaryDirectory(prefix='delamain git roots ') as tmp:
     verify('variant A warns about unsupported rebase',lambda: require(
         executor.stderr.count('rebase is unsupported') == 1 and 'may move HEAD' in executor.stderr,executor.stderr))
     assert 'rebase is unsupported' in (wt/'codex-prompts.log').read_text()
+    verify('M1 spawn restores nested ref parents', lambda: require(
+        (common/'refs/heads/nested').is_dir(), 'spawn left pruned ref parent missing'))
+    # Remove both parents to exercise resume recovery, including a missing reflog directory.
+    import shutil
+    shutil.rmtree(common/'refs/heads/nested', ignore_errors=True)
+    shutil.rmtree(common/'logs/refs/heads/nested')
     git('symbolic-ref', 'HEAD', 'refs/heads/other-branch', cwd=wt)
     run(bins/'agent', 'send', 'executor', 'continue with the same sandbox')
     wait('executor')
+    verify('M1 resume restores pinned ref AND reflog parents after HEAD changed', lambda: require(
+        all((common/p).is_dir() for p in ('refs/heads/nested', 'logs/refs/heads/nested')),
+        'resume left a pinned parent missing'))
+    configs = [json.loads(l) for l in (wt/'git-config-probe.jsonl').read_text().splitlines()]
+    verify('L1 spawn and resume disable auto-maintenance and preserve inherited config', lambda: require(
+        configs == [{'maintenance.auto': 'false', 'test.marker': 'preserved with spaces'}] * 2, configs))
     rows = [json.loads(l) for l in (wt/'codex-argv.jsonl').read_text().splitlines()]
     assert len(rows) == 2 and rows[1][:2] == ['exec', 'resume'], rows
     for index,row in enumerate(rows):

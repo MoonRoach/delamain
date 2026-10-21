@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **New skill `progress-report`: a one-page infographic status of a stage, phase or project.** Asked for “a status
+  with an infographic”, a hub builds a page from the bundled template: the headline count by the scope's own definition
+  of done (`done_means`: on production, merged and tagged, ticked in the phase checklist, accepted by the owner), the
+  change since the previous report (computed from its saved JSON, so a grown scope does not read as regression), figures
+  typed by hand each with its source, a segmented bar over seven statuses (done, awaiting check, in progress, not
+  started, waiting on others, needs decision, unverified; dropped is excluded) that can be switched off for
+  measurements and incident windows, a card per track, the road to the end and notes on gaps in the plan. The agent
+  fills only a JSON block; counts and percentages are computed. The skill first decides whether a few lines of text are
+  the better answer (a short deadline, a hub as the reader, a small or closed stage), works for many MRs or one MR per
+  phase, a tracker, a checklist or no code at all, and delivers where the reader is: a private Artifact for the owner,
+  a screenshot or markdown for an issue or chat, the self-contained HTML file otherwise, asking the owner before any
+  hosted copy of money, personal data or production topology.
+
 ## 1.0.14 — 2026-10-21
 
 - **A bundled reviewer skill: Gemini 4 Argon through Antigravity CLI.** `delamain:agy-review` and `bin/agy-review`

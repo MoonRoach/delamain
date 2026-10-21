@@ -22,10 +22,11 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
       `[pace] @hub LIMIT …` line per stage with a hub, once per window and level; the owner is notified once per window
       when it runs out before the reset. AGENT_HUB_LIMIT_PACE=off turns it off
   R7  the `claude --bg` session of a hub that is retired in its stage and live nowhere on the machine (no live role of any
-      stage of any known hub home, not a pending successor, not named by a running `hub takeover`), quiet for the wake-after
-      time (at least 15 min; transcript, sub-agent writes and process start count) → `claude stop` (never `claude rm`: the
-      history stays resumable with `claude attach <id>` or `claude --bg --resume <id>`); anything unreadable in any home
-      stops nothing; AGENT_HUB_WATCHDOG_REAP off turns it off (per home)
+      stage of any known hub home, not a pending successor, not named by a running `hub takeover`), idle (status idle, state
+      done, no shell child) and quiet for the wake-after time (at least 15 min; transcript, sub-agent writes and the actual
+      start of its process count) → `claude stop` (never `claude rm`: the history stays resumable with `claude attach <id>`
+      or `claude --bg --resume <id>`). A quiet one that is busy or blocked is only reported, once a day: stop it by hand.
+      Anything unreadable or unknown stops nothing; AGENT_HUB_WATCHDOG_REAP off turns it off (per home)
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
@@ -37,7 +38,8 @@ AGENT_HUB_SPAWN_HOLD_LOAD (empty = off), AGENT_HUB_SPAWN_HOLD (warn|refuse).
 What leaves the machine: the stage name, minutes, counts and the event word (R6: the engine's name). Never line text,
 session ids, tags, paths.
 Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick; AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]
-replaces the measured load; AGENT_HUB_WATCHDOG_STOP_WAIT=<seconds> replaces the 30 s that a stopped hub may take to exit.
+replaces the measured load; AGENT_HUB_WATCHDOG_STOP_WAIT=<seconds> replaces the 30 s that a stopped hub may take to exit;
+AGENT_HUB_WATCHDOG_SCAN_CAP=<n> replaces the 50000 entries of a session's directory that R7 looks at.
 Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -55,6 +57,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -1083,6 +1086,8 @@ class ReapAbort(Exception):
 
 REAP_MIN_QUIET = dt.timedelta(minutes=15)  # the least R7 waits whatever WAKE_AFTER says: a foreground tool call ends within the Bash cap of 10 min
 TAKEOVER_MAX_AGE = dt.timedelta(hours=6)   # a takeover marker older than this is the left-over of a killed command
+SCAN_CAP = 50000                           # entries of a session's own directory that are looked at; more: its activity is unknown
+SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh")  # a child of this kind is a Bash tool call or a background task
 
 
 def same_session(a: str, b: str) -> bool:
@@ -1110,13 +1115,12 @@ def read_json_strict(path: Path):
 
 
 def reap_homes() -> list:
-    """Every hub home R7 looks into, the watchdog's own first: the machine's known homes (hc.known_homes(): ~/agent-hub, the
-    legacy home, $AGENT_HUB_HOME and the registry of homes). A session retired as a hub in one home may be a live role or a
-    pending successor in another. Raises ReapAbort when the registry of homes cannot be read (a home might be missing)."""
-    if not hc.registry_readable():
-        raise ReapAbort(f"{hc.registry_path()} is not readable as a registry of homes")
+    """Every hub home R7 looks into, the watchdog's own first: the machine's known homes (hc.known_home_paths_strict(): ~/agent-hub,
+    the legacy home, $AGENT_HUB_HOME and the registry of homes, every path looked at with stat()). A session retired as a hub in
+    one home may be a live role or a pending successor in another. Raises ReapAbort when the registry of homes cannot be read or
+    a registered path exists but cannot be accessed (a home might be missing from the picture)."""
     try:
-        homes = [Path(k.path) for k in hc.known_homes()]
+        homes = [Path(h) for h in hc.known_home_paths_strict()]
     except Exception as e:  # noqa: BLE001 — a list of homes that cannot be made is a reason to stop nothing
         raise ReapAbort(f"the hub homes cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
     own = hc.root()
@@ -1126,12 +1130,22 @@ def reap_homes() -> list:
 def home_stage_names(home: Path) -> list:
     """Every stage directory of a home, open or closed. A home that cannot be listed raises ReapAbort (stage_names() would
     answer "no stages")."""
+    names = []
     try:
-        return sorted(p.name for p in home.iterdir() if hc.STAGE_RE.fullmatch(p.name) and p.is_dir())
+        with os.scandir(home) as it:
+            for e in it:
+                if not hc.STAGE_RE.fullmatch(e.name):
+                    continue
+                try:
+                    if stat.S_ISDIR(e.stat().st_mode):  # Path.is_dir() would answer False to a stat that fails
+                        names.append(e.name)
+                except FileNotFoundError:
+                    continue
     except FileNotFoundError:
         return []
     except OSError as e:
         raise ReapAbort(f"{home} cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
+    return sorted(names)
 
 
 def home_reap_off(home: Path) -> bool:
@@ -1187,11 +1201,14 @@ def read_stage(home: Path, stage: str, now: dt.datetime) -> tuple:
         pend_ids = session_ids(pend.get("id"), pend.get("bg_id"), pend.get("actual_thread_id"))
     marks = []
     try:
-        markers = sorted(d.glob(".takeover-*.json"))
+        with os.scandir(d) as it:
+            markers = sorted(e.path for e in it if e.name.startswith(".takeover-") and e.name.endswith(".json"))
+    except FileNotFoundError:
+        markers = []
     except OSError as e:
         raise ReapAbort(f"{d} cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
     for m in markers:
-        marks += marker_sessions(m, now)
+        marks += marker_sessions(Path(m), now)
     return data, pend_ids, marks
 
 
@@ -1242,13 +1259,147 @@ def retired_hub_of(row: dict):
     return None
 
 
+class Unknown(Exception):
+    """What a session did last cannot be established: R7 leaves the session alone."""
+
+
+def reap_enabled() -> bool:
+    """AGENT_HUB_WATCHDOG_REAP of the watchdog's own home, read fresh (not through the cached hc.setting()) and strictly: the
+    environment first, else the home's config.json, whose being unreadable or malformed raises ReapAbort. Default on."""
+    env = os.environ.get("AGENT_HUB_WATCHDOG_REAP")
+    if env:
+        return hc.truthy(env)
+    return not home_reap_off(hc.root())
+
+
+def read_procs():
+    """{pid: (ppid, start, command)} of every process from one `ps` (the actual start of a process, in the hub time zone), or
+    None when `ps` cannot be run or understood."""
+    try:
+        res = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart=,comm="], capture_output=True, text=True, timeout=20,
+                             env={**os.environ, "LC_ALL": "C"}, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    out = {}
+    for line in res.stdout.splitlines():
+        parts = line.split(None, 7)
+        if len(parts) < 8:
+            continue
+        try:
+            started = time.mktime(time.strptime(" ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"))
+            out[int(parts[0])] = (int(parts[1]), dt.datetime.fromtimestamp(started, hc.TZ), parts[7].strip())
+        except (ValueError, OverflowError, OSError):
+            continue
+    return out or None
+
+
+def scan_cap() -> int:
+    try:
+        return max(1, int(os.environ.get("AGENT_HUB_WATCHDOG_SCAN_CAP", "")))
+    except ValueError:
+        return SCAN_CAP
+
+
+def tree_mtimes(path: str) -> list:
+    """Modification times (epoch) of a session's own directory <project>/<session>/ and of every file and directory in it:
+    its `subagents/` first, then the whole tree (a directory's own time does not move when a file inside it is appended to,
+    so every file is looked at). A directory that does not exist has nothing. Raises Unknown when anything cannot be listed or
+    looked at (an entry that vanished meanwhile apart) or the tree has more than SCAN_CAP entries: a partial scan says nothing."""
+    cap, seen, out = scan_cap(), 0, []
+    todo, done = [os.path.join(path, "subagents"), path], set()
+    while todo:
+        d = todo.pop(0)
+        if d in done:
+            continue
+        done.add(d)
+        try:
+            out.append(os.stat(d).st_mtime)
+            with os.scandir(d) as it:
+                for e in it:
+                    seen += 1
+                    if seen > cap:
+                        raise Unknown(f"{path} has more than {cap} entries")
+                    try:
+                        out.append(e.stat().st_mtime)
+                        if e.is_dir(follow_symlinks=False):
+                            todo.append(e.path)
+                    except FileNotFoundError:
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as e:
+            raise Unknown(f"{d} cannot be read ({type(e).__name__})") from None
+    return out
+
+
+def transcript_times(sid: str) -> tuple:
+    """(number of transcripts of the session found, [modification times (epoch) of them and of everything under their
+    session directories]) over every project directory of the Claude config (a resumed session may continue in another).
+    Raises Unknown on any failure to list or look."""
+    projects, found, times = session_effort.claude_home() / "projects", 0, []
+    try:
+        with os.scandir(projects) as it:
+            dirs = sorted(e.path for e in it if e.is_dir())
+    except FileNotFoundError:
+        return 0, []
+    except OSError as e:
+        raise Unknown(f"{projects} cannot be listed ({type(e).__name__})") from None
+    for d in dirs:
+        try:
+            times.append(os.stat(os.path.join(d, sid + ".jsonl")).st_mtime)
+            found += 1
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError as e:
+            raise Unknown(f"{d} cannot be looked at ({type(e).__name__})") from None
+        times += tree_mtimes(os.path.join(d, sid))
+    return found, times
+
+
+def last_activity(row: dict, procs: dict):
+    """When the background session of a row last did anything: the newest of its transcript's last write, the writes under
+    its session directory (a running sub-agent's transcript, tool results) and the actual start of the process that the row
+    names (a session resumed a minute ago and left idle is not quiet; the optional `startedAt` of the row is not used). None
+    when any of it is unknown: no transcript found (it may be kept under another CLAUDE_CONFIG_DIR), a scan that failed or was
+    cut short, a process that is not in the process table."""
+    sid, pid = (row.get("sessionId") or "").strip(), row.get("pid")
+    if not sid or isinstance(pid, bool) or not isinstance(pid, int) or pid not in procs:
+        return None
+    try:
+        found, times = transcript_times(sid)
+    except Unknown:
+        return None
+    if not found:
+        return None
+    try:
+        return max([procs[pid][1]] + [dt.datetime.fromtimestamp(t, hc.TZ) for t in times])
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def busy_reason(row: dict, procs: dict) -> str:
+    """Why the session of a row may be working or waiting, "" when nothing says so. Only an `idle` status with a `done`
+    state is quiet: busy, working, blocked, waiting, running, a missing or any other value protects the session, and so does
+    a shell among the direct children of its process (a Bash tool call or a background task in flight). The other children,
+    MCP servers, stay: every session has them, started minutes after the session itself."""
+    status, state = row.get("status"), row.get("state")
+    if status != "idle" or state != "done":
+        return f"{status or '?'}/{state or '?'}"
+    pid = row.get("pid")
+    if any(ppid == pid and os.path.basename(cmd).lstrip("-") in SHELLS for ppid, _, cmd in procs.values()):
+        return "running a shell command"
+    return ""
+
+
 def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
     """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called
     right before `claude stop`, which is addressed by the 8-character id: a fresh `claude agents --json` (not the tick's
-    cache) must list exactly one row with that id, still a running background session with the same full sessionId that has
-    not written anything since it was chosen (the owner may have resumed it meanwhile), and no protected id (a live role of
-    any stage of any home, a pending successor, a running takeover; full or short) may share the 8-character prefix. Raises
-    ReapAbort when a registry cannot be read."""
+    cache) must list exactly one row with that id, still a running background session with the same full sessionId and the
+    same process, idle and done, with no shell child and no write since it was chosen (the owner may have resumed it
+    meanwhile), and no protected id (a live role of any stage of any home, a pending successor, a running takeover; full or
+    short) may share the 8-character prefix. Raises ReapAbort when a registry cannot be read."""
     short = (row.get("id") or (row.get("sessionId") or "")[:8]).strip()
     fresh = autopilot.list_agents(cli.path, cwd)
     if fresh is None:
@@ -1257,76 +1408,55 @@ def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
     if len(same_id) != 1:
         return f"{len(same_id)} listed sessions have the id {short}", False
     seen = same_id[0]
-    if seen.get("kind") != "background" or not seen.get("pid") or (seen.get("sessionId") or "") != (row.get("sessionId") or ""):
+    if (seen.get("kind") != "background" or not seen.get("pid") or seen.get("pid") != row.get("pid")
+            or (seen.get("sessionId") or "") != (row.get("sessionId") or "")):
         return f"the session listed as {short} is not the one that was chosen", False
-    last = last_activity(seen)
+    procs = read_procs()
+    if procs is None:
+        return "`ps` failed just before the stop", True
+    if busy_reason(seen, procs):
+        return f"the session {short} is {busy_reason(seen, procs)} now", False
+    last = last_activity(seen, procs)
     if last is None or now - last < need:
-        return f"the session {short} wrote something since it was chosen", False
+        return f"the session {short} wrote something since it was chosen, or what it did cannot be told", False
     if any(p[:8] == short for p in reap_registry()[1]):
         return f"a live role, a pending successor or a running takeover shares the id {short}", False
     return None
 
 
-def tree_mtimes(path: Path, cap: int = 500) -> list:
-    """The modification times of a directory, of its entries and of the entries of its subdirectories, at most `cap` of
-    them: what a session writes outside its transcript (a running sub-agent's transcript, tool results)."""
-    out, seen, todo = [], 0, [(path, 0)]
-    while todo and seen < cap:
-        d, depth = todo.pop()
-        try:
-            out.append(os.stat(d).st_mtime)
-            with os.scandir(d) as it:
-                for e in it:
-                    seen += 1
-                    try:
-                        out.append(e.stat().st_mtime)
-                        if depth < 1 and e.is_dir(follow_symlinks=False):
-                            todo.append((Path(e.path), depth + 1))
-                    except OSError:
-                        continue
-                    if seen >= cap:
-                        break
-        except OSError:
-            continue
-    return [dt.datetime.fromtimestamp(m, hc.TZ) for m in out]
+def span(delta: dt.timedelta) -> str:
+    mins = max(0, int(delta.total_seconds() // 60))
+    return f"{mins} min" if mins < 120 else f"{mins // 60} h {mins % 60} min"
 
 
-def last_activity(row: dict):
-    """When the background session of a row last did anything: the newest of its transcript's last write (every project
-    directory holding a file of that name: a resumed session may continue in another), the writes under its own directory
-    (a running sub-agent's transcript, tool results) and the start of its current process (a session resumed a minute ago and
-    left idle). None when no transcript of the session is found: it may be kept under another CLAUDE_CONFIG_DIR, and a start
-    time alone says nothing about what the session did since, so the session is not judged."""
-    sid = (row.get("sessionId") or "").strip()
-    if not sid:
-        return None
-    try:
-        files = list((session_effort.claude_home() / "projects").glob(f"*/{glob.escape(sid)}.jsonl"))
-    except OSError:
-        return None
-    times = [mtime_of(f) for f in files]
-    for f in files:
-        times += tree_mtimes(f.with_suffix(""))
-    times = [t for t in times if t is not None]
-    if not times:
-        return None
-    started = row.get("startedAt")
-    if isinstance(started, (int, float)) and not isinstance(started, bool):
-        try:
-            times.append(dt.datetime.fromtimestamp(started / 1000, hc.TZ))
-        except (OverflowError, OSError, ValueError):
-            pass
-    return max(times)
+def report_busy(tick: Tick, stage: str, ident: str, why: str, quiet: dt.timedelta) -> None:
+    """A retired hub that is silent but not idle (or has a shell child) is not stopped: one line a day per session in the job
+    output, log.md and the stage journal says so and how to stop it by hand. No notification."""
+    text = f"retired hub {ident[:8]} ({stage}) is {why} for {span(quiet)}; stop it by hand: claude stop {ident[:8]}"
+    if tick.dry:
+        tick.say(stage, "R7", text)
+        return
+    today = f"{tick.now:%Y-%m-%d}"
+    seen = tick.state.get("reap_report")
+    if not isinstance(seen, dict):
+        seen = tick.state["reap_report"] = {}
+    if seen.get(ident) == today:
+        return
+    for k in [k for k, v in seen.items() if v != today]:
+        del seen[k]
+    seen[ident] = today
+    tick.say(stage, "R7", text)
+    tick.journal(stage, text)
 
 
 def rule_r7(tick: Tick) -> None:
-    """Stop (never remove) the background session of a retired hub that is live nowhere on the machine, once it has been
-    quiet for the wake-after time (at least 15 minutes). A busy status does not protect it: a left-over background command
-    keeps a finished hub busy. The registries of every home are read again right before each stop (a stop takes up to 30 s;
-    the session may have become live meanwhile)."""
-    if not flag("AGENT_HUB_WATCHDOG_REAP"):
-        return
+    """Stop (never remove) the background session of a retired hub that is live nowhere on the machine, once it has been quiet
+    for the wake-after time (at least 15 minutes) and only when it is idle: a busy, blocked or otherwise not idle session, or
+    one with a shell child, is reported once a day and left to the owner. The registries of every home and the own setting are
+    read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
     try:
+        if not reap_enabled():
+            return
         if not reap_registry()[0]:
             return
         rows = claude_rows(tick)
@@ -1346,20 +1476,25 @@ def rule_r7(tick: Tick) -> None:
             if hit is None:
                 continue
             stage, tag = hit
-            last = last_activity(row)
+            procs = read_procs()
+            last = last_activity(row, procs) if procs else None
             if last is None:
                 continue
             quiet = tick.now - last
             if quiet < need:
                 continue
+            done.add(ident)
+            why = busy_reason(row, procs)
+            if why:
+                report_busy(tick, stage, ident, why, quiet)
+                continue
             who = f"{tag} ({ident[:8]})"
             mins = int(quiet.total_seconds() // 60)
-            done.add(ident)
             if tick.dry:
                 tick.say(stage, "R7", f"would stop the background session of retired {who}, quiet {mins} min")
                 continue
             cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
-            if retired_hub_of(row) is None:  # re-read right before the stop: registered or pending since?
+            if not reap_enabled() or retired_hub_of(row) is None:  # read again right before the stop: switched off, registered or pending since?
                 continue
             blocker = stop_blocker(cli, row, cwd, need, tick.now)
             if blocker:

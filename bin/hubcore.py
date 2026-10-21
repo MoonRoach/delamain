@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -389,12 +390,6 @@ def registry_load() -> list:
     return _registry_read()[0]
 
 
-def registry_readable() -> bool:
-    """False when the registry of homes exists but cannot be read or is not a registry of homes. known_homes() then lists
-    only the homes it finds without it; a caller that must not miss a home (the watchdog's R7) asks first."""
-    return _registry_read()[1] != "bad"
-
-
 def _registry_warn(msg: str) -> None:
     if _STAGE_GUARD and msg not in _REGISTRY_WARNED:  # a hook (stage_guard off) never writes to stderr
         _REGISTRY_WARNED.add(msg)
@@ -515,6 +510,45 @@ def known_homes() -> list:
         if labels[i] and labels.count(labels[i]) > 1:  # two checkouts called alike: the paths tell them apart
             labels[i] = _tilde(repo or path)
     return [KnownHome(p, labels[i], layer, repo) for i, (p, layer, repo) in enumerate(seen.values())]
+
+
+def known_home_paths_strict() -> list:
+    """The paths of every hub home on this machine, for a caller that must not miss one (the watchdog's R7); known_homes()
+    stays as it is for agent-top. The same sources (the resolved home first, even when it does not exist yet, then
+    ~/agent-hub, the legacy home, $AGENT_HUB_HOME and the registry of homes), but each path is looked at with stat():
+    "does not exist" leaves a path out, any other failure (a parent that cannot be searched, a loop; Path.is_dir() answers
+    False to every OSError) raises OSError, and a registry that cannot be read or has an entry of the wrong shape raises
+    Failure. Deduplicated by real path."""
+    cands = [(home().path, True), (user_home(), False), (legacy_home(), False)]
+    raw = os.environ.get(HOME_KEY)
+    if raw:
+        cands.append((Path(raw).expanduser().absolute(), False))
+    try:
+        data = json.loads(registry_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = None
+    except (OSError, ValueError) as e:
+        raise Failure(f"{registry_path()} cannot be read ({type(e).__name__}: {e})") from None
+    if data is not None:
+        ents = data.get("homes") if isinstance(data, dict) else None
+        if not isinstance(ents, list) or not all(isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] for e in ents):
+            raise Failure(f"{registry_path()} is not a registry of homes")
+        cands += [(Path(e["path"]), False) for e in ents]
+    out, seen = [], set()
+    for path, always in cands:
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            if not always:
+                continue
+            st = None
+        if st is not None and not stat.S_ISDIR(st.st_mode) and not always:
+            continue
+        real = _real(path)
+        if real not in seen:
+            seen.add(real)
+            out.append(path)
+    return out
 
 
 def stage_in_known_homes(stage: str) -> list:

@@ -401,7 +401,7 @@ def prepare_home(checkout: Path, extra: list) -> Path:
 def new_run_dir(name: str) -> Path:
     base = hc.root() / "agy-runs"
     base.mkdir(parents=True, exist_ok=True)
-    stamp = f"{name}-{dt.datetime.now():%Y%m%d-%H%M%S}"
+    stamp = f"{name}-{hc.now():%Y%m%d-%H%M%S}"   # hub time, like the journal
     for n in range(100):
         run = base / (stamp if n == 0 else f"{stamp}-{n}")
         try:
@@ -561,8 +561,13 @@ def worker(run: Path) -> int:
             err.write(f"agy-review: worker failed: {type(e).__name__}: {e}\n")
         rc = 1
     # every file first, rc last: whoever waits for rc finds the rest in place
-    hc.atomic_write(run / "final.md", response)
-    hc.atomic_write(run / "usage.json", json.dumps(record, indent=1) + "\n")
+    try:
+        hc.atomic_write(run / "final.md", response)
+        hc.atomic_write(run / "usage.json", json.dumps(record, indent=1) + "\n")
+    except OSError as e:  # a full disk must not leave the waiter without an rc
+        with open(run / "stderr.log", "a", encoding="utf-8") as err:
+            err.write(f"agy-review: could not write the result files: {e}\n")
+        rc = rc or 1
     if rc == 0:
         journal(meta["stage"], meta["tag"], f"REVIEWED {run}/final.md — rc 0")
     else:

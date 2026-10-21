@@ -57,10 +57,10 @@ print("rc-last" if all(seen) and m[0] <= m[1] <= m[2] else f"WRONG {seen} {m}")
 PY
 check "$(cat $P/order.out)" rc-last "rc appears last: final.md and usage.json exist when it does, and are not newer"
 # detached: run returned while agy was still busy
-scn "[{\"sleep\": 3, \"json\": $OK}]"
-t0=$(date +%s); $B/agy-review run --cwd $CO --brief $P/brief.md --name det > $P/det.out 2>&1; t1=$(date +%s)
+scn "[{\"sleep\": 5, \"json\": $OK}]"
+$B/agy-review run --cwd $CO --brief $P/brief.md --name det > $P/det.out 2>&1
 DET=$(sed -n 's/^run: //p' $P/det.out)
-check "$([ $((t1 - t0)) -le 2 ] && [ ! -e $DET/rc ] && echo detached)" detached "run returns at once; the review goes on in the background"
+check "$([ -f $DET/pid ] && [ ! -e $DET/rc ] && echo detached)" detached "run returns while agy is still busy: the review goes on in the background"
 waitrc $DET; check "$(cat $DET/rc)" 0 "…and finishes by itself"
 
 # ======== what agy was called with
@@ -225,15 +225,16 @@ rm -f $R/agy-limits.json; $B/agy-review check > $P/c.out 2>&1; check $? 0 "check
 AGENT_HUB_AGY_BIN=$P/no-such-agy $B/agy-review check > /dev/null 2>&1; check $? 1 "check: agy missing, exit 1"
 seed 80; AGENT_HUB_AGY_BIN=$P/no-such-agy $B/agy-review check > /dev/null 2>&1; check $? 1 "check: agy missing beats a good cached reading"
 $B/agy-review check --min-left x > /dev/null 2>&1; check $? 2 "check: a bad --min-left is a usage error"
-rm -f $R/agy-limits.json; t0=$(date +%s)
-FAKE_AGY_HANG=1 bounded 9 $B/agy-review check > $P/c.out 2>&1; rc=$?; t1=$(date +%s)
-check "$rc" 0 "check with an agy that hangs: unknown, exit 0…"
-check "$([ $((t1 - t0)) -le 7 ] && echo inside)" inside "…well inside the hub's 10 s check timeout"
+rm -f $R/agy-limits.json
+FAKE_AGY_HANG=1 bounded 30 $B/agy-review check > $P/c.out 2>&1; check $? 0 "check with an agy that hangs: unknown, exit 0"
 # through the hub: the check of a reviewer entry
 cat > $R/config.json <<EOF
 {"AGENT_HUB_REVIEWERS": [{"name": "argon", "kind": "skill", "skill": "delamain:agy-review", "second": true, "check": "$B/agy-review check"},
  {"name": "agent", "kind": "agent"}]}
 EOF
+rm -f $R/agy-limits.json
+(cd $P && FAKE_AGY_HANG=1 $B/hub reviewer --second --author claude --all) > $P/hub.hang 2>&1
+grep -q 'argon (skill delamain:agy-review): available — check exited 0' $P/hub.hang; check $? 0 "an agy that hangs does not run the hub's 10 s check timeout out: the entry is available"
 seed 5; (cd $P && $B/hub reviewer --second --author claude --json 2>/dev/null) > $P/hub.json; check "$?-$(jf $P/hub.json 'd["chosen"]')" "1-None" "as a reviewer entry's check: quota 5 % makes the entry unavailable"
 seed 80; (cd $P && $B/hub reviewer --second --author claude --json 2>/dev/null) > $P/hub.json; check "$?-$(jf $P/hub.json 'd["chosen"]')" "0-argon" "…quota 80 % makes it the second opinion"
 rm $R/config.json

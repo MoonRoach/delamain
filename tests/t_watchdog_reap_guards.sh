@@ -39,9 +39,13 @@ stops(){ FX claude-calls "$R/claude.log" | grep '^stop ' | sort | tr '\n' ' '; }
 reset_log(){ : > "$R/claude.log"; }
 CWD=$R/cwd; mkdir -p "$CWD"; export FX_CWD=$CWD
 sid(){ printf '%s-0000-4000-8000-000000000000' "$1"; }
-sleep 3000 & LIVE=$!   # a process that runs and has no children
-PIDS=$LIVE; trap 'kill $PIDS 2>/dev/null; chmod -R u+rwx "$R" 2>/dev/null; test_cleanup' EXIT
-spawn(){ "$@" & PIDS="$PIDS $!"; SPAWNED=$!; }   # a real process of its own: its start time is the real one
+# Real processes stand in for the sessions' processes (their start time is read with `ps`). They run with every descriptor
+# closed (a leftover holding the test's stdout would hang whoever reads it to the end) and are killed with their children.
+sleep 3000 > /dev/null 2>&1 < /dev/null & LIVE=$!   # a process that runs and has no children
+PIDS=$LIVE
+killtree(){ local c; for c in $(pgrep -P "$1" 2>/dev/null); do killtree "$c"; done; kill "$1" 2>/dev/null; return 0; }
+trap 'for p in $PIDS; do killtree $p; done; chmod -R u+rwx "$R" 2>/dev/null; test_cleanup' EXIT
+spawn(){ "$@" > /dev/null 2>&1 < /dev/null & SPAWNED=$!; PIDS="$PIDS $SPAWNED"; }   # a real process of its own: its start time is the real one
 H2=$(mktemp -d)                                   # a second hub home, known to the registry of homes once a role is set in it
 RB(){ AGENT_HUB_HOME=$H2 "$B/roles" "$@"; }       # roles of the second home
 retire_hub(){ "$B/roles" set --stage "$1" hub "$2" --kind cli --tag "$3" > /dev/null; "$B/roles" retire --stage "$1" hub --note "test" > /dev/null; }

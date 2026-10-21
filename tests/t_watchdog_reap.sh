@@ -34,7 +34,7 @@ sid(){ printf '%s-0000-4000-8000-000000000000' "$1"; }
 # retire_hub STAGE SID TAG: the session is registered as the stage's hub, then retired
 retire_hub(){ "$B/roles" set --stage "$1" hub "$2" --kind cli --tag "$3" > /dev/null; "$B/roles" retire --stage "$1" hub --note "test" > /dev/null; }
 quiet_for(){ FX transcript "$1" "$2" ok; }                                  # a transcript last written N minutes ago
-sleep 3000 & LIVE=$!   # a process that runs, with no children: the rows below say their session has it
+sleep 3000 > /dev/null 2>&1 < /dev/null & LIVE=$!   # a process that runs, with no children (and no descriptor of the test's): the rows below say their session has it
 trap 'kill $LIVE 2>/dev/null; test_cleanup' EXIT
 
 # the sessions of the world (the first 8 characters are the row id)

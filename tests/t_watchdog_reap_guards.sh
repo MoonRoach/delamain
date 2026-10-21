@@ -350,20 +350,27 @@ echo '{"AGENT_HUB_WATCHDOG_REAP": "on"}' > "$R/config.json"; rows "$C2"; tick "c
 rm -f "$R/config.json"
 
 # ================================================================== homes that cannot be reached
+# Python before 3.12 raises PermissionError from Path.is_dir()/is_file() under a directory that cannot be searched (3.14 answers
+# False): the tick must survive both, so the block runs once as is and once with that behaviour emulated (fixtures/py311_pathlib)
 if [ "$(id -u)" != 0 ]; then
-  X=$(sid e0000060); retire_hub a "$X" hub-90; quiet_for "$X" 30
-  mkdir -p "$R/locked/home"; REG=$XDG_CONFIG_HOME/delamain/homes.json; cp "$REG" "$R/homes.json.bak"
-  python3 - "$REG" "$R/locked/home" <<'PY'
+  REG=$XDG_CONFIG_HOME/delamain/homes.json; cp "$REG" "$R/homes.json.bak"
+  for style in plain py311; do
+    if [ "$style" = py311 ]; then export PYTHONPATH=$T/fixtures/py311_pathlib; id=e0000063; else unset PYTHONPATH; id=e0000060; fi
+    X=$(sid $id); retire_hub a "$X" "hub-9$style"; quiet_for "$X" 30
+    mkdir -p "$R/locked/home"
+    python3 - "$REG" "$R/locked/home" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["homes"].append({"path": sys.argv[2], "layer": "env"}); json.dump(d, open(sys.argv[1], "w"))
 PY
-  chmod 000 "$R/locked"
-  rows "$X"; tick "registered home behind a closed directory"; stopped "a registered home whose path cannot be looked at: nothing is stopped" ""; aborted "unreachable registered home" "PermissionError"
-  chmod 755 "$R/locked"
-  rows "$X"; tick "control, reachable home"; stopped "control: the same home reachable and empty: stopped" "stop e0000060 "
-  rm -r "$R/locked"
+    chmod 000 "$R/locked"
+    rows "$X"; tick "[$style] registered home behind a closed directory"; stopped "[$style] a registered home whose path cannot be looked at: nothing is stopped" ""; aborted "[$style] unreachable registered home" "PermissionError"
+    chmod 755 "$R/locked"
+    rows "$X"; tick "[$style] control, reachable home"; stopped "[$style] control: the same home reachable and empty: stopped" "stop $id "
+    rm -r "$R/locked"; cp "$R/homes.json.bak" "$REG"
+  done
+  unset PYTHONPATH
   X=$(sid e0000061); retire_hub a "$X" hub-91; quiet_for "$X" 30
-  cp "$R/homes.json.bak" "$REG"; rows "$X"; tick "control, no such home"
+  rows "$X"; tick "control, no such home"
   python3 - "$REG" "$R/no-such-home" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["homes"].append({"path": sys.argv[2], "layer": "env"}); json.dump(d, open(sys.argv[1], "w"))

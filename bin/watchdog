@@ -1038,7 +1038,16 @@ def stage_names(only=None) -> list:
         dirs = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:
         return []
-    names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and ((p / "roles.json").is_file() or (p / "agents").is_dir())]
+
+    def has(p: Path, name: str, want_dir: bool) -> bool:
+        # Python < 3.12: Path.is_dir()/is_file() raise PermissionError (3.14: answer False) when a parent cannot be searched; a
+        # directory of the hub home that cannot be looked into is no stage here (R7 reads it strictly and aborts on it)
+        try:
+            return (p / name).is_dir() if want_dir else (p / name).is_file()
+        except OSError:
+            return False
+
+    names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and (has(p, "roles.json", False) or has(p, "agents", True))]
     if only:
         if only in names and hc.stage_closed(only):
             return []  # `hub close`: nothing of the stage is watched any more

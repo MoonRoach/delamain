@@ -1,0 +1,608 @@
+#!/usr/bin/env python3
+"""Run a read-only review with Google's Antigravity CLI (`agy`, Gemini 4 Argon), detached, and read agy's quota.
+
+  agy-review run --cwd CHECKOUT --brief FILE [--model M] [--name N] [--add-dir D]... [--min-left PCT]
+                 [--stage S] [--dry-run]
+  agy-review limits [--json] [--max-age SECONDS] [--from-file PANEL.txt]
+  agy-review check [--min-left PCT]
+
+run     starts one review in the background and prints `run: <dir>` and `model: <id>`. The run dir
+        <hub home>/agy-runs/<name>-<YYYYmmdd-HHMMSS> holds brief.md (the brief plus a read-only footer), out-N.json
+        (agy's JSON, one per attempt), final.md (the review), usage.json (summed usage, duration, attempts, conversation
+        id, denied actions), stderr.log, meta, pid, and `rc`, written last and ending in a newline (so `jwait --file
+        <run>/rc` sees it at once): 0 a review was produced, 2 agy finished without an answer after the resumes, any
+        other value is agy's own exit code (128+N when it was killed by signal N). With a stage (--stage, else
+        $HUB_STAGE) one journal line is written at the start and one at the end (`REVIEWED <run>/final.md — rc 0`, or
+        `EXIT agy-review <name>: …` when there is no review), signed `<your tag>-agy` like `await` signs its lines.
+        Refuses with exit 3 and one line on stderr when agy, the checkout, the brief or an --add-dir is missing, the brief
+        is too large for a command line, or Argon's weekly quota left is KNOWN to be below --min-left (default 20, setting
+        AGENT_HUB_AGY_REVIEW_MIN_LEFT); an unreadable quota is not a refusal. --dry-run prepares the review home and the run
+        dir and prints what would start. Model: --model, else AGENT_HUB_AGY_REVIEW_MODEL, else gemini-4-argon-high.
+limits  agy has no headless quota command: this drives `agy` through a pty, opens /usage and parses the bars (~2 s),
+        and keeps the answer in <hub home>/agy-limits.json; --max-age S returns that file while it is fresher than S.
+        --from-file parses a saved panel instead (no agy, no cache). Exit 1 when the panel could not be read.
+check   for a reviewer entry's `check`: exit 0 when agy is on PATH and Argon's weekly quota is not known to be below the
+        threshold (cache max age 600 s, probe capped well inside the hub's 10 s check timeout), else 1.
+
+The review runs under its own HOME, <hub home>/agy-review-home, whose settings.json this tool rewrites on every run: only
+read-only commands are allowed, writes, network and interpreters are denied, and agy runs with --sandbox. Your own
+~/.gemini/antigravity-cli/settings.json is never read or written; the sign-in files are linked from ~/.gemini and
+~/Library (macOS keychain). Verified on macOS with agy 1.4.0; Linux is untested. AGENT_HUB_AGY_BIN names another agy.
+Settings (environment or the hub home's config.json): AGENT_HUB_AGY_BIN, AGENT_HUB_AGY_REVIEW_MODEL,
+AGENT_HUB_AGY_REVIEW_MIN_LEFT.
+Exit: 0 ok, 1 failure (check: not available), 2 usage, 3 run refused.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+DEFAULT_MODEL = "gemini-4-argon-high"
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+DEFAULT_MIN_LEFT = 20.0       # percent of Argon's weekly quota a review needs: one real review took 6-13 % of Pro's week
+RESUMES = 2                   # how often a run that ended without an answer is continued
+PRINT_TIMEOUT = "45m"         # agy's own limit for one headless run
+CACHE_MAX_AGE_S = 600         # a quota reading younger than this is used as it is
+PROBE_S = 25.0                # the whole /usage read, for `limits` and `run`
+CHECK_PROBE_S = 4.0           # …for `check`, which the hub kills at 10 s (AGENT_HUB_REVIEW_CHECK_TIMEOUT)
+MAX_BRIEF_BYTES = 400_000     # the brief travels in argv (-p); well under the OS limit for argv plus environment
+
+# Files of the owner's ~/.gemini that the review HOME links, so the review is signed in as the owner without sharing the
+# owner's permissions. Names only: nothing here is copied, and nothing is ever written through a link.
+GEMINI_LINKS = ("google_accounts.json", "oauth_creds.json", "installation_id", "projects.json", "state.json", "config")
+ANTIGRAVITY_LINKS = ("installation_id", "jetski_state.pbtxt", "bin", "builtin")
+
+# Permissions of the review HOME. DENY BEATS ALLOW: a call that matches a deny rule is refused to the model and the run
+# goes on, whereas a call that is neither allowed nor denied ends the headless run with an empty answer (it is resumed,
+# see RESUMES). So every command that could write, run code, reach the network or a database is listed in DENY_COMMANDS
+# even when an allow rule would also match its prefix, and a prefix that is read-only only in one form (`git branch
+# --list`, `sed -n`) is allowed in that form while its writing forms are denied. Compound commands are checked per
+# segment. Besides this list agy runs with --sandbox, which blocks shell writes (also inside the checkout) but not the
+# network. `find`, `awk` and `sed -n` stay allowed because a review cannot do without them, and they can start programs:
+# the sandbox, not this list, is what stops those from writing. `xargs` is denied for the same reason and is not needed.
+READ_COMMANDS = (
+    "git diff", "git log", "git show", "git grep", "git blame", "git status", "git ls-files", "git ls-tree",
+    "git rev-parse", "git merge-base", "git cat-file", "git branch --list", "git describe", "rg", "grep", "ls", "cat",
+    "head", "tail", "wc", "cd", "pwd", "echo", "printf", "sed -n", "awk", "sort", "uniq", "cut", "tr", "nl", "find",
+    "diff", "jq", "file", "stat", "du", "tree", "true")
+DENY_COMMANDS = (
+    "git push", "git commit", "git checkout", "git switch", "git reset", "git restore", "git stash", "git fetch",
+    "git pull", "git merge", "git rebase", "git cherry-pick", "git revert", "git am", "git apply", "git clean",
+    "git worktree", "git tag", "git branch -", "git config", "git gc", "git rm", "git mv", "git add", "git notes",
+    "rm", "mv", "cp", "mkdir", "rmdir", "touch", "tee", "ln", "chmod", "chown", "dd", "truncate", "install",
+    "sed -i", "perl", "python", "python3", "uv", "pip", "pip3", "node", "npm", "npx", "pnpm", "yarn", "ruby",
+    "bash", "sh", "zsh", "source", ".", "eval", "exec", "env", "xargs", "sudo", "make", "pytest", "tox", "docker",
+    "kubectl", "psql", "sqlite3", "mysql", "redis-cli", "curl", "wget", "ssh", "scp", "rsync", "nc", "gh", "glab",
+    "open", "osascript", "kill", "pkill", "killall", "bin/", "./", "dbt", "alembic", "terraform", "yc", "aws")
+DENY_TOOLS = ("write_file(*)", "read_url(*)", "mcp(*)")   # the file tool, the web and MCP servers: never in a review
+
+NUDGE = ("Your last tool call was refused because that command is not permitted in this read-only review, and the "
+         "run stopped. Continue the review with the allowed read-only commands only (one command per call, no "
+         "`;`/`&&` chains with other programs), and return the complete review as your final answer.")
+FOOTER = """
+## Read-only (added by agy-review)
+Do not create, edit or delete any file, not even a scratch or review file; do not commit, push or run tests.
+Shell: one read-only command per call — `git diff/log/show/grep/blame/status/ls-files`, `rg`, `grep`, `ls`, `cat`,
+`head`, `tail`, `wc`, `sed -n`, `awk`, `sort`, `find` and the like. Anything else is refused, and an unknown command
+can end the run without your answer. Return the review as your final answer.
+"""
+
+
+# ---------------------------------------------------------------- settings and paths
+
+def say(text: str) -> None:
+    print(f"agy-review: {text}", file=sys.stderr)
+
+
+def refuse(text: str) -> int:
+    say(f"refused — {text}")
+    return 3
+
+
+def agy_binary():
+    """The agy executable as a path, or None: AGENT_HUB_AGY_BIN (a path or a name on PATH), else `agy`."""
+    return shutil.which((hc.setting("AGENT_HUB_AGY_BIN") or "agy").strip() or "agy")
+
+
+def pct(value):
+    """A percentage as a float, or None for anything that is not a finite number (unknown)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def min_left(given) -> float:
+    """The threshold in percent: --min-left, else AGENT_HUB_AGY_REVIEW_MIN_LEFT, else 20. A usage error when it is not a
+    number between 0 and 100: a typo must not silently switch the guard off."""
+    raw, where = (given, "--min-left") if given is not None else (
+        hc.setting("AGENT_HUB_AGY_REVIEW_MIN_LEFT"), "AGENT_HUB_AGY_REVIEW_MIN_LEFT")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_MIN_LEFT
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or not 0 <= value <= 100:
+        raise hc.UsageError(f"{where}: a percentage from 0 to 100, got {str(raw)[:30]!r}")
+    return value
+
+
+def home_path() -> Path:
+    return hc.root() / "agy-review-home"
+
+
+def cache_path() -> Path:
+    return hc.root() / "agy-limits.json"
+
+
+# ---------------------------------------------------------------- quota: the /usage panel
+
+ANSI = re.compile(rb"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b[=>]")
+
+
+def _read(fd, until, deadline) -> str:
+    import select
+    buf = b""
+    while time.time() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if ready:
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            if until and until(ANSI.sub(b" ", buf).decode("utf-8", "replace")):
+                break
+    return ANSI.sub(b" ", buf).decode("utf-8", "replace")
+
+
+def _panel_complete(text: str) -> bool:
+    """The panel is drawn once the footnote that follows the Argon group is there."""
+    return "GEMINI 4 ARGON" in text and "Within each group" in text.split("GEMINI 4 ARGON")[-1]
+
+
+def probe(binary: str, timeout: float) -> str:
+    """The text agy draws for /usage, read through a pty. Esc first: a startup notice would swallow the command."""
+    import fcntl
+    import pty
+    import struct
+    import termios
+    pid, fd = pty.fork()
+    if pid == 0:  # the child: become agy, or leave without running anything of ours
+        try:
+            os.environ["TERM"] = "xterm-256color"
+            os.chdir(Path.home())
+            os.execvp(binary, [binary])
+        finally:
+            os._exit(127)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 160, 0, 0))
+    deadline = time.time() + timeout
+    try:
+        start = _read(fd, lambda t: "for shortcuts" in t or "esc to dismiss" in t, deadline)
+        os.write(fd, b"\x1b")
+        _read(fd, None, min(deadline, time.time() + 0.5))
+        os.write(fd, b"/usage")
+        _read(fd, None, min(deadline, time.time() + 0.5))
+        os.write(fd, b"\r")
+        text = _read(fd, _panel_complete, deadline)
+    except OSError:
+        start, text = "", ""
+    finally:
+        # a killed agy can linger for a while: never block on it
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        for _ in range(10):
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    break
+            except OSError:
+                break
+            time.sleep(0.1)
+    return start + text
+
+
+WINDOW = re.compile(r"(Weekly|Five Hour|5 Hour)\s+Limit")
+PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def _window_value(text: str):
+    """Percent left in the text of one window: its bar's number, or 100 for "Quota available" (an untouched group draws
+    that instead of a bar), else None."""
+    found = PERCENT.search(text)
+    if found:
+        return float(found.group(1))
+    return 100.0 if "Quota available" in text else None
+
+
+def _windows(section: str) -> dict:
+    """{"weekly": pct, "5h": pct} of one group. Windows are found by their labels; a group without labels is read by
+    position (weekly, then five hour)."""
+    marks = list(WINDOW.finditer(section))
+    out: dict = {}
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
+        out.setdefault("weekly" if mark.group(1) == "Weekly" else "5h", _window_value(section[mark.end():end]))
+    if not marks:
+        bars = [float(x) for x in PERCENT.findall(section)]
+        for key, value in zip(("weekly", "5h"), bars):
+            out[key] = value
+        if not bars and "Quota available" in section:
+            out["weekly"] = 100.0
+    return out
+
+
+def parse(text: str) -> dict:
+    """The percent left in each window of the /usage panel (None: not shown), as `limits --json` prints them."""
+    flat = re.sub(r"[ \t]+", " ", text)
+
+    def section(name: str, following: str) -> str:
+        found = re.search(name + r"(.*?)(?:" + following + r"|$)", flat, re.S)
+        return found.group(1) if found else ""
+
+    gemini = _windows(section("GEMINI MODELS", "CLAUDE AND GPT MODELS|GEMINI 4 ARGON"))
+    claude = _windows(section("CLAUDE AND GPT MODELS", "GEMINI 4 ARGON"))
+    argon = _windows(section("GEMINI 4 ARGON", "Within each group"))
+    tier = re.search(r"\(Google AI [A-Za-z]+\)", flat)
+    return {"gemini_weekly_remaining": gemini.get("weekly"), "gemini_5h_remaining": gemini.get("5h"),
+            "claude_weekly_remaining": claude.get("weekly"), "claude_5h_remaining": claude.get("5h"),
+            "argon_weekly_remaining": argon.get("weekly"), "seen_at": int(time.time()),
+            "tier": tier.group(0).strip("()") if tier else None}
+
+
+def read_cache(max_age: float):
+    """The cached reading when it is a JSON object and not older than max_age seconds (nor from the future)."""
+    try:
+        data = json.loads(cache_path().read_text(encoding="utf-8"))
+        seen = data["seen_at"]
+        if isinstance(seen, bool) or not isinstance(seen, (int, float)) or not 0 <= time.time() - seen <= max_age:
+            return None
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def get_limits(max_age, timeout: float):
+    """The quota reading from the cache (fresher than max_age) or from agy, and None when agy cannot be read. A reading
+    from agy is cached when the hub home exists (a machine that never ran a hub is not given one)."""
+    if max_age is not None:
+        cached = read_cache(max_age)
+        if cached is not None:
+            return cached
+    binary = agy_binary()
+    if not binary:
+        return None
+    try:
+        text = probe(binary, timeout)
+    except Exception:  # noqa: BLE001 — a pty that cannot be opened, a termios error: the quota is unknown
+        return None
+    if "GEMINI 4 ARGON" not in text and "GEMINI MODELS" not in text:
+        return None
+    data = parse(text)
+    try:
+        if hc.root().is_dir():
+            hc.atomic_write(cache_path(), json.dumps(data))
+    except OSError as e:
+        say(f"the quota cache {cache_path()} was not written: {e}")
+    return data
+
+
+def argon_left(max_age, timeout: float):
+    """Argon's weekly percent left, or None when it is unknown."""
+    try:
+        data = get_limits(max_age, timeout)
+    except Exception:  # noqa: BLE001 — whatever goes wrong while reading the quota, it is unknown, not a refusal
+        return None
+    return pct(data.get("argon_weekly_remaining")) if isinstance(data, dict) else None
+
+
+def cmd_limits(args) -> int:
+    if args.from_file:
+        try:
+            data = parse(Path(args.from_file).read_text(encoding="utf-8", errors="replace"))
+        except OSError as e:
+            raise hc.Failure(f"cannot read {args.from_file}: {e}") from None
+    else:
+        data = get_limits(args.max_age, PROBE_S)
+        if data is None:
+            say("the /usage panel was not read (agy missing, not signed in, or no panel within "
+                f"{PROBE_S:g} s)")
+            return 1
+    if args.json:
+        print(json.dumps(data))
+        return 0
+    age = max(0, int(time.time() - data.get("seen_at", time.time())))
+    show = lambda v: "unknown" if pct(v) is None else f"{pct(v):g} %"  # noqa: E731
+    print(f"agy ({data.get('tier') or 'tier unknown'}), read {age} s ago:")
+    print(f"  Gemini 4 Argon, weekly: {show(data.get('argon_weekly_remaining'))} left")
+    print(f"  Gemini, weekly / 5 h: {show(data.get('gemini_weekly_remaining'))} / {show(data.get('gemini_5h_remaining'))}")
+    print(f"  Claude + GPT, weekly / 5 h: {show(data.get('claude_weekly_remaining'))} / "
+          f"{show(data.get('claude_5h_remaining'))}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    threshold = min_left(args.min_left)
+    binary = agy_binary()
+    if not binary:
+        print("agy is not on PATH (AGENT_HUB_AGY_BIN names another)")
+        return 1
+    left = argon_left(CACHE_MAX_AGE_S, CHECK_PROBE_S)
+    if left is not None and left < threshold:
+        print(f"Argon weekly quota left {left:g} %, below {threshold:g} %")
+        return 1
+    print(f"agy at {binary}; Argon weekly quota left " + (f"{left:g} %" if left is not None else "unknown (not a refusal)"))
+    return 0
+
+
+# ---------------------------------------------------------------- the review home
+
+def _link(target: Path, link: Path) -> None:
+    """link -> target, replacing a link that points elsewhere or a plain file that agy wrote in its place (it rewrites a
+    state file by renaming a new one over it, which turns the link into a copy). A directory is never removed."""
+    if link.is_symlink() and os.readlink(link) == str(target):
+        return
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    elif link.exists():
+        say(f"{link} is a directory, not a link; left as it is")
+        return
+    link.symlink_to(target)
+
+
+def review_settings(checkout: Path, extra: list) -> dict:
+    return {"trustedWorkspaces": [str(checkout)] + [str(d) for d in extra],
+            "permissions": {"allow": [f"command({c})" for c in READ_COMMANDS],
+                            "deny": [f"command({c})" for c in DENY_COMMANDS] + list(DENY_TOOLS)}}
+
+
+def prepare_home(checkout: Path, extra: list) -> Path:
+    """<hub home>/agy-review-home, rebuilt: links to the owner's sign-in files and a settings.json written afresh. The
+    owner's own ~/.gemini/antigravity-cli/settings.json is neither read nor linked."""
+    home = home_path()
+    owner = Path.home()
+    gemini, cli = home / ".gemini", home / ".gemini" / "antigravity-cli"
+    cli.mkdir(parents=True, exist_ok=True)
+    for name in GEMINI_LINKS:
+        if (owner / ".gemini" / name).exists():
+            _link(owner / ".gemini" / name, gemini / name)
+    for name in ANTIGRAVITY_LINKS:
+        if (owner / ".gemini" / "antigravity-cli" / name).exists():
+            _link(owner / ".gemini" / "antigravity-cli" / name, cli / name)
+    if (owner / "Library").is_dir():  # the macOS keychain; no such directory elsewhere (Linux is untested)
+        _link(owner / "Library", home / "Library")
+    hc.atomic_write(cli / "settings.json", json.dumps(review_settings(checkout, extra), indent=2) + "\n")
+    return home
+
+
+# ---------------------------------------------------------------- run
+
+def new_run_dir(name: str) -> Path:
+    base = hc.root() / "agy-runs"
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = f"{name}-{dt.datetime.now():%Y%m%d-%H%M%S}"
+    for n in range(100):
+        run = base / (stamp if n == 0 else f"{stamp}-{n}")
+        try:
+            run.mkdir()
+            return run
+        except FileExistsError:
+            continue
+    raise hc.Failure(f"no free run directory named {stamp} under {base}")
+
+
+def journal(stage, tag, text: str) -> None:
+    """One journal line when the run has a stage. The journal is a convenience: a failure to write is reported, never fatal."""
+    if not stage:
+        return
+    try:
+        hc.journal_append(stage, tag, text)
+    except (OSError, hc.UsageError, hc.Failure) as e:
+        say(f"journal line not written: {e}")
+
+
+def cmd_run(args) -> int:
+    name = args.name
+    if not NAME_RE.fullmatch(name):
+        raise hc.UsageError(f"--name {name[:30]!r}: letters, digits, '.', '_' and '-' only, 64 at most")
+    model = (args.model or hc.setting("AGENT_HUB_AGY_REVIEW_MODEL") or DEFAULT_MODEL).strip()
+    if not MODEL_RE.fullmatch(model):
+        raise hc.UsageError(f"model {model[:30]!r}: letters, digits, '.', '_' and '-' only, 64 at most "
+                            "(--model or AGENT_HUB_AGY_REVIEW_MODEL)")
+    threshold = min_left(args.min_left)
+    stage = args.stage or os.environ.get("HUB_STAGE") or None
+    if stage:
+        hc.check_stage(stage)
+    binary = agy_binary()
+    if not binary:
+        return refuse("agy is not on PATH (AGENT_HUB_AGY_BIN names another)")
+    checkout = Path(args.cwd).expanduser()
+    if not checkout.is_dir():
+        return refuse(f"no checkout at --cwd {args.cwd}")
+    brief = Path(args.brief).expanduser()
+    if not brief.is_file():
+        return refuse(f"no brief file at --brief {args.brief}")
+    extra = [Path(d).expanduser() for d in args.add_dir]
+    for d in extra:
+        if not d.is_dir():
+            return refuse(f"no directory at --add-dir {d}")
+    checkout, extra = checkout.resolve(), [d.resolve() for d in extra]
+    text = brief.read_text(encoding="utf-8", errors="replace")
+    if len(text.encode("utf-8")) > MAX_BRIEF_BYTES:
+        return refuse(f"the brief is over {MAX_BRIEF_BYTES} bytes; it travels on a command line. Shorten it and put the "
+                      "material in a file under an --add-dir")
+    left = argon_left(CACHE_MAX_AGE_S, PROBE_S) if threshold > 0 else None
+    say(f"Argon weekly quota left: {'unknown' if left is None else f'{left:g} %'} (threshold {threshold:g} %)")
+    if left is not None and left < threshold:
+        return refuse(f"Argon weekly quota left {left:g} %, below {threshold:g} %")
+    home = prepare_home(checkout, extra)
+    run = new_run_dir(name)
+    (run / "brief.md").write_text(text.rstrip("\n") + "\n" + FOOTER, encoding="utf-8")
+    tag = (hc.signing_tag(stage) if stage else None)
+    meta = {"name": name, "model": model, "cwd": str(checkout), "add_dirs": [str(d) for d in extra], "home": str(home),
+            "agy": binary, "stage": stage, "tag": f"{tag}-agy" if tag else "agy-review", "hub_home": str(hc.root()),
+            "started": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    (run / "meta").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    print(f"run: {run}")
+    print(f"model: {model}")
+    if args.dry_run:
+        print("DRY-RUN: nothing started")
+        return 0
+    with open(run / "stderr.log", "a", encoding="utf-8") as err:
+        proc = subprocess.Popen([sys.executable, os.path.realpath(__file__), "_worker", str(run)], cwd=run,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, start_new_session=True,
+                                env=dict(os.environ, AGENT_HUB_HOME=meta["hub_home"]))
+    (run / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    journal(stage, meta["tag"], f"agy-review {name} started: model {model}, run {run} — wait for {run}/rc")
+    return 0
+
+
+# ---------------------------------------------------------------- the detached worker
+
+def _answer(path: Path) -> dict:
+    """agy's one JSON object, or {} when the file holds none (a crash prints nothing useful)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for candidate in (text, (text.strip().splitlines() or [""])[-1]):
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except ValueError:
+            continue
+    return {}
+
+
+STATE: dict = {"child": None, "stop": False}   # the agy being waited for, and whether the worker was told to stop
+
+
+def attempts(run: Path, meta: dict) -> tuple:
+    """Run agy, and continue the conversation when it ends without an answer. Returns (rc, response, usage record).
+
+    agy ends a headless run with an empty response — still status SUCCESS, exit 0, `denied_actions` set — when the model
+    calls a command that is neither allowed nor denied. The conversation survives and is resumed with a nudge."""
+    base = [meta["agy"], "--sandbox", "--model", meta["model"], "--print-timeout", PRINT_TIMEOUT, "--output-format", "json"]
+    for d in meta["add_dirs"]:
+        base += ["--add-dir", d]
+    env = dict(os.environ, HOME=meta["home"])
+    prompt = (run / "brief.md").read_text(encoding="utf-8")
+    usage: dict = {}
+    duration, conversation, rc, response, failed, denied, attempt = 0.0, None, 0, "", False, [], 0
+    for attempt in range(RESUMES + 1):
+        command = base + (["--conversation", conversation, "-p", NUDGE] if conversation else ["-p", prompt])
+        out = run / f"out-{attempt}.json"
+        with open(out, "w", encoding="utf-8") as sink, open(run / "stderr.log", "a", encoding="utf-8") as err:
+            child = subprocess.Popen(command, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=err)
+            STATE["child"] = child
+            rc = child.wait()
+            STATE["child"] = None
+        rc = 128 - rc if rc < 0 else rc
+        data = _answer(out)
+        for key, value in (data.get("usage") or {}).items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                usage[key] = usage.get(key, 0) + value
+        duration += data.get("duration_seconds") if isinstance(data.get("duration_seconds"), (int, float)) else 0
+        conversation = data.get("conversation_id") or conversation
+        response = data.get("response") if isinstance(data.get("response"), str) else ""
+        denied += data.get("denied_actions") or []
+        failed = rc != 0 or bool(data.get("error")) or data.get("status") not in (None, "SUCCESS")
+        if failed and rc == 0:
+            err_text = data.get("error") or f"status {data.get('status')}"
+            with open(run / "stderr.log", "a", encoding="utf-8") as err:
+                err.write(f"agy-review: attempt {attempt} failed: {err_text}\n")
+        if failed or STATE["stop"] or not conversation or response.strip():
+            break
+    if rc == 0 and (failed or not response.strip()):
+        rc = 2
+    record = {"usage": usage, "duration_seconds": round(duration, 1), "attempts": attempt + 1,
+              "conversation_id": conversation, "denied_actions": denied}
+    return rc, response, record
+
+
+def _terminate(signum, frame) -> None:  # SIGTERM / SIGINT: stop agy, then finish the run the usual way
+    STATE["stop"] = True
+    child = STATE["child"]
+    if child is not None:
+        child.terminate()
+
+
+def worker(run: Path) -> int:
+    meta = json.loads((run / "meta").read_text(encoding="utf-8"))
+    signal.signal(signal.SIGTERM, _terminate)
+    signal.signal(signal.SIGINT, _terminate)
+    rc, response, record = 1, "", {}
+    try:
+        rc, response, record = attempts(run, meta)
+    except Exception as e:  # noqa: BLE001 — whatever happens, the run ends with files and an rc
+        with open(run / "stderr.log", "a", encoding="utf-8") as err:
+            err.write(f"agy-review: worker failed: {type(e).__name__}: {e}\n")
+        rc = 1
+    # every file first, rc last: whoever waits for rc finds the rest in place
+    hc.atomic_write(run / "final.md", response)
+    hc.atomic_write(run / "usage.json", json.dumps(record, indent=1) + "\n")
+    if rc == 0:
+        journal(meta["stage"], meta["tag"], f"REVIEWED {run}/final.md — rc 0")
+    else:
+        why = "agy ended without an answer" if rc == 2 else "agy failed"
+        journal(meta["stage"], meta["tag"], f"EXIT agy-review {meta['name']}: no review, rc {rc} ({why}) — see {run}/stderr.log")
+    hc.atomic_write(run / "rc", f"{rc}\n")
+    return 0
+
+
+# ---------------------------------------------------------------- entry
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agy-review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", metavar="{run,limits,check}", required=True)
+    r = sub.add_parser("run", help="start a read-only review in the background")
+    r.add_argument("--cwd", required=True, metavar="CHECKOUT", help="a checkout that has the head commit")
+    r.add_argument("--brief", required=True, metavar="FILE", help="the review brief")
+    r.add_argument("--model", help=f"agy model id (default AGENT_HUB_AGY_REVIEW_MODEL, else {DEFAULT_MODEL})")
+    r.add_argument("--name", default="review", help="prefix of the run directory (default review)")
+    r.add_argument("--add-dir", action="append", default=[], metavar="DIR",
+                   help="another directory the reviewer may read (repeatable)")
+    r.add_argument("--min-left", metavar="PCT", help="refuse below this percent of Argon's weekly quota (default 20)")
+    r.add_argument("--stage", help="journal the start and the end in this stage (default $HUB_STAGE; none: no journal)")
+    r.add_argument("--dry-run", action="store_true", help="prepare the run directory and the review home, start nothing")
+    li = sub.add_parser("limits", help="agy's quota, read from its /usage panel")
+    li.add_argument("--json", action="store_true")
+    li.add_argument("--max-age", type=float, metavar="S", help="use the cached reading when it is fresher than S seconds")
+    li.add_argument("--from-file", metavar="PANEL.txt", help="parse a saved panel text instead of running agy")
+    ck = sub.add_parser("check", help="exit 0 when agy is there and the quota is not known to be too low")
+    ck.add_argument("--min-left", metavar="PCT", help="the threshold in percent (default 20)")
+    sub.add_parser("_worker").add_argument("run")  # internal: the detached half of `run`
+    return p
+
+
+def main(argv: list) -> int:
+    args = parser().parse_args(argv)
+    if args.cmd == "_worker":
+        return worker(Path(args.run))
+    return {"run": cmd_run, "limits": cmd_limits, "check": cmd_check}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

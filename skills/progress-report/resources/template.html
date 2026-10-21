@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>REPORT TITLE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=Unbounded:wght@600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* One column of a ledger page: headline count, one segmented bar, tracks as cards, the road to the end, open gaps. */
+:root {
+  --bg: #f4f6f3; --surface: #ffffff; --fg: #1d2420; --muted: #5d6862; --line: #d9dfda;
+  --done: #2f8a57; --done-soft: #dcefe3;
+  --review: #2d6fb8; --review-soft: #dde9f6;
+  --active: #c07a12; --active-soft: #f6e8cf;
+  --planned: #7a857f; --planned-soft: #eceeec;
+  --decision: #a8417a; --decision-soft: #f4dfeb;
+  --blocked: #b8462e; --blocked-soft: #f6e0d9;
+  --unknown: #8a8f8c; --unknown-soft: #ecedec;
+  --font-display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --font-body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141917; --surface: #1c2320; --fg: #e6ece8; --muted: #9aa6a0; --line: #2e3833;
+    --done: #5cc48a; --done-soft: #1f3a2b; --review: #6fa8e8; --review-soft: #1d2f45;
+    --active: #e3a447; --active-soft: #3d2f17; --planned: #9aa49f; --planned-soft: #262d2a;
+    --decision: #e07fb3; --decision-soft: #3e2232; --blocked: #ec8a72; --blocked-soft: #3f2219;
+    --unknown: #a3a8a5; --unknown-soft: #2a2e2c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141917; --surface: #1c2320; --fg: #e6ece8; --muted: #9aa6a0; --line: #2e3833;
+  --done: #5cc48a; --done-soft: #1f3a2b; --review: #6fa8e8; --review-soft: #1d2f45;
+  --active: #e3a447; --active-soft: #3d2f17; --planned: #9aa49f; --planned-soft: #262d2a;
+  --decision: #e07fb3; --decision-soft: #3e2232; --blocked: #ec8a72; --blocked-soft: #3f2219;
+  --unknown: #a3a8a5; --unknown-soft: #2a2e2c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 28px 56px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 28px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 5vw, 40px); line-height: 1.15; margin: 6px 0 8px; text-wrap: balance; }
+h1 .num { color: var(--done); }
+.lede { color: var(--muted); max-width: 66ch; margin: 0; }
+h2 { font-size: 19px; font-weight: 700; margin: 0 0 12px; text-wrap: balance; }
+.code { font-family: var(--font-mono); font-size: .85em; color: var(--muted); }
+
+.bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; background: var(--planned-soft); }
+.bar span { display: block; height: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; font-size: 13.5px; }
+.legend div { display: flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
+.sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.sw.planned { background: transparent; border: 1.5px dashed var(--planned); }
+.sw.unknown { background: repeating-linear-gradient(45deg, var(--unknown) 0 2px, transparent 2px 4px); }
+.done-means { margin-top: 8px; color: var(--muted); font-size: 13.5px; }
+.changes { margin: 8px 0 0; font-family: var(--font-mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.metric { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 2px; min-width: 0; }
+.metric .v { font-family: var(--font-display); font-weight: 600; font-size: 24px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.metric .l { font-size: 14px; }
+.metric .s { font-size: 12px; color: var(--muted); }
+
+.tracks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .tracks { grid-template-columns: minmax(0, 1fr); } }
+.track { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.track.wide { grid-column: 1 / -1; }
+.track-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.track-head h3 { margin: 0; font-size: 17px; font-weight: 700; }
+.count { font-family: var(--font-mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.track p { margin: 0; color: var(--muted); font-size: 14px; }
+.mini { display: flex; gap: 3px; height: 6px; }
+.mini i { flex: 1; border-radius: 2px; }
+.items { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: fit-content(14ch) minmax(0, 1fr) fit-content(22ch); gap: 6px 10px; }
+.items li { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; font-size: 14px; }
+.items li.nocode .t { grid-column: 1 / 3; }
+.items .code { overflow-wrap: anywhere; }
+.pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; justify-self: end; text-align: center; overflow-wrap: anywhere; }
+.p-done { background: var(--done-soft); color: var(--done); }
+.p-review { background: var(--review-soft); color: var(--review); }
+.p-active { background: var(--active-soft); color: var(--active); }
+.p-planned { background: transparent; color: var(--planned); border: 1px dashed var(--planned); }
+.p-decision { background: var(--decision-soft); color: var(--decision); }
+.p-blocked { background: var(--blocked-soft); color: var(--blocked); }
+.p-unknown { background: transparent; color: var(--unknown); border: 1px dotted var(--unknown); }
+.p-dropped { color: var(--muted); font-size: 12px; }
+.items li.dropped { color: var(--muted); }
+.items li.dropped .t { text-decoration: line-through; }
+
+.road { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.step { padding: 18px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 0 -1px -1px 0; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.step .when { font-family: var(--font-mono); font-size: 12px; letter-spacing: .05em; text-transform: uppercase; }
+.step.now .when { color: var(--active); }
+.step.soon .when { color: var(--review); }
+.step.next .when { color: var(--planned); }
+.step.decision .when { color: var(--decision); }
+.step.blocked .when { color: var(--blocked); }
+.step h3 { margin: 0; font-size: 16px; }
+.step ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 14px; }
+
+.note { background: var(--decision-soft); border-radius: 10px; padding: 16px 18px; display: grid; gap: 6px; }
+.note h3 { margin: 0; font-size: 16px; color: var(--decision); }
+.note p { margin: 0; font-size: 14.5px; max-width: 80ch; }
+.foot { color: var(--muted); font-size: 13px; margin: 0; }
+.problem { background: var(--decision-soft); color: var(--decision); border-radius: 10px; padding: 12px 16px; font-weight: 600; }
+</style>
+</head>
+<body>
+<!--
+  Fill only the JSON below (keys: skill progress-report, SKILL.md). Every count, percentage and bar is computed from
+  tracks[].items[].status, so the headline, the bar, the legend and the track counters always agree.
+  Statuses: done, review, active, planned, blocked, decision, unknown; dropped is struck through and left out of the total.
+  Text fields are plain text; `backticks` render as code.
+-->
+<script type="application/json" id="report">
+{
+  "lang": "en",
+  "eyebrow": "Project · stage · 21.10.2026, 14:30 MSK",
+  "headline": "Done: {count} items of the stage",
+  "count_format": "{done} of {total}",
+  "done_means": "merged to main and released as a tagged version",
+  "lede": "Two or three sentences: what is almost done, what that adds up to, what is blocked and on whom.",
+  "show_bar": true,
+  "metrics": [
+    {"label": "Example figure typed by hand", "value": "42", "source": "where it was read, and when"}
+  ],
+  "statuses": {
+    "done": "done", "review": "awaiting check", "active": "in progress", "planned": "not started",
+    "blocked": "waiting on others", "decision": "needs decision", "unknown": "unverified", "dropped": "dropped"
+  },
+  "tracks_title": "Tracks",
+  "track_count_format": "{done} of {total} done",
+  "tracks": [
+    {
+      "title": "Track one",
+      "summary": "What this track gives its readers when it is done.",
+      "items": [
+        {"code": "T-01", "title": "First item", "status": "done"},
+        {"code": "T-02", "title": "Second item", "status": "review", "label": "CI green, to merge"},
+        {"code": "T-03", "title": "Third item", "status": "blocked", "label": "waits on the API team"},
+        {"code": "T-04", "title": "Fourth item", "status": "planned"},
+        {"code": "T-05", "title": "Moved item", "status": "dropped", "label": "→ next phase"}
+      ]
+    }
+  ],
+  "previous": {
+    "date": "14.10",
+    "items": [
+      {"code": "T-01", "status": "review"},
+      {"code": "T-02", "status": "active"},
+      {"code": "T-04", "status": "planned"}
+    ]
+  },
+  "changes_format": "Since {date}: done {done_delta}, scope {added} added / {removed} removed",
+  "road_title": "What is left",
+  "road": [
+    {"kind": "now", "when": "Today", "title": "Finish what is ready", "items": ["Merge T-02"]},
+    {"kind": "blocked", "when": "Waiting on others", "title": "API team", "items": ["T-03: endpoint not deployed"]},
+    {"kind": "decision", "when": "Needs your decision", "title": "Open question", "items": ["T-04: no spec yet"]}
+  ],
+  "notes": [
+    {"title": "What the plan lacks", "text": "A gap the reader must know about, e.g. no exit criterion, or a list rebuilt after the fact."}
+  ],
+  "foot": "Sources: `main`, merge commits, the release tag, the hub journal and handoff."
+}
+</script>
+<div class="wrap" id="root"></div>
+<script>
+(function () {
+  var ORDER = ['done', 'review', 'active', 'planned', 'blocked', 'decision', 'unknown'];
+  var DEFAULT_LABELS = { done: 'done', review: 'awaiting check', active: 'in progress', planned: 'not started', blocked: 'waiting on others', decision: 'needs decision', unknown: 'unverified', dropped: 'dropped' };
+  var root = document.getElementById('root');
+  var data;
+  try { data = JSON.parse(document.getElementById('report').textContent); }
+  catch (e) { root.appendChild(el('div', 'problem', 'Report data is not valid JSON: ' + e.message)); return; }
+  if (data.lang) document.documentElement.lang = data.lang;
+  var labels = Object.assign({}, DEFAULT_LABELS, data.statuses || {});
+  var problems = [];
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) inline(n, String(text));
+    return n;
+  }
+  // Plain text with `code` spans; never parsed as HTML.
+  function inline(node, text) {
+    text.split('`').forEach(function (part, i) {
+      if (!part) return;
+      if (i % 2) { var c = document.createElement('span'); c.className = 'code'; c.textContent = part; node.appendChild(c); }
+      else node.appendChild(document.createTextNode(part));
+    });
+  }
+  function fmt(pattern, values) {
+    return String(pattern).replace(/\{(\w+)\}/g, function (m, k) { return k in values ? values[k] : m; });
+  }
+  function tally(items, where) {
+    var t = { total: 0, dropped: 0 };
+    ORDER.forEach(function (s) { t[s] = 0; });
+    items.forEach(function (it) {
+      if (!(it.status in t) || it.status === 'total') { problems.push('Unknown status "' + it.status + '" in ' + (it.code || it.title) + (where || '')); return; }
+      t[it.status]++;
+      if (it.status !== 'dropped') t.total++;
+    });
+    return t;
+  }
+  function key(it) { return it.code || it.title; }
+  function color(status) { return status === 'planned' ? 'var(--planned-soft)' : status === 'unknown' ? 'var(--unknown-soft)' : 'var(--' + status + ')'; }
+  function swatch(s) {
+    var sw = el('span', 'sw' + (s === 'planned' || s === 'unknown' ? ' ' + s : ''));
+    if (s !== 'planned' && s !== 'unknown') sw.style.background = 'var(--' + s + ')';
+    return sw;
+  }
+
+  var tracks = data.tracks || [];
+  var flat = [].concat.apply([], tracks.map(function (tr) { return tr.items || []; }));
+  var all = tally(flat);
+  var showBar = data.show_bar !== false;
+
+  // Header
+  var header = el('header');
+  if (data.eyebrow) header.appendChild(el('div', 'eyebrow', data.eyebrow));
+  var h1 = el('h1');
+  var parts = String(data.headline || (showBar ? '{count}' : '')).split('{count}');
+  parts.forEach(function (p, i) {
+    if (i) h1.appendChild(el('span', 'num', fmt(data.count_format || '{done} / {total}', all)));
+    inline(h1, p);
+  });
+  header.appendChild(h1);
+  if (data.lede) header.appendChild(el('p', 'lede', fmt(data.lede, all)));
+  // Change since the previous report, computed from both item lists.
+  if (data.previous && data.previous.items) {
+    var before = tally(data.previous.items, ' (previous)');
+    var was = {}, now = {};
+    data.previous.items.forEach(function (it) { if (it.status !== 'dropped') was[key(it)] = 1; });
+    flat.forEach(function (it) { if (it.status !== 'dropped') now[key(it)] = 1; });
+    var added = Object.keys(now).filter(function (k) { return !was[k]; }).length;
+    var removed = Object.keys(was).filter(function (k) { return !now[k]; }).length;
+    var d = all.done - before.done;
+    header.appendChild(el('p', 'changes', fmt(data.changes_format || 'Since {date}: done {done_delta}, scope +{added} / −{removed}', {
+      date: data.previous.date || '?', done_delta: (d >= 0 ? '+' : '−') + Math.abs(d), added: '+' + added, removed: '−' + removed,
+      done_before: before.done, total_before: before.total
+    })));
+  }
+  root.appendChild(header);
+
+  // Figures typed by hand: each carries its source.
+  if ((data.metrics || []).length) {
+    var ms = el('section', 'metrics');
+    ms.setAttribute('aria-label', 'Key figures');
+    data.metrics.forEach(function (m) {
+      var c = el('div', 'metric');
+      c.appendChild(el('div', 'v', m.value));
+      c.appendChild(el('div', 'l', m.label));
+      if (m.source) c.appendChild(el('div', 's', m.source));
+      else problems.push('Figure "' + m.label + '" has no source');
+      ms.appendChild(c);
+    });
+    root.appendChild(ms);
+  }
+
+  // Overall bar and legend
+  if (showBar && all.total) {
+    var sec = el('section');
+    sec.setAttribute('aria-label', 'Overall progress');
+    var bar = el('div', 'bar');
+    bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', ORDER.filter(function (s) { return all[s]; }).map(function (s) { return labels[s] + ' ' + all[s]; }).join(', '));
+    var legend = el('div', 'legend');
+    ORDER.forEach(function (s) {
+      if (!all[s]) return;
+      var seg = el('span');
+      seg.style.width = (100 * all[s] / all.total).toFixed(2) + '%';
+      seg.style.background = s === 'planned' ? 'transparent' : s === 'unknown' ? 'repeating-linear-gradient(45deg, var(--unknown) 0 2px, transparent 2px 5px)' : 'var(--' + s + ')';
+      bar.appendChild(seg);
+      var row = el('div');
+      row.appendChild(swatch(s));
+      row.appendChild(document.createTextNode(labels[s] + ' — ' + all[s]));
+      legend.appendChild(row);
+    });
+    if (all.dropped) legend.appendChild(el('div', null, labels.dropped + ' — ' + all.dropped));
+    sec.appendChild(bar);
+    sec.appendChild(legend);
+    if (data.done_means) sec.appendChild(el('p', 'done-means', '“' + labels.done + '” = ' + data.done_means));
+    root.appendChild(sec);
+  } else if (data.done_means) {
+    root.appendChild(el('p', 'done-means', '“' + labels.done + '” = ' + data.done_means));
+  }
+
+  // Tracks
+  if (tracks.length) {
+    var ts = el('section');
+    ts.appendChild(el('h2', null, data.tracks_title || 'Tracks'));
+    var grid = el('div', 'tracks');
+    tracks.forEach(function (tr) {
+      var items = tr.items || [];
+      var t = tally(items);
+      var wide = tr.wide != null ? tr.wide : (items.length > 8 || tracks.length === 1);
+      var card = el('article', 'track' + (wide ? ' wide' : ''));
+      var head = el('div', 'track-head');
+      head.appendChild(el('h3', null, tr.title));
+      if (showBar) head.appendChild(el('span', 'count', fmt(data.track_count_format || '{done} / {total}', t)));
+      card.appendChild(head);
+      if (tr.summary) card.appendChild(el('p', null, tr.summary));
+      if (showBar && t.total && tracks.length > 1) {
+        var mini = el('div', 'mini');
+        ORDER.forEach(function (s) {
+          items.forEach(function (it) { if (it.status === s) { var i = el('i'); i.style.background = color(s); mini.appendChild(i); } });
+        });
+        card.appendChild(mini);
+      }
+      var ul = el('ul', 'items');
+      var rank = function (it) { return it.status === 'dropped' ? 99 : ORDER.indexOf(it.status); };
+      items.slice().sort(function (a, b) { return rank(a) - rank(b); }).forEach(function (it) {
+        var li = el('li', (it.status === 'dropped' ? 'dropped' : '') + (it.code ? '' : ' nocode'));
+        if (it.code) li.appendChild(el('span', 'code', it.code));
+        li.appendChild(el('span', 't', it.title));
+        li.appendChild(el('span', it.status === 'dropped' ? 'p-dropped' : 'pill p-' + it.status, it.label || labels[it.status] || it.status));
+        ul.appendChild(li);
+      });
+      card.appendChild(ul);
+      grid.appendChild(card);
+    });
+    ts.appendChild(grid);
+    root.appendChild(ts);
+  }
+
+  // Road to the end
+  var road = data.road || [];
+  if (road.length) {
+    var rs = el('section');
+    rs.appendChild(el('h2', null, data.road_title || 'What is left'));
+    var r = el('div', 'road');
+    road.forEach(function (st) {
+      var step = el('div', 'step ' + (st.kind || 'next'));
+      step.appendChild(el('div', 'when', st.when));
+      if (st.title) step.appendChild(el('h3', null, st.title));
+      var ul = el('ul');
+      (st.items || []).forEach(function (x) { ul.appendChild(el('li', null, x)); });
+      step.appendChild(ul);
+      r.appendChild(step);
+    });
+    rs.appendChild(r);
+    root.appendChild(rs);
+  }
+
+  (data.notes || []).forEach(function (n) {
+    var s = el('section', 'note');
+    s.appendChild(el('h3', null, n.title));
+    s.appendChild(el('p', null, n.text));
+    root.appendChild(s);
+  });
+  if (data.foot) root.appendChild(el('p', 'foot', data.foot));
+  if (problems.length) root.insertBefore(el('div', 'problem', problems.join('; ')), root.firstChild);
+})();
+</script>
+</body>
+</html>

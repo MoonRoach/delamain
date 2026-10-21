@@ -46,7 +46,7 @@ otherwise an available Codex Astra at high. A different or older Sol is not the 
 Reviewer engine choice is separate from the implementation engine; this review policy can select Claude for a
 Codex implementation. Check the chosen engine's available models and limits before launch, record the reviewer
 choice in stage rules and its brief, and honour the owner's explicit reviewer policy. For a Claude author,
-use its configured independent Fable or Codex reviewer. One reviewer is sufficient.
+use its configured independent Fable or Codex reviewer. One reviewer is the default.
 The hub writes the review brief and launches the reviewer itself; the author of the change does neither (an author
 briefing its own reviewer steers it to what the author already checked). For money, masking and permissions the brief
 is narrowed to that risk (the template's "Look hardest at") and leaves style out.
@@ -67,6 +67,13 @@ and never add it as a writable root. A review role receives only its cwd, with t
 home config and other agents' inboxes remain read-only: report and journal writes work, repository writes are denied. `read-only`
 cannot write the report or journal and a Codex review role/tag launched that way gets one warning at spawn.
 Claude reviewers keep their repository cwd and must follow the brief's prohibition on repository edits.
+
+**A second opinion** is optional and the hub's call, never a requirement of a class. When a miss would be costly (money,
+migrations, permissions, masking) and the other reviewer's quota allows, `hub reviewer --second --for <class> --author
+<role>` prints the first available entry other than the primary one: usually an entry marked `"second": true`, such as the
+bundled `delamain:agy-review` (Gemini 4 Argon through Antigravity CLI; 6–13 % of a Pro week's Argon quota per review).
+Start it beside the primary review with its own role or run name and verify its findings the same way. Exit 1 only means
+there is no second opinion: the primary review stands.
 
 Configure the list in this order with availability checks for limited reviewers; if a legacy entry selects a
 Sol reviewer for Sol-authored work, bring that entry into line with the approved policy before using its command.
@@ -181,9 +188,12 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    confident work on the wrong problem; details the owner left open belong to the hub.
 10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
     configuration whose own positive and negative controls ran and are shown in the PR — gets no model review; `code`
-    gets one review; `risky` (money, migrations, production, permissions) gets the same single review with its brief
-    narrowed to that risk, not a second reviewer. *Why:* a review costs a full read of the diff and its context, and a
-    second reviewer on the same risk mostly finds the same thing twice; a narrower brief gets more out of one reader.
+    and `risky` (money, migrations, production, permissions) get one review by default, a `risky` brief narrowed to that
+    risk. When a miss would be costly and the quota allows, the hub **may** add one second opinion from another vendor
+    (`hub reviewer --second`, *Reviews* above): its decision, never a default. *Why:* a review costs a full read of the
+    diff and its context, and a second reviewer of the same vendor on the same risk mostly finds the same thing twice; a
+    narrower brief gets more out of one reader. Another vendor misses other things: in a trial on two real merge requests
+    Google's Argon and Codex found about as many real defects, and different ones.
 11. **The reviewer is a different model from the author.** *Why:* a reader of the author's own model reads the code
     the way it was written and returns a confident summary, which reads like agreement.
 12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the

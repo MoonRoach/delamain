@@ -142,6 +142,9 @@ HUB_WIDE_KEYS += ("AGENT_HUB_OWNER_DIGEST_AFTER",)
 # a repository must not unlock a stage the owner locked to an engine.
 HUB_WIDE_KEYS += ("AGENT_HUB_LIMIT_PACE", "AGENT_HUB_STAGE_ENGINES")
 JSON_KEYS += ("AGENT_HUB_STAGE_ENGINES",)
+# The bundled Antigravity reviewer (bin/agy-review): which agy to run, its model and the quota floor. Hub home only: a
+# repository must not choose the executable the hub starts.
+HUB_WIDE_KEYS += ("AGENT_HUB_AGY_BIN", "AGENT_HUB_AGY_REVIEW_MODEL", "AGENT_HUB_AGY_REVIEW_MIN_LEFT")
 
 
 # ---------------------------------------------------------------- the hub home

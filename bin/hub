@@ -16,7 +16,7 @@
   hub rename   --stage OLD --to NEW [--dry-run]
   hub close    --stage stage-a [--why TEXT] [--force] [--dry-run]
   hub effort   [--session ID] [--json]
-  hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage stage-a] [--json] [--all]
+  hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage stage-a] [--json] [--all] [--second]
   hub grill    [open] --stage stage-a [--questions ID,…] [--also-stage S] [--topic T] [--owner-words T]
                [--host auto|desktop|codex-app|bg|manual] [--model M] [--effort E] [--again] [--dry-run]
   hub grill    bind --stage stage-a --launch ID --session FULL_ID
@@ -200,6 +200,9 @@ available now — for the change class --for, if given — and exactly how to st
 --author ROLE|ENGINE[/MODEL] names who wrote the change (a role of the stage — read from the agent's meta.json — or
 claude|codex[/model]); the reviewer is chosen by it, not by the host's engine, and every `check` gets it as
 AGENT_HUB_REVIEW_AUTHOR_ENGINE / AGENT_HUB_REVIEW_AUTHOR_MODEL. Without it the host's engine is assumed, and a line says so.
+--second asks for an optional second opinion: it picks the primary reviewer exactly as the plain walk does, then prints the
+first other available entry (an entry with `"second": true` serves second opinions only and is skipped by a plain walk);
+--json adds `second: true` and `primary`. Exit 1 then means only that no second opinion is available.
 Exit 0 with a reviewer, 1 when none is available, 2 usage.
 home prints where the hub keeps its files and why there: $AGENT_HUB_HOME, else a repository's .agent-hub/config.json
 AGENT_HUB_HOME "project" (<main checkout>/.agent-hub/local/) or "user", else ~/agent-hub — the legacy ~/.claude/agent-hub
@@ -1747,7 +1750,11 @@ def cmd_reviewer(a) -> int:
     loaded = reviewers.load(author=author)
     for problem in loaded.problems:
         hc.warn(problem)
-    verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all, author=author)
+    primary = None
+    if a.second:  # the primary is what the plain walk would choose; `chosen` is the second opinion
+        verdicts, primary, chosen = reviewers.walk_second(loaded, a.for_class, every=a.all, author=author)
+    else:
+        verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all, author=author)
     source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
     start = reviewers.start_line(chosen.entry, a.stage) if chosen else None
@@ -1757,7 +1764,8 @@ def cmd_reviewer(a) -> int:
                           "chosen": chosen.entry.name if chosen else None, "start": start, "helper_threshold": helper_lines,
                           "entries": [reviewers.entry_json(v) | ({"check_output": v.output} if a.all and v.output else {})
                                       for v in verdicts],
-                          "invalid": loaded.problems}, ensure_ascii=False, indent=1))
+                          "invalid": loaded.problems} | ({"second": True, "primary": primary.entry.name if primary else None}
+                                                        if a.second else {}), ensure_ascii=False, indent=1))
         return 0 if chosen else 1
     print(f"author: {author} ({author.source})" if author else f"author: unknown, host engine {host} assumed")
     if a.all or not chosen:
@@ -1765,17 +1773,24 @@ def cmd_reviewer(a) -> int:
         for v in verdicts:
             e = v.entry
             mark = "→" if chosen and v is chosen else " "
-            print(f" {mark} {e.name} ({reviewers.describe(e)}): {'available' if v.available else 'not available'} — {v.why}")
+            tail = " [primary]" if primary is not None and v is primary else ""
+            print(f" {mark} {e.name} ({reviewers.describe(e)}): {'available' if v.available else 'not available'} — {v.why}{tail}")
             if a.all and v.output:
                 print(f"     check output: {v.output}")
         if a.all:
             for problem in loaded.problems:
                 print(f"   invalid: {problem}")
     if not chosen:
-        print("no reviewer is available" + (f" for class {reviewers.show(a.for_class)}" if a.for_class else ""), file=sys.stderr)
+        if a.second:  # the primary reviewer stands alone: that is an answer, not a failure of the review
+            print("no second opinion is available" + (f" for class {reviewers.show(a.for_class)}" if a.for_class else "")
+                  + (f" (the primary reviewer {primary.entry.name} stands alone)" if primary else
+                     " (and no primary reviewer is available either)"), file=sys.stderr)
+        else:
+            print("no reviewer is available" + (f" for class {reviewers.show(a.for_class)}" if a.for_class else ""), file=sys.stderr)
         return 1
     e = chosen.entry
-    print(f"reviewer: {e.name} ({reviewers.describe(e)})")
+    print(f"reviewer: {e.name} ({reviewers.describe(e)})" + (
+        f" — second opinion, the primary is {primary.entry.name if primary else 'none (none is available)'}" if a.second else ""))
     print(f"review helpers: no judgement team below {helper_lines} changed lines. Fill this threshold in the brief")
     print(f"start: {start}")
     return 0
@@ -2248,6 +2263,9 @@ def main(argv: list) -> int:
                         "meta.json) or claude|codex[/model]; the reviewer is chosen by it, not by the host's engine. "
                         "Checks see AGENT_HUB_REVIEW_AUTHOR_ENGINE / _MODEL")
     r.add_argument("--all", action="store_true", help="judge and list every entry, not only up to the first available")
+    r.add_argument("--second", action="store_true",
+                   help="an optional second opinion: the first available entry other than the primary reviewer (the plain "
+                        "walk's choice), whether it is a `second: true` entry or an ordinary one; exit 1 = none")
     r.add_argument("--json", action="store_true")
     ho = sub.add_parser("home", parents=[stage_opt], help="where the hub keeps its files; `home migrate` moves them "
                         "(--stage is accepted, the hub home does not depend on it)")

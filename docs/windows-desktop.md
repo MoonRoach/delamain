@@ -22,8 +22,9 @@ approve the plan first, say so explicitly. Merge, publication and deployment ret
 the original owner-authorization rules. There is no need to open a WSL coordinator
 terminal for this route.
 
-The native plugin name is `delamain@delamain-windows`. Its five skills are `setup`,
-`hub`, `handoff`, `delegation` and `status`, under the `delamain:` namespace. SessionStart
+The native plugin name is `delamain@delamain-windows`. Its main skills are `setup`,
+`hub`, `handoff`, `delegation` and `status`, under the `delamain:` namespace; `agy-review`, a reviewer
+skill for the Antigravity CLI, ships with them but is verified on macOS only. SessionStart
 provides the actual current chat UUID and installed bridge path. If that context is
 absent, enable and trust the installed plugin hooks and open a new chat; never guess
 the session from another chat or from a shared working directory.

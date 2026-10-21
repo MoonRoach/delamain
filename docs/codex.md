@@ -88,8 +88,9 @@ budget thresholds alone can have private registered-stage overrides; see [Agent 
 
 At the first WARN, a registered main hub with autopilot enabled latches durable `handoff_due` without closing
 tools. Missing/decreased usage, repeated warning buckets and owner/chain resets preserve the obligation and its
-reminders, rather than turning it into a tool gate. At BLOCK, ordinary recognized work closes; the handoff path
-and narrow existing reads remain available, and acknowledgement/reply stays possible.
+reminders without a tool gate before the first actual BLOCK. At BLOCK, ordinary recognized work closes; this
+hard gate survives missing/decreased usage until an explicit threshold-policy or registration reset. The handoff
+path and narrow existing reads remain available, and acknowledgement/reply stays possible.
 A real registry change or explicit threshold-policy change can release the old obligation. Subagents,
 non-hubs and disabled autopilot keep their previous behavior.
 

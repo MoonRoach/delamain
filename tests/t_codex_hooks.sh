@@ -534,6 +534,7 @@ class CodexHooks(unittest.TestCase):
         (stage / 'config.json').write_text(json.dumps({'AGENT_HUB_CONTEXT_WARN': 300000,
                                                       'AGENT_HUB_CONTEXT_BLOCK': 500000}))
         for engine in ('claude', 'codex'):
+            (stage.parent / '.state/context-budget/codex-own.json').unlink(missing_ok=True)
             self.env['AGENT_HUB_ENGINE'] = engine
             for tokens, denied in ((320000, False), (550000, True)):
                 if engine == 'claude':
@@ -550,6 +551,91 @@ class CodexHooks(unittest.TestCase):
                                       transcript_path=str(transcript))
                     self.assertIn('next quiet point', reply['hookSpecificOutput']['additionalContext'])
                     self.assertNotIn('Hand over now', reply['hookSpecificOutput']['additionalContext'])
+
+    def test_actual_block_latches_across_compaction_missing_and_low_usage_until_policy_reset(self):
+        stage, transcript = self.budget_hub(550000)
+        self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                              transcript_path=str(transcript))))
+        self.assertTrue(self.directive_state(stage)['block_due'])
+        for record in ('', json.dumps({'type': 'compacted'}), json.dumps(dict(type='token_usage_record',
+                       payload={'usage': {'total_tokens': 1000}}))):
+            transcript.write_text(record + '\n')
+            for tool in ('Bash', 'Agent', 'SendMessage'):
+                self.assertTrue(self.denied(self.hook('context_budget.py', tool, {'command': 'ls', 'prompt': 'work'},
+                                                     transcript_path=str(transcript))), (record, tool))
+            reply = self.hook('context_budget.py', event='UserPromptSubmit', prompt='Explain', transcript_path=str(transcript))
+            self.assertIn('Hand over now', reply['hookSpecificOutput']['additionalContext'])
+        # Only an explicit budget-policy edit, not a decreased estimate, clears the reached barrier.
+        (stage / 'config.json').write_text(json.dumps({'AGENT_HUB_CONTEXT_WARN': 350000,
+                                                      'AGENT_HUB_CONTEXT_BLOCK': 600000}))
+        self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                               transcript_path=str(transcript))))
+        self.assertFalse(self.directive_state(stage).get('block_due'))
+
+    def test_appended_history_larger_than_scan_budget_never_reuses_complete_prefix(self):
+        _, transcript = self.fresh_budget()
+        state = {}
+        data = {'hook_event_name': 'Stop'}
+        self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
+        self.assertTrue(state['transfer_scan_complete'])
+        self.append_human(transcript, 'Do not transfer this stage.')
+        with transcript.open('ab') as handle:
+            handle.write((json.dumps({'type': 'response_item', 'payload': {'role': 'tool', 'text': 'x' * 256}})
+                          + '\n').encode() * 32)
+        # Scale the actual MAX_SCAN bound down; the missing interval has exactly the same semantics
+        # as >64 MiB of new traffic after a previously complete real transcript.
+        with patch.object(context_budget, 'MAX_SCAN', 1024):
+            self.assertTrue(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
+            self.assertFalse(state['transfer_scan_complete'])
+            self.assertTrue(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
+            self.assertFalse(context_budget.explicit_transfer_blocker(
+                {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Resume the handoff.'}, transcript, state, bool))
+            self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
+            self.append_human(transcript, 'Resume the handoff.')
+            self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
+
+    def test_busy_other_session_never_holds_global_prune_guard_or_drops_block(self):
+        import fcntl
+        import time
+        stage, transcript = self.budget_hub(550000)
+        directory = stage.parent / '.state/context-budget'
+        directory.mkdir(parents=True)
+        observed = self.home / 'guard-acquired'
+        program = '''import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import context_budget
+hc = context_budget.hubcore()
+original = hc.Flock.__enter__
+def entered(self):
+    result = original(self)
+    if self.path.name == '.prune.lock':
+        Path(sys.argv[2]).touch()
+    return result
+hc.Flock.__enter__ = entered
+context_budget.main()
+'''
+        with (directory / 'other-session.lock').open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            data = dict(session_id='other-session', hook_event_name='PreToolUse', cwd=str(self.cwd),
+                        tool_name='Bash', tool_input={'command': 'ls'}, transcript_path=str(transcript))
+            waiter = subprocess.Popen([sys.executable, '-c', program, str(ROOT / 'hooks'), str(observed)],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, env=self.env)
+            try:
+                waiter.stdin.write(json.dumps(data)); waiter.stdin.close()
+                deadline = time.monotonic() + 3
+                while not observed.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(observed.exists(), 'waiter did not reach the shared guard')
+                self.assertIsNone(waiter.poll(), 'the deliberately busy session must still be waiting')
+                self.env['AGENT_HUB_HOOK_DEADLINE_S'] = '.5'
+                out = self.hook('context_budget.py', 'Bash', {'command': 'ls'}, transcript_path=str(transcript))
+                self.assertTrue(self.denied(out), 'another session must retain its BLOCK decision')
+            finally:
+                waiter.terminate()
+                waiter.wait(timeout=3)
+                waiter.stdout.close(); waiter.stderr.close()
 
     def test_directive_scan_is_incremental_and_ignores_torn_final_record(self):
         _, transcript = self.fresh_budget()

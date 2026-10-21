@@ -552,7 +552,8 @@ finish only at completed DoD, explicit owner stop or a genuine business/authorit
 For registered Claude and Codex main hubs with autopilot enabled, WARN is a soft advisory: acknowledge the owner
 and transfer at the next quiet point, after any already-active atomic merge, lock or message operation finishes.
 The durable handoff obligation survives owner prompts, chain resets and missing/decreased usage; WARN does not
-close tools. BLOCK is the hard barrier for ordinary recognized work. A checkpoint alone is not completion.
+close tools before the first actual BLOCK. BLOCK is the hard barrier for ordinary recognized work; once reached,
+it survives missing/decreased usage until an explicit threshold-policy or registration reset. A checkpoint alone is not completion.
 Carry an implementation pause to the successor. A newer authorized same-stage read-only owner discussion may
 transfer under the existing transfer grant without resuming implementation. Explicit transfer prohibition or
 revocation blocks transfer. Generated instructions and continuation markers never grant human authority.

@@ -27,7 +27,8 @@ Autopilot (AGENT_HUB_AUTO_HANDOFF=on, bin/autopilot.py), in the main thread of a
 (roles `hub`): WARN advises acknowledging the owner and preparing a handoff at the next quiet point — `hub
 handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.level`) and permission mode filled in,
 `jwait`. The due obligation survives usage decreases and repeats on owner prompts. Only at BLOCK are
-Bash, Write, Edit and NotebookEdit gated too: Bash passes only when every command of
+Bash, Write, Edit and NotebookEdit gated too; a reached BLOCK barrier survives usage decreases/loss until
+an explicit policy reset or a change of registered hub. Bash passes only when every command of
 the line is a handoff command or a narrowly allowed settings/authority/path/HANDOFF read (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
 "[agent-hub auto-handoff k/N]" (written under the name used before the rename; "[delamain auto-handoff k/N]" counts too)
@@ -69,6 +70,7 @@ import shlex
 import shutil
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -179,7 +181,10 @@ def explicit_transfer_blocker(data, path, state, owner_spoke):
                 if observe(text, source):
                     found = True
                     break  # latest decisive human source, not the latest neutral query
-            state["transfer_scan_complete"] = complete or info.st_size - start <= MAX_SCAN or found
+            # A previously complete prefix says nothing about an appended gap larger than our tail
+            # budget. Advancing the cursor past that gap must retain unknown history, not bless it.
+            covered = info.st_size - start <= MAX_SCAN
+            state["transfer_scan_complete"] = found or (covered and (complete or start == 0))
             if not state["transfer_scan_complete"]:
                 unknown = True
             if not found:
@@ -193,6 +198,8 @@ def explicit_transfer_blocker(data, path, state, owner_spoke):
             unknown = False
             if "directive_cursor" in state:
                 state["directive_cursor"]["unknown"] = False
+                # This new human decision supersedes any older unobserved interval as well.
+                state["transfer_scan_complete"] = True
     state["transfer_directives_seen"] = seen[-16:]
     return bool(state.get("transfer_stop") or unknown
                 or ASSISTANT_BLOCKER.search(str(data.get("last_assistant_message") or "")))
@@ -696,6 +703,38 @@ def prune_state(hc, state_dir):
             continue
 
 
+@contextmanager
+def budget_mutex(hc, state_dir, key):
+    """Acquire an inode under the pruning guard without letting a busy session stall other sessions."""
+    while True:
+        mutex = None
+        with hc.Flock(state_dir / ".prune.lock"):
+            marker = state_dir / ".pruned"
+            if not marker.exists() or time.time() - marker.stat().st_mtime > 86400:
+                prune_state(hc, state_dir)
+                marker.touch()
+            candidate = open(state_dir / f"{key}.lock", "a")
+            try:
+                fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.utime(candidate.name, None)
+                mutex = candidate
+            except BlockingIOError:
+                candidate.close()
+            except BaseException:
+                candidate.close()
+                raise
+        if mutex is not None:
+            break
+        # A waiter never owns an unlocked file descriptor outside the pruning guard. A pruner may
+        # safely retire stale unlocked inodes, and the next attempt will open the current inode.
+        time.sleep(.01)
+    try:
+        yield
+    finally:
+        fcntl.flock(mutex, fcntl.LOCK_UN)
+        mutex.close()
+
+
 def grilling_hold(gr, grill: dict, ceiling_k: str, auto: bool) -> str:
     """What a hub grilling the owner is told instead of the handoff steps."""
     stage = grill["stage"]
@@ -727,20 +766,8 @@ def main() -> None:
     state_dir = (Path(raw_state).expanduser() if raw_state else hc.root() / ".state") / "context-budget"
     # Serialize read/modify/reserve with atomic replacement. Never hold the stage mutex across a hook.
     try:
-        # Opening AND acquiring the per-session inode happens under the same guard as pruning. A
-        # nonblocking pruning lock alone would miss another process that opened it but is still waiting.
-        with hc.Flock(state_dir / ".prune.lock"):
-            marker = state_dir / ".pruned"
-            if not marker.exists() or time.time() - marker.stat().st_mtime > 86400:
-                prune_state(hc, state_dir)
-                marker.touch()
-            mutex = hc.Flock(state_dir / f"{key}.lock")
-            mutex.__enter__()
-            os.utime(mutex.path, None)
-        try:
+        with budget_mutex(hc, state_dir, key):
             handle(data, hc, state_dir, key)
-        finally:
-            mutex.__exit__(None, None, None)
     except OSError as error:
         diagnostic(hc, data, None, "failure", reason="state_io", error_type=type(error).__name__)
         if event != "Stop":
@@ -876,6 +903,13 @@ def handle(data, hc, state_dir, key, writable=True):
         else:
             writable = False
             diagnostic(hc, data, hub_stage, "failure", reason="state_io")
+    if due and not holding and tokens is not None and tokens >= block and not state.get("block_due"):
+        # WARN remains advisory; once actually reached, BLOCK survives compaction and lost usage just
+        # like the handoff obligation. The explicit policy reset above is the same reset boundary.
+        state["block_due"] = True
+        if writable:
+            writable = save_state(state_dir, key, state)
+    block_due = bool(due and state.get("block_due"))
     phase, request, blocked = "none", None, False
     progressed = False
     if due:
@@ -932,7 +966,7 @@ def handle(data, hc, state_dir, key, writable=True):
 
     def plan() -> str:
         # Settings enrichment must never erase the owner's response opportunity.
-        hard = at_ceiling or (tokens is not None and tokens >= block)
+        hard = block_due or at_ceiling or (tokens is not None and tokens >= block)
         timing = ("Hand over now" if hard else "Prepare to hand over at the next quiet point")
         work = ("then finish only an already-active atomic operation. Start no new implementation. " if hard else
                 "finish the current operation and prepare the checkpoint at the next quiet point. "
@@ -1062,7 +1096,7 @@ def handle(data, hc, state_dir, key, writable=True):
         return
 
     if event == "PreToolUse":
-        if (tokens is None or tokens < block) and not at_ceiling:
+        if not block_due and (tokens is None or tokens < block) and not at_ceiling:
             return
         if hub_stage:
             tin = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
@@ -1080,7 +1114,8 @@ def handle(data, hc, state_dir, key, writable=True):
             diagnostic(hc, data, hub_stage, "gate_denied", reason="handoff_due", phase=phase, request_id=request)
             emit("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
                 (f"Session context is {fmt(tokens)} tokens, at or above {limit_text}. {plan()}" if at_ceiling else
-                 f"Durable handoff is due from the first warning ({fmt(state['due_since_tokens'])} tokens). {plan()}")))
+                 f"The hard context barrier has been reached; handoff has been due since "
+                 f"{fmt(state['due_since_tokens'])} tokens. {plan()}")))
             return
         if mentions(data.get("tool_input"), escape):
             return

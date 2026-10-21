@@ -84,8 +84,7 @@ try:
     assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
     brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
     assert 'finite queue snapshot' in brief and 'Terminal follow-through' in brief and '--for 9m' not in brief
-    for phrase in ('prepare the required handoff', 'At the first context warning',
-                   'complete the transfer now', 'A checkpoint alone is not completion',
+    for phrase in ('WARN is a soft advisory: acknowledge the owner\nand transfer at the next quiet point, after any already-active atomic merge, lock or message operation finishes.\nThe durable handoff obligation survives owner prompts, chain resets and missing/decreased usage; WARN does not\nclose tools before the first actual BLOCK. BLOCK is the hard barrier for ordinary recognized work; once reached,\nit survives missing/decreased usage until an explicit threshold-policy or registration reset.', 'A checkpoint alone is not completion',
                    'Do not compact to extend the shift', 'only the handoff procedure may continue',
                    'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):
         assert phrase in brief, (phrase, brief)

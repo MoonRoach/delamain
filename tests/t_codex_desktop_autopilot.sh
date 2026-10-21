@@ -416,7 +416,7 @@ prompt = args['prompt']
 for phrase in ('Terminal follow-through', 'remaining approved Business DoD', 'resource ownership',
                'next independent authorized ready work', 'expected event',
                "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope',
-               'prepare the required handoff', 'At the first context warning', 'A checkpoint alone is not completion',
+               'WARN is a soft advisory: acknowledge the owner\nand transfer at the next quiet point, after any already-active atomic merge, lock or message operation finishes.\nThe durable handoff obligation survives owner prompts, chain resets and missing/decreased usage; WARN does not\nclose tools before the first actual BLOCK. BLOCK is the hard barrier for ordinary recognized work; once reached,\nit survives missing/decreased usage until an explicit threshold-policy or registration reset.', 'A checkpoint alone is not completion',
                'Carry an implementation pause', 'read-only owner discussion', 'revocation blocks transfer',
                'Do not compact to extend the shift', 'only the handoff procedure may continue',
                'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):

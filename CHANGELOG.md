@@ -13,8 +13,8 @@
 - **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
   from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
   the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary
-  recognized work. Codex active-turn Stop
-  continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
+  recognized work. Once reached, the BLOCK gate survives missing/decreased usage until an explicit
+  threshold-policy or registration reset. Codex active-turn Stop continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
   measured headroom checks. Paused implementation stays paused through an authorized same-stage read-only
   discussion transfer. Existing grilling holds retain their exceptions and suppress Stop continuation; the ceiling
   still requires the owner's handoff decision. Redacted lifecycle diagnostics are best effort; the independent

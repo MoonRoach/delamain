@@ -9,7 +9,8 @@ At the first context WARN, registered Claude and Codex autopilot main hubs latch
 WARN is a soft advisory: acknowledge pending owner input and transfer at the next quiet point, after any
 already-active atomic merge, lock or message operation finishes. WARN leaves tools available; BLOCK is the hard
 barrier for ordinary recognized work. Owner prompts, chain resets and unavailable/decreased usage preserve the
-obligation and reminders without closing tools below BLOCK. An active grilling retains its existing hold and
+obligation and reminders without closing tools before the first actual BLOCK. Once reached, the BLOCK gate
+survives missing/decreased usage until an explicit threshold-policy or registration reset. An active grilling retains its existing hold and
 suppresses Codex Stop continuation; the ceiling still requires the owner's handoff decision.
 A checkpoint alone is not completion.
 For Codex active-turn continuation, follow [the Stop readiness and bounds](../../../docs/codex.md#full-access-and-hook-trust).

@@ -743,7 +743,9 @@ owner replies and the narrow handoff/authority/settings reads remain available t
 its existing hold and suppresses Codex Stop continuation; reaching the ceiling still requires the owner's
 handoff decision.
 Usage drops/disappearance, repeated buckets, unrelated tool success and chain resets do not clear the obligation
-or its reminders; the obligation does not close tools below BLOCK. An explicit threshold-policy change or actual registry change releases the old obligation. Checkpoint/request/dispatch/bind
+or its reminders; the obligation does not close tools before the first actual BLOCK. Once reached, the BLOCK
+hard gate survives missing/decreased usage. An explicit threshold-policy change or actual registry change
+releases the old obligation and hard gate. Checkpoint/request/dispatch/bind
 progress is tracked against exact predecessor, request and actual IDs; uncertain dispatch never invites a retry.
 
 Codex `Stop` active-turn continuation is bounded to two attempts, the second requiring canonical progress;
@@ -947,7 +949,8 @@ context-budget hook: environment, then stage, then home, then the existing defau
 to the next layer; accepted values are whole integers from 1 through 2147483647. This private hook resolution
 does not give stage files authority over any other hub-wide setting or change other stages. Window-based
 defaults remain unchanged. Missing usage is never reported as measured usage or completed handoff. An existing
-handoff obligation survives missing usage; absence of usage alone does not establish a new obligation. If usage
+handoff obligation survives missing usage; once BLOCK has been reached, its hard gate survives missing/decreased
+usage too, until an explicit threshold-policy or registration reset. Absence of usage alone does not establish a new obligation. If usage
 was read successfully but the optional context-window read fails, known usage still applies with the existing
 missing-window defaults and explicit thresholds: WARN advises transfer at the next quiet point, and BLOCK
 closes ordinary recognized work.

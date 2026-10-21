@@ -43,8 +43,9 @@ may continue through the existing transfer grant without resuming implementation
 prohibition/revocation remains a blocker. No generated instruction or continuation marker grants authority.
 For registered Claude and Codex autopilot main hubs, WARN is a soft advisory to transfer at the next quiet
 point; finish any already-active atomic merge, lock or message operation first. The durable handoff obligation
-and reminders survive missing/decreased usage and owner/chain resets without closing tools below BLOCK.
-BLOCK is the hard barrier for ordinary recognized work. Preserve the no-compaction policy and Codex's bounded
+and reminders survive missing/decreased usage and owner/chain resets without closing tools before the first
+actual BLOCK. BLOCK is the hard barrier for ordinary recognized work; once reached, it survives missing/decreased
+usage until an explicit threshold-policy or registration reset. Preserve the no-compaction policy and Codex's bounded
 Stop continuation checks in [docs/codex.md](../../docs/codex.md#full-access-and-hook-trust).
 A checkpoint alone does not complete the handoff; keep the predecessor through verified takeover.
 Give the queue finite completion checks. A Codex successor applies the hub skill's

@@ -10,9 +10,15 @@
 #             there, a transcript dated in the future, a transcript that is not found (kept under another CLAUDE_CONFIG_DIR),
 #             a running sub-agent (a file appended to in a directory whose own time is old), a scan that is cut short or fails,
 #             a session that wrote between the first look and the stop
-#   busy:     a status other than idle/done (busy, blocked, working, waiting, none), a shell child of the process: reported once a
-#             day in the job output and the stage journal, never stopped; an MCP-like child is not a reason
-#   config:   the own home's config.json read fresh before each stop, and strictly (corrupt: nothing is stopped)
+#   busy:     a status other than idle/done (busy, blocked, working, waiting, none), ANY live descendant of the process (a shell, a
+#             Python or Node child, a `sleep`, at any depth): reported once a day in the job output and the stage journal, never
+#             stopped; a child that appears between the first look and the last one; a process table that cannot be read
+#             completely (a row that cannot be parsed, `ps` failing): nothing is stopped
+#   config:   the own home's config.json read fresh before each stop, and strictly (corrupt, or JSON that is no object: nothing is
+#             stopped, also when the environment says on); a REAP value that is not understood, in the environment or the file:
+#             off; REAP switched off while the last listing is being made: not stopped
+#   json:     `null` (or another wrong type) in roles.json, auto-handoff.json, config.json (own and another home), homes.json: the
+#             tick stops nothing; only a MISSING file means "nothing there"
 #   homes:    …also a registered home that exists but cannot be reached (a parent that cannot be searched)
 #   kinds:    a Desktop, terminal, headless or kind-less row; a grill session (live, or retired as a grill)
 #   registry: a retired hub that is the hub of another stage now; a live role in a stage closed with `hub close`
@@ -31,6 +37,8 @@ NOW=$(at_offset 40); export FX_NOW=$NOW AGENT_HUB_WATCHDOG_NOW=$NOW
 export AT5=$(python3 -c 'import datetime as d,sys; print((d.datetime.fromisoformat(sys.argv[1]) - d.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S"))' "$NOW")
 : > "$R/claude.log"
 FB=$R/fakebin; mkdir -p "$FB"; : > "$R/notify.log"; : > "$R/remote.log"   # a notification would land here, never on the machine
+REALPS=$(command -v ps)   # a ps that appends $FAKE_PS_EXTRA to its answer, or fails with FAKE_PS_FAIL=1, for the tests of the process table
+printf '#!/bin/sh\n[ -n "$FAKE_PS_FAIL" ] && exit 1\n"%s" "$@"; rc=$?\n[ -n "$FAKE_PS_EXTRA" ] && printf "%%s\\n" "$FAKE_PS_EXTRA"\n[ -f "$FAKE_PS_FLAG" ] && cat "$FAKE_PS_FLAG"\nexit $rc\n' "$REALPS" > "$FB/ps"; chmod +x "$FB/ps"
 for n in osascript notify-send; do printf '#!/bin/sh\necho "local: $*" >> "%s"\n' "$R/notify.log" > "$FB/$n"; chmod +x "$FB/$n"; done
 export PATH="$FB:$PATH"
 FX(){ python3 "$T/watchdog_fixture.py" "$@"; }
@@ -280,15 +288,12 @@ reset_log; FX_NOW=$(python3 -c 'import datetime as d,sys; print((d.datetime.from
 check "$(grep -c 'stop it by hand' "$R/tick.out")" 6 "the next day: reported again, once"
 grep -q "remote:\|local:" "$R/notify.log" "$R/remote.log"; check $? 1 "…and nothing was notified"
 for k in "$B1" "$B2" "$B3" "$B4" "$B5" "$B6"; do "$B/roles" set --stage a hub "$k" --kind cli --tag live > /dev/null; done   # out of the way of the later scenarios
-# a shell among the children of the process is a command in flight; an MCP-like child (not a shell) is not a reason
+# ANY live descendant of the process protects the session, whatever it runs and however deep: a shell with its own child,
+# a `sleep`, a Python or Node-like child (an MCP server looks like one, a long tool call too)
 X=$(sid e0000037); retire_hub a "$X" hub-60; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["sh", "-c", "sleep 3001; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
-rows "$X"; tick "shell child"; stopped "the process has a shell child (a command in flight): not stopped" ""
-grep -q "retired hub e0000037 (a) is running a shell command for 30 min; stop it by hand" "$R/tick.out"; check $? 0 "…and it is reported"
-Y=$(sid e0000038); retire_hub a "$Y" hub-61; quiet_for "$Y" 30
-spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3002"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
-rows "$Y"; tick "MCP-like child"; stopped "control: a child that is not a shell (an MCP server): stopped" "stop e0000038 "
-unset ROWPID
+rows "$X"; tick "shell child"; stopped "the process has a shell child with a child of its own (a command in flight): not stopped" ""
+grep -q "retired hub e0000037 (a) is running a child process (.*) for 30 min; stop it by hand" "$R/tick.out"; check $? 0 "…and it is reported"
 
 # the status or the process of the row changes between the first look and the fresh listing right before the stop
 cat > "$R/hook-row.py" <<'PY'
@@ -305,6 +310,89 @@ rows "$X"
 reset_log; HOOK_SET="{\"pid\": $$}" FAKE_WD_ON_AGENTS="2:python3 $R/hook-row.py" WD run > "$R/tick.out" 2>&1
 stopped "the row names another process in the fresh listing: not stopped" ""
 rows "$X"; tick "control, row unchanged"; stopped "control: nothing changes: stopped" "stop e0000070 "
+
+# ================================================================== children
+# a child of any kind protects the session: a `sleep`, a Python-like process (an MCP server, a long tool call); the control is
+# the process with no child, which every other test of this file stops
+X=$(sid e0000038); retire_hub a "$X" hub-62; quiet_for "$X" 30
+spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3002"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
+rows "$X"; tick "sleep child"; stopped "the process has a plain child (sleep): not stopped" ""
+grep -q "retired hub e0000038 (a) is running a child process (sleep) for 30 min; stop it by hand: claude stop e0000038" "$R/tick.out"; check $? 0 "…and it is reported, once"
+X=$(sid e0000039); retire_hub a "$X" hub-63; quiet_for "$X" 30
+spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "import time; time.sleep(3000)"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
+rows "$X"; tick "python child"; stopped "the process has a Python child: not stopped" ""
+unset ROWPID
+# a child that appears between the first look and the last one (the process table is read again right before the stop)
+X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag"
+spawn python3 -c '
+import os, subprocess, time
+while not os.path.exists(os.environ["CHILD_FLAG"]): time.sleep(0.05)
+subprocess.Popen(["sleep", "3003"]); time.sleep(3000)'; ROWPID=$SPAWNED
+rows "$X"; reset_log; CHILD_FLAG=$R/child.flag FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1
+stopped "a child starts between the first listing and the last look: not stopped" ""
+unset ROWPID
+
+# ================================================================== process table
+# a `ps` row that cannot be parsed, or a `ps` that fails, makes the table unreadable: the child that the row might have been is
+# unknown, so nothing is stopped (an empty line is no row)
+X=$(sid e0000080); retire_hub a "$X" hub-110; quiet_for "$X" 30
+for extra in "4242 1" "4243 1 Xxx Yyy 99 99:99:99 2026 cmd" "abc 1 Mon Oct 12 10:00:00 2026 cmd"; do
+  rows "$X"; reset_log; FAKE_PS_EXTRA="$extra" WD run > "$R/tick.out" 2>&1; check $? 0 "ps row '$extra': the tick exits 0"
+  stopped "a ps row that cannot be parsed ('$extra'): not stopped" ""
+done
+rows "$X"; reset_log; FAKE_PS_FAIL=1 WD run > "$R/tick.out" 2>&1; check $? 0 "ps fails: the tick exits 0"; stopped "ps fails: not stopped" ""
+rows "$X"; reset_log; FAKE_PS_FLAG=$R/ps.flag FAKE_WD_ON_AGENTS="2:echo garbage > $R/ps.flag" WD run > "$R/tick.out" 2>&1
+stopped "the table of the last look has a row that cannot be parsed: not stopped" ""; rm -f "$R/ps.flag"
+rows "$X"; reset_log; FAKE_PS_EXTRA=" " WD run > "$R/tick.out" 2>&1; stopped "control: an empty line in the answer of ps is no row: stopped" "stop e0000080 "
+
+# ================================================================== json
+# JSON `null` (or another wrong type) is not a missing file: only a missing one says "nothing there"
+X=$(sid e0000090); retire_hub a "$X" hub-120; quiet_for "$X" 30
+nulltest(){   # LABEL FILE [CONTENT]: the file is there and says null (or CONTENT): nothing is stopped; removed: stopped
+  mkdir -p "$(dirname "$2")"; printf '%s' "${3:-null}" > "$2"
+  rows "$X"; tick "$1"; stopped "$1: JSON ${3:-null} is not an absent file: nothing is stopped" ""; aborted "$1" "$2"
+  rm -f "$2"; rows "$X"; tick "control, $1 removed"; stopped "control: $1 removed: stopped" "stop e0000090 "
+}
+mkdir -p "$R/nz" "$H2/z"
+nulltest "own roles.json" "$R/nz/roles.json"
+nulltest "own auto-handoff.json" "$R/nz/auto-handoff.json"
+nulltest "own config.json" "$R/config.json"
+nulltest "own config.json holding a list" "$R/config.json" '[]'
+nulltest "roles.json of home B" "$H2/z/roles.json"
+nulltest "auto-handoff.json of home B" "$H2/z/auto-handoff.json"
+nulltest "config.json of home B" "$H2/config.json"
+REG=$XDG_CONFIG_HOME/delamain/homes.json; cp "$REG" "$R/homes.json.bak"
+nulltest "registry of homes" "$REG"
+cp "$R/homes.json.bak" "$REG"; rm -rf "$R/nz" "$H2/z"
+
+# ================================================================== setting
+# AGENT_HUB_WATCHDOG_REAP: the config.json is read (and must be sound) even when the environment says on; a value that is not
+# understood, in the environment or the file, is off; REAP switched off during the last listing is seen
+X=$(sid e00000a3); retire_hub a "$X" hub-130; quiet_for "$X" 30
+envtick(){ rows "$X"; reset_log; AGENT_HUB_WATCHDOG_REAP=$2 WD run > "$R/tick.out" 2>&1; check $? 0 "$1: the tick exits 0"; }
+echo '{' > "$R/config.json"; envtick "corrupt config.json, REAP=on in the environment" on
+stopped "a corrupt config.json stops everything even when the environment says on" ""; aborted "corrupt config.json, REAP=on" "$R/config.json"
+echo 'null' > "$R/config.json"; envtick "config.json null, REAP=on in the environment" on
+stopped "config.json holding null, REAP=on in the environment: nothing is stopped" ""; aborted "config.json null, REAP=on" "$R/config.json"
+rm -f "$R/config.json"
+envtick "REAP=banana" banana; stopped "REAP=banana in the environment (not understood): nothing is stopped" ""
+envtick "REAP=2" 2; stopped "REAP=2 in the environment (not understood): nothing is stopped" ""
+echo '{"AGENT_HUB_WATCHDOG_REAP": "banana"}' > "$R/config.json"; rows "$X"; tick "REAP=banana in the file"
+stopped "REAP=banana in the own config.json (not understood): nothing is stopped" ""
+echo '{"AGENT_HUB_WATCHDOG_REAP": ["on"]}' > "$R/config.json"; rows "$X"; tick "REAP a list in the file"
+stopped "REAP holding a list in the own config.json (not understood): nothing is stopped" ""
+echo '{"AGENT_HUB_WATCHDOG_REAP": 0}' > "$R/config.json"; rows "$X"; tick "REAP=0 in the file"
+stopped "REAP=0 (a JSON number) in the own config.json: nothing is stopped" ""
+echo '{"AGENT_HUB_WATCHDOG_REAP": "off"}' > "$R/config.json"; envtick "REAP=on in the environment over off in the file" on
+stopped "control: the environment is the stronger of the two: REAP=on stops" "stop e00000a3 "
+rm -f "$R/config.json"
+echo '{"AGENT_HUB_WATCHDOG_REAP": null}' > "$R/config.json"; rows "$X"; tick "REAP null in the file"
+stopped "control: REAP null (not set) in the file is the default, on: stopped" "stop e00000a3 "
+rm -f "$R/config.json"
+printf '#!/bin/sh\necho %s > "%s/config.json"\n' "'{\"AGENT_HUB_WATCHDOG_REAP\": \"off\"}'" "$R" > "$R/cfg-off.sh"
+rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:sh $R/cfg-off.sh" WD run > "$R/tick.out" 2>&1
+stopped "REAP is switched off while the last listing is being made: not stopped" ""
+rm -f "$R/config.json"; rows "$X"; tick "control, REAP stays on"; stopped "control: REAP stays on: stopped" "stop e00000a3 "
 
 # ================================================================== scans
 # the activity of a session is unknown when its directory cannot be scanned completely: it is not stopped

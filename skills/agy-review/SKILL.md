@@ -34,4 +34,4 @@ tools and network and database clients are denied. `agy` runs with `--sandbox`, 
 list that keeps programs from starting; `--dangerously-skip-permissions` is never used.
 Your own `~/.gemini/antigravity-cli/settings.json` is neither read nor written.
 
-Verified on macOS with agy 1.4.0 only. Linux and Windows are untested.
+Needs git 2.38 or newer on PATH (older is refused). Verified on macOS with agy 1.4.0 only. Linux and Windows are untested.

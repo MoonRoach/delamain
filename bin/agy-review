@@ -401,6 +401,30 @@ def safe_path(blocked: list) -> str:
     return os.pathsep.join(kept) or "/usr/bin:/bin"
 
 
+GIT_MIN = (2, 38)   # safe.bareRepository exists from git 2.38; an older git would still run a tracked bare repo's config
+
+
+def git_problem(path: str):
+    """Why the git that agy's shell would find on `path` cannot be trusted with a review, or None. No git at all is fine
+    (git commands then fail); a git older than GIT_MIN, or one whose version cannot be read, is refused: without
+    safe.bareRepository a tracked bare-repository layout could run its own diff.external through an allowed `git diff`."""
+    git = shutil.which("git", path=path)
+    if not git:
+        return None
+    try:
+        out = subprocess.run([git, "--version"], capture_output=True, text=True, timeout=10,
+                             env={"PATH": path, "GIT_CONFIG_NOSYSTEM": "1"}).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    m = re.search(r"git version (\d+)\.(\d+)", out)
+    if not m:
+        return f"cannot read the version of {git}; agy-review needs git {GIT_MIN[0]}.{GIT_MIN[1]} or newer"
+    if (int(m.group(1)), int(m.group(2))) < GIT_MIN:
+        return (f"{git} is {m.group(1)}.{m.group(2)}; agy-review needs git {GIT_MIN[0]}.{GIT_MIN[1]} or newer "
+                "(safe.bareRepository keeps a tracked bare repository's config from running)")
+    return None
+
+
 def agy_env(home: str, path: str) -> dict:
     """The environment of an agy review: the caller's, with HOME the review home, the fixed PATH, and git's configuration
     pinned: no inherited GIT_* variable (GIT_EXTERNAL_DIFF, GIT_DIR, …) survives, no system gitconfig is read, and a bare
@@ -525,6 +549,10 @@ def cmd_run(args) -> int:
     if len(text.encode("utf-8")) > MAX_BRIEF_BYTES:
         return refuse(f"the brief is over {MAX_BRIEF_BYTES} bytes; it travels on a command line. Shorten it and put the "
                       "material in a file under an --add-dir")
+    path = safe_path([str(checkout)] + [str(d) for d in extra])
+    problem = git_problem(path)
+    if problem:
+        return refuse(problem)
     left = argon_left(CACHE_MAX_AGE_S, PROBE_S) if threshold > 0 else None
     say(f"Argon weekly quota left: {'unknown' if left is None else f'{left:g} %'} (threshold {threshold:g} %)")
     if left is not None and left < threshold:
@@ -534,7 +562,7 @@ def cmd_run(args) -> int:
     (run / "brief.md").write_text(text.rstrip("\n") + "\n" + FOOTER, encoding="utf-8")
     tag = (hc.signing_tag(stage) if stage else None)
     meta = {"name": name, "model": model, "cwd": str(checkout), "add_dirs": [str(d) for d in extra], "home": str(home),
-            "agy": binary, "path": safe_path([str(checkout)] + [str(d) for d in extra]),
+            "agy": binary, "path": path,
             "stage": stage, "tag": f"{tag}-agy" if tag else "agy-review", "hub_home": str(hc.root()),
             "started": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     (run / "meta").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")

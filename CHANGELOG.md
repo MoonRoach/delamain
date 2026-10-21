@@ -13,7 +13,7 @@
   `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pagers) are denied, and `agy` runs with `--sandbox`, which leaves the
   network open (never `--dangerously-skip-permissions`); the owner's own `~/.gemini/antigravity-cli/settings.json` is not
   touched. `printf` and the shell builtins that assign, export or alias are denied too, agy gets a fixed `PATH` without
-  the checkout's directories, and git has implicit bare repositories off (`safe.bareRepository = explicit`). A stop
+  the checkout's directories, and git has implicit bare repositories off (`safe.bareRepository = explicit`; `run` refuses a git older than 2.38). A stop
   (SIGTERM) ends agy's whole process group, with SIGKILL after ten seconds, and still writes the `rc`; `run` returns
   once the worker has installed its handlers and published its pid.
   A headless run that ends without an answer is resumed, at most twice. `agy-review limits` reads the quota from agy's

@@ -300,7 +300,8 @@ sends files out. For the same reason `printf` and the builtins that assign, expo
 -v PATH …` would swap the program the next `cat` runs), agy gets a fixed `PATH` of absolute directories outside the
 checkout and the extra dirs, and git has implicit bare repositories off (`safe.bareRepository = explicit`, in the review
 HOME's `.gitconfig` and in the environment), so a tracked directory with a bare-repository layout cannot name a diff
-handler. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
+handler. That setting exists from git 2.38: `run` refuses (exit 3) when the git on that `PATH` is older or its version
+cannot be read. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
 `.git/config` names, and repository content cannot set that. The reviewer searches with `grep -rn` and reads ranges with
 `cat`/`head`/`tail` or agy's file-view tool. The tool never
 passes `--dangerously-skip-permissions`: with it the file tool writes outside the checkout even under `--sandbox`. The

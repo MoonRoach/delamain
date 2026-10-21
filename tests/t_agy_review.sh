@@ -435,4 +435,19 @@ import sys; sys.path.insert(0, sys.argv[1]); import hubcore as hc
 print("listed" if "agy-review" in hc.plugin_tools() else "MISSING")
 PY
 check "$(cat $P/tools.out)" listed "agy-review is one of the plugin's tools (path_shadow sees it)"
+
+# ======== git older than 2.38 is refused: safe.bareRepository does not exist there
+GB=$P/gitbin; mkdir -p $GB
+fakegit(){ printf '#!/bin/sh\necho "%s"\n' "$1" > $GB/git; chmod +x $GB/git; }
+fakegit "git version 2.37.3"
+PATH=$GB:$PATH dry; rc=$?
+check "$rc-$(grep -c 'needs git 2.38' $P/dry.err)" "3-1" "run refuses when the git agy would find is 2.37"
+fakegit "git version 2.38.0"
+PATH=$GB:$PATH dry; check $? 0 "…and starts with git 2.38"
+fakegit "git version 2.50.1 (Apple Git-155)"
+PATH=$GB:$PATH dry; check $? 0 "…and with a vendor-suffixed newer git"
+fakegit "not a version"
+PATH=$GB:$PATH dry; rc=$?
+check "$rc-$(grep -c 'cannot read the version' $P/dry.err)" "3-1" "…and refuses a git whose version cannot be read"
+rm -f $GB/git
 exit $fail

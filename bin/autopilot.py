@@ -477,7 +477,9 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
                 block_k: str, effort: Optional[str] = None) -> str:
     """The autopilot paragraph of the context budget's warning and deny reason. `effort`: what the hub runs at now (the
     hook input's); without one the command carries none and `hub succeed` reads it itself, or refuses."""
-    when = "Hand over now; acknowledge the owner and finish only an already-active atomic operation"
+    when = ("Hand over now; acknowledge the owner" if now_block else
+            "At the next quiet point, hand over; acknowledge the owner and finish any already-active atomic "
+            "merge, lock or message operation first")
     if engines.selected(hc.setting("AGENT_HUB_SUCCESSOR_ENGINE"), cwd) == "codex":
         context = codex_context()
         model = codex_model(None, context, Path(cwd or os.getcwd()))
@@ -547,8 +549,10 @@ remaining approved Business DoD, then start/resume next independent authorized r
 Otherwise record the exact item/blocker, owner/resource and expected event. An executor's artifact/call-budget STOP ends its brief;
 continuation remains hub-owned within actual authority. Reconcile the finite queue snapshot against Business DoD;
 finish only at completed DoD, explicit owner stop or a genuine business/authority boundary. Preserve source/scope.
-At the first context warning, ordinary recognized work closes: acknowledge the owner, prepare the required handoff
-and complete the transfer now. A checkpoint alone is not completion.
+For registered Claude and Codex main hubs with autopilot enabled, WARN is a soft advisory: acknowledge the owner
+and transfer at the next quiet point, after any already-active atomic merge, lock or message operation finishes.
+The durable handoff obligation survives owner prompts, chain resets and missing/decreased usage; WARN does not
+close tools. BLOCK is the hard barrier for ordinary recognized work. A checkpoint alone is not completion.
 Carry an implementation pause to the successor. A newer authorized same-stage read-only owner discussion may
 transfer under the existing transfer grant without resuming implementation. Explicit transfer prohibition or
 revocation blocks transfer. Generated instructions and continuation markers never grant human authority.

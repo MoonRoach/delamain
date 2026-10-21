@@ -79,15 +79,17 @@ Recovery preserves the compaction ban and the existing scope and permissions; it
 does not authorize a bypass or grant new permissions.
 
 The separate soft context budget never vetoes `UserPromptSubmit`. In a registered autopilot hub, every prompt
-above warn requires acknowledging the latest human input first and completing the same-stage handoff now,
-finishing only an already-active atomic operation. Preserve pending owner input in the checkpoint/handoff;
-start no new implementation. A settings refusal must leave a concrete owner reply and checkpoint, without
-guessed model/effort/access or a false READY result. Missing usage is reported as unknown. The three numeric
+above WARN reminds the hub to acknowledge the latest human input and transfer at the next quiet point.
+WARN is a soft advisory for both Claude and Codex: complete any already-active atomic merge, lock or message
+operation first. Preserve pending owner input in the checkpoint/handoff. BLOCK is the hard tool barrier.
+A settings refusal must leave a concrete owner reply and checkpoint, without guessed model/effort/access or a
+false READY result. Missing usage is never presented as measured usage. The three numeric
 budget thresholds alone can have private registered-stage overrides; see [Agent discipline](reference.md#agent-discipline).
 
-At the first WARN, a registered main hub with autopilot enabled latches durable `handoff_due` and closes
-ordinary recognized work. Missing/decreased usage, repeated warning buckets and owner/chain resets preserve it.
-Only the handoff path and narrow existing reads remain available; acknowledgement/reply stays possible.
+At the first WARN, a registered main hub with autopilot enabled latches durable `handoff_due` without closing
+tools. Missing/decreased usage, repeated warning buckets and owner/chain resets preserve the obligation and its
+reminders, rather than turning it into a tool gate. At BLOCK, ordinary recognized work closes; the handoff path
+and narrow existing reads remain available, and acknowledgement/reply stays possible.
 A real registry change or explicit threshold-policy change can release the old obligation. Subagents,
 non-hubs and disabled autopilot keep their previous behavior.
 

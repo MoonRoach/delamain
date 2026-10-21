@@ -60,18 +60,20 @@
   like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
   (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
   Found by @Cartograf666 in #76.
-- **Early durable hub handoff.** Registered autopilot main hubs close ordinary recognized work at first WARN
-  and retain the handoff obligation across owner prompts and missing/decreased usage. Codex active-turn Stop
+- **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
+  from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
+  the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary
+  recognized work. Codex active-turn Stop
   continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
   measured headroom checks. Paused implementation stays paused through an authorized same-stage read-only
-  discussion transfer. Existing grilling holds defer the gate and suppress Stop continuation; the ceiling
+  discussion transfer. Existing grilling holds retain their exceptions and suppress Stop continuation; the ceiling
   still requires the owner's handoff decision. Redacted lifecycle diagnostics are best effort; the independent
   compaction veto is unchanged.
 
 - **Soft context budgets preserve replies and require complete handoff.** Every registered autopilot hub prompt
-  above warn requires acknowledgement of the latest owner input and immediate same-stage handoff, including
-  pending-input preservation, one native reservation and verified takeover. Settings failures retain a truthful
-  checkpoint/reply instruction; missing, unreadable or disappearing usage is reported as unknown. The work gate
+  above WARN repeats the acknowledgement and next-quiet-point handoff advisory, preserving pending input.
+  Complete handoff still requires one native reservation and verified takeover. Settings failures retain a truthful
+  checkpoint/reply instruction; unavailable usage is never reported as measured usage. The BLOCK work gate
   permits narrow settings, authority and generated-handoff reads with trusted executable resolution and no
   shell-assignment overrides. Native conversion/cmdlet reads require the inherited Desktop hook marker and
   proven native origin; bridge Bash bodies cannot borrow those exceptions. A failed context-window enrichment

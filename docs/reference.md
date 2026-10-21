@@ -723,7 +723,7 @@ worker subagents.
 
 | Hook | Default | Prevents |
 |---|---|---|
-| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and from its first warning a durable obligation closes ordinary recognized work until handoff or an explicit policy/registry change. |
+| `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and its first warning retains a durable obligation to transfer at the next quiet point without closing tools; BLOCK is the hard barrier for ordinary recognized work. |
 | `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `kill_guard.py` | on | Killing processes by name or pattern: `pkill`, `killall`, `killall5`, `kill $(pgrep …)`, `pgrep … \| xargs kill` (`pidof` and `ps … \| grep` count as `pgrep` at any stage of the pipeline), the loop and variable forms in one command (`for p in $(pgrep …); do kill $p`, `P=$(pgrep …); kill $P`), also behind `sudo`/`timeout`/`eval`/`if !` and inside `bash -c "…"`, foreground or background; a segment that starts with `ssh` is not read. A pattern matches every process of the user — other agents, the hub, the desktop app — and on macOS `pkill -f pat -P 1` reads `-P` and `1` as two more patterns. Allowed: `kill <pid>`, `kill -- -<pgid>`, `agent stop`, `pgrep` alone, quoted text no shell runs, and a deliberate pattern kill with `# kill-ok: <reason>` — except a `pkill` with an option or a second pattern after the first one, which the marker does not pass. |
 | `scan_guard.py` | on | A filesystem walk rooted at the home directory or `/`, which on macOS enters `~/Library` (Mail, Messages, Safari, Containers) and raises «"claude.app" would like to access data from other apps» again and again — the consent is not kept across agent processes. Refused: `find`, `bfs`, `fd`, `rg`, `grep -r`/`-R`/`--recursive`, `ag`, `ack`, `du`, `tree`, `ls -R` whose root is `~`, `$HOME`, `${HOME}`, the absolute home path, `/`, `/Users`, `~/Library`, `~/Library/Containers`, `~/Library/Group Containers` or a glob over them (`~/*`, `/*`); the same with no root or `.` while the working directory is the home (the session's, or after `cd ~` / `cd` / `cd $HOME`, not one in a pipeline or a background list; `env -C DIR` and `sudo -D DIR` move the command, and the body of a `bash -c` it runs, to DIR); the Grep and Glob tools with such a `path`, or none while the session sits in the home. Read through `sudo`/`env`/`timeout`/`nohup`/`xargs`/`eval`/`if !`, pipelines, `&&`, `;`, `$(…)` and `bash -c "…"`; what `ssh`, `docker exec` or `kubectl exec` runs elsewhere is not read. Allowed: a project, the hub home or any named subdirectory (`find ~/repos`, `rg foo ~/agent-hub`, `find ~/Library/LaunchAgents`), a walk that stays on the first level (`find ~ -maxdepth 1`, `fd -d 1`, `tree -L 1`), `ls ~`, a file (`grep foo ~/.zshrc`), quoted text no shell runs (`echo bash -c '…'` and `env printf '%s' bash -c '…'` print it; a heredoc body is text unless a shell reads it), and a walk the owner asked for with `# scan-ok` (Grep and Glob have no marker: run it through Bash). Roots are computed from `$HOME` and the account's home, never a fixed name. Not caught: scripts (`python3 -c "os.walk(…)"`, `node -e`), `cp -r`, `rsync`, `tar`, `chmod -R` and other tools that walk a tree on the side, paths built by a variable or a substitution, and `cd` as the last element of a pipeline under zsh (read as a subshell: `echo x | cd ~; find .` is refused). The refusal names the prompt, says to search the project, `$AGENT_HUB_HOME` or a named subdirectory (or `mdfind -name` for a file by name), and names the marker. Codex: the Bash rules apply to `exec_command` and its aliases; Codex has no Grep or Glob tool to match. Full Disk Access ends the prompt too, but gives every agent that runs without questions silent access to mail, messages and cookies — hence this guard. |
@@ -736,12 +736,14 @@ always 0 (also after an import error), and a timer answers "no decision" 1.5 s b
 
 ### Autopilot: the hub hands over by itself
 
-Registered main hubs with autopilot enabled latch durable `handoff_due` at the first context WARN. Ordinary
-recognized work closes then; owner replies and the narrow handoff/authority/settings reads remain available.
-An active grilling suspends this gate until its ceiling and suppresses Codex Stop continuation; reaching the
-ceiling still requires the owner's handoff decision.
-Usage drops/disappearance, repeated buckets, unrelated tool success and chain resets do not clear it. An explicit
-threshold-policy change or actual registry change releases the old obligation. Checkpoint/request/dispatch/bind
+Registered Claude and Codex main hubs with autopilot enabled latch durable `handoff_due` at the first context
+WARN. WARN is a soft advisory to transfer at the next quiet point: already-active atomic merge, lock or message
+operations can finish, and tools remain available. BLOCK is the hard barrier for ordinary recognized work;
+owner replies and the narrow handoff/authority/settings reads remain available there. An active grilling retains
+its existing hold and suppresses Codex Stop continuation; reaching the ceiling still requires the owner's
+handoff decision.
+Usage drops/disappearance, repeated buckets, unrelated tool success and chain resets do not clear the obligation
+or its reminders; the obligation does not close tools below BLOCK. An explicit threshold-policy change or actual registry change releases the old obligation. Checkpoint/request/dispatch/bind
 progress is tracked against exact predecessor, request and actual IDs; uncertain dispatch never invites a retry.
 
 Codex `Stop` active-turn continuation is bounded to two attempts, the second requiring canonical progress;
@@ -761,10 +763,11 @@ Off by default: it starts background sessions, which nobody should get unasked. 
 `config.json` (`"AGENT_HUB_AUTO_HANDOFF": "on"`; `delamain:setup` asks). Then, in the session registered as a stage's
 hub:
 
-1. At the warn threshold the context-budget message requires handoff now: acknowledge the latest human message
-   first, finish only an already-active atomic operation, then `hub handoff`, fill the TODOs and `hub succeed`.
-   Start no new implementation. Preserve the latest owner input verbatim or by a durable reference in the
-   checkpoint/handoff. Every `UserPromptSubmit` above warn repeats this instruction even within the same warning
+1. At the WARN threshold the context-budget message advises handoff at the next quiet point: acknowledge the
+   latest human message and finish any already-active atomic merge, lock or message operation first. At that
+   quiet point (no agent waiting for a reply, no merge or lock operation in flight), run `hub handoff`, fill the
+   TODOs and `hub succeed`. WARN leaves tools available; only BLOCK closes ordinary recognized work. Preserve
+   the latest owner input verbatim or by a durable reference in the checkpoint/handoff. Every `UserPromptSubmit` above warn repeats this instruction even within the same warning
    bucket; `PostToolUse` retains bucket suppression. The hook
    writes the exact command with the hub's model, effort, permission mode and registered worktree (the one `hub start`/`hub takeover`
    recorded in `roles.json`, not the directory the hub's shell has drifted to). The successor's effort is
@@ -814,7 +817,7 @@ number of the handoff given to `hub succeed`; the successor's comes from the fun
 successor's `hub takeover --auto-handoff` takes the number it was started under — so its name, its start line (the
 `jwait` match) and the chain agree.
 
-From the first warning, outside a grilling hold, a registered autopilot hub's Bash passes only when every command
+At BLOCK, outside a grilling hold, a registered autopilot hub's Bash passes only when every command
 of the line is `hub handoff`, `hub succeed`,
 `hub grilling`, `jlog` or `jwait` (output redirected only to `/dev/null`, a descriptor or a HANDOFF file), and Write/Edit only on a
 `HANDOFF-*.md` file. Only the registered hub can run `hub succeed`, only with autopilot on (`--force` for you at a
@@ -943,12 +946,13 @@ Only these three numeric context thresholds accept `<hub home>/<registered stage
 context-budget hook: environment, then stage, then home, then the existing default. Invalid values fall through
 to the next layer; accepted values are whole integers from 1 through 2147483647. This private hook resolution
 does not give stage files authority over any other hub-wide setting or change other stages. Window-based
-defaults remain unchanged. Missing usage in a registered hub's prompt produces an explicit unknown-state and
-checkpoint instruction, without claiming that handoff is due or completed. If usage was read successfully but
-the optional context-window read fails, known usage still applies with the existing missing-window defaults
-and explicit thresholds; the work gate and mandatory handoff instruction remain active.
+defaults remain unchanged. Missing usage is never reported as measured usage or completed handoff. An existing
+handoff obligation survives missing usage; absence of usage alone does not establish a new obligation. If usage
+was read successfully but the optional context-window read fails, known usage still applies with the existing
+missing-window defaults and explicit thresholds: WARN advises transfer at the next quiet point, and BLOCK
+closes ordinary recognized work.
 
-At the work limit, the registered hub can still execute handoff/succeed/desktop-request/bind/fail/status,
+At BLOCK, the registered hub can still execute handoff/succeed/desktop-request/bind/fail/status,
 `jlog`/`jwait`, read-only `hub effort`/`hub home`, `ask allow --list`/`search`/`digest`/`list`, literal
 `path --windows`/`--linux` conversions, and literal `cat` or `Get-Content -LiteralPath` reads of a generated
 `HANDOFF-*.md`. Direct settings/authority reads must resolve to this plugin's executable, and `cat` to

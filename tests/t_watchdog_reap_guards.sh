@@ -325,10 +325,11 @@ unset ROWPID
 # a child that appears between the first look and the last one (the process table is read again right before the stop)
 X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag"
 spawn python3 -c '
-import os, subprocess, time
-while not os.path.exists(os.environ["CHILD_FLAG"]): time.sleep(0.05)
-subprocess.Popen(["sleep", "3003"]); time.sleep(3000)'; ROWPID=$SPAWNED
-rows "$X"; reset_log; CHILD_FLAG=$R/child.flag FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1
+import os, subprocess, sys, time
+while not os.path.exists(sys.argv[1]): time.sleep(0.05)
+subprocess.Popen(["sleep", "3003"]); time.sleep(3000)' "$R/child.flag"; ROWPID=$SPAWNED; sleep 1
+kill -0 "$ROWPID"; check $? 0 "…the process of the row is alive and has no child yet"
+rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1
 stopped "a child starts between the first listing and the last look: not stopped" ""
 unset ROWPID
 

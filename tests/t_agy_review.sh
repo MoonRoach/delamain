@@ -234,9 +234,10 @@ if [ -n "$GITV" ] && [ "${GITV% *}" -eq 2 ] && [ "${GITV#* }" -ge 38 ] || [ "${G
   gitattack(){ rm -f $P/ext-diff-ran; (cd $GT/fixture.git && env -i PATH="$GP" "$@" git diff --no-index --ext-diff /dev/null ../README.md > /dev/null 2>&1); [ -e $P/ext-diff-ran ] && echo handler-ran || echo handler-not-run; }
   if [ "$(gitattack HOME=$GT/empty-home)" = handler-ran ]; then
     check handler-ran handler-ran "control: with no setting the handler of a bare-layout directory is run by an allowed git command"
-    check "$(gitattack HOME=$RH)" handler-not-run "the review HOME's .gitconfig alone stops it"
+    rm -f $RH/.gitconfig; dry   # whatever the tool writes into the review HOME, nothing left over from the checks above
+    check "$(gitattack HOME=$RH)" handler-not-run "the review HOME's .gitconfig, as the tool writes it, alone stops it"
     check "$(gitattack HOME=$GT/empty-home GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit GIT_CONFIG_NOSYSTEM=1)" handler-not-run "the GIT_CONFIG_* variables alone stop it too (HOME ignored)"
-    check "$(gitattack $(call 0 '" ".join(k + "=" + v for k, v in c["env"].items() if k != "PATH")'))" handler-not-run "the environment agy actually got stops it"
+    check "$(gitattack HOME=$GT/empty-home $(call 0 '" ".join(k + "=" + v for k, v in c["env"].items() if k not in ("PATH", "HOME"))'))" handler-not-run "the GIT_* variables agy actually got, with no .gitconfig to help, stop it"
   else
     echo "SKIP functional git check: this git does not run the handler of a bare-layout directory without the setting"
   fi

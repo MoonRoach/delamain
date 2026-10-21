@@ -632,6 +632,20 @@ def save_state(state_dir: Path, key: str, state: dict) -> bool:
         return False
 
 
+def reset_obligation(state):
+    """Drop stage/request progress while retaining the session's observed human authority and usage."""
+    retained = {name: state[name] for name in
+                (*DIRECTIVE_KEYS, "directive_cursor", "hub_registry", "usage_seen") if name in state}
+    state.clear()
+    state.update(bucket=-1, **retained)
+
+
+def reconcile_registered_obligation(state, stage, sid):
+    if ((state.get("stage") is not None and state["stage"] != stage)
+            or (state.get("predecessor") is not None and state["predecessor"] != sid)):
+        reset_obligation(state)
+
+
 def registered_stage(ap, hc, sid, state):
     """Cache membership, including misses; validate filesystem signatures before reusing it.
 
@@ -789,6 +803,7 @@ def handle(data, hc, state_dir, key, writable=True):
     hub_stage = None
     if auto and event == "UserPromptSubmit":
         hub_stage = registered_stage(ap, hc, sid, state)
+        reconcile_registered_obligation(state, hub_stage, sid)
         if writable:
             writable = save_state(state_dir, key, state)
         if hub_stage and ap.owner_spoke(data.get("prompt")):
@@ -808,6 +823,7 @@ def handle(data, hc, state_dir, key, writable=True):
             return
     if auto and event != "UserPromptSubmit":
         hub_stage = registered_stage(ap, hc, sid, state)
+        reconcile_registered_obligation(state, hub_stage, sid)
         if writable:
             writable = save_state(state_dir, key, state)
     hook_codex = bool(hub_stage and codex_hook_identity(data, ap, hc))
@@ -881,8 +897,7 @@ def handle(data, hc, state_dir, key, writable=True):
     policy = [configured_budget(hc, name, hub_stage) for name in BUDGET_KEYS]
     if due and state.get("budget_policy") != policy:
         # Effective model-window/usage changes do not clear due. An explicit policy edit/removal does.
-        state = {"bucket": -1, **{name: state[name] for name in
-                 (*DIRECTIVE_KEYS, "directive_cursor", "hub_registry", "usage_seen") if name in state}}
+        reset_obligation(state)
         due = False
         if writable:
             writable = save_state(state_dir, key, state)
@@ -895,6 +910,8 @@ def handle(data, hc, state_dir, key, writable=True):
     if hub_stage:
         diagnostic(hc, data, hub_stage, "observation", **observation)
     if hub_stage and not holding and not due and tokens is not None and (tokens >= warn or at_ceiling):
+        # A fresh stage obligation must never inherit an old request, identity, or reached barrier.
+        reset_obligation(state)
         state.update(handoff_due=True, stage=hub_stage, predecessor=sid, due_since_tokens=tokens,
                      stop_continuations=0, progress_rank=0, no_progress_count=0, budget_policy=policy)
         due = True

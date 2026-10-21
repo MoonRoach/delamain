@@ -594,6 +594,60 @@ class CodexHooks(unittest.TestCase):
             self.append_human(transcript, 'Resume the handoff.')
             self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, bool))
 
+    def test_same_session_moving_stage_clears_old_barrier_and_request_progress(self):
+        stage_a, transcript = self.budget_hub(550000)
+        self.append_human(transcript, 'Do not transfer this stage.')
+        self.hook('context_budget.py', event='UserPromptSubmit', prompt='Explain', transcript_path=str(transcript))
+        state_path = stage_a.parent / '.state/context-budget/codex-own.json'
+        state = json.loads(state_path.read_text())
+        authority = {name: state[name] for name in (*context_budget.DIRECTIVE_KEYS, 'directive_cursor')}
+        state.update(request_id='old-request', actual_id='22222222-2222-4222-8222-222222222222',
+                     stop_continuations=2, progress_rank=7, continuation_rank=7, phase='taken-over')
+        state_path.write_text(json.dumps(state))
+        stage_b = stage_a.parent / 'stage-b'
+        stage_b.mkdir()
+        (stage_b / 'config.json').write_bytes((stage_a / 'config.json').read_bytes())
+        (stage_a / 'roles.json').write_text(json.dumps({'roles': {}}))
+        (stage_b / 'roles.json').write_text(json.dumps({'roles': {'hub': {'session': 'codex-own'}}}))
+        transcript.write_text(json.dumps(dict(type='token_usage_record', payload={'usage': {'total_tokens': 1000}})) + '\n')
+        self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                               transcript_path=str(transcript))))
+        state = json.loads(state_path.read_text())
+        for field in ('stage', 'predecessor', 'handoff_due', 'block_due', 'request_id', 'actual_id',
+                      'stop_continuations', 'progress_rank', 'continuation_rank', 'phase'):
+            self.assertNotIn(field, state, field)
+        self.assertEqual({name: state[name] for name in authority}, authority)
+        actual = '33333333-3333-4333-8333-333333333333'
+        self.pending(stage_b, 'bound', request_id='new-request', id=actual)
+        for tokens, denied in ((375000, False), (550000, True)):
+            transcript.write_text(json.dumps(dict(type='token_usage_record', payload={'usage': {'total_tokens': tokens}})) + '\n')
+            self.assertEqual(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                                  transcript_path=str(transcript))), denied)
+            state = json.loads(state_path.read_text())
+            self.assertEqual((state['stage'], state['request_id'], state['actual_id']), ('stage-b', 'new-request', actual))
+            self.assertEqual(state['due_since_tokens'], 375000)
+            self.assertEqual(state['stop_continuations'], 0)
+            self.assertEqual(state['progress_rank'], context_budget.PHASES['bound'])
+            self.assertEqual(bool(state.get('block_due')), denied)
+            self.assertTrue(state['transfer_stop'])
+
+    def test_observed_unregistration_then_return_does_not_revive_reached_barrier(self):
+        stage, transcript = self.budget_hub(550000)
+        self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                              transcript_path=str(transcript))))
+        (stage / 'roles.json').write_text(json.dumps({'roles': {}}))
+        self.hook('context_budget.py', event='UserPromptSubmit', prompt='Explain', transcript_path=str(transcript))
+        state = self.directive_state(stage)
+        self.assertNotIn('handoff_due', state)
+        self.assertNotIn('block_due', state)
+        self.assertNotIn('request_id', state)
+        (stage / 'roles.json').write_text(json.dumps({'roles': {'hub': {'session': 'codex-own'}}}))
+        transcript.write_text(json.dumps(dict(type='token_usage_record', payload={'usage': {'total_tokens': 375000}})) + '\n')
+        self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'ls'},
+                                               transcript_path=str(transcript))))
+        self.assertEqual(self.directive_state(stage)['due_since_tokens'], 375000)
+        self.assertFalse(self.directive_state(stage).get('block_due'))
+
     def test_busy_other_session_never_holds_global_prune_guard_or_drops_block(self):
         import fcntl
         import time

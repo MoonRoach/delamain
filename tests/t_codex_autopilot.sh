@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Codex successors use a detached fake CLI. No real model requests or owner state.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT
@@ -54,6 +55,8 @@ def stop(role="hub-2"):
     subprocess.run([str(root/'bin/agent'),'stop',role,'--stage','stage-a'], stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
 home,handoff,cwd = setup('inherit')
+# This fixture deliberately chooses CLI from Desktop to verify detached launch and env stripping.
+(home/'config.json').write_text(json.dumps({'AGENT_HUB_DESKTOP_CLI_HANDOFF':True}))
 os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
     rc,out=succeed(handoff,cwd,surface='cli')
@@ -80,7 +83,7 @@ try:
     assert calls()[-1]['env']['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] is None
     assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
     brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
-    assert 'finite handoff queue' in brief and '--for 9m' not in brief
+    assert 'finite queue snapshot' in brief and 'Terminal follow-through' in brief and '--for 9m' not in brief
     os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
     assert state(home)['pending']['engine']=='codex' and state(home)['chain']==1
     assert 'becomes never' in out and 'Remote Control' not in (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
@@ -175,6 +178,7 @@ print('PASS representative dry run writes no reservation or brief')
 
 ap.codex_rollouts.INDEX.records={};ap.codex_rollouts.INDEX.checked=time.monotonic()
 home,handoff,cwd=setup('default')
+(home/'config.json').write_text(json.dumps({'AGENT_HUB_DESKTOP_CLI_HANDOFF':True}))
 os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
     rc,out=succeed(handoff,cwd,headless=True)

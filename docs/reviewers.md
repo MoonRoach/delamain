@@ -31,7 +31,7 @@ it comes from the environment, a repository's `.agent-hub/config.json` or the hu
 | `name` | required | Unique. An `agent` reviewer's role is `review-<name>`. Letters, digits, `.`, `_`, `-`; 64 characters at most. |
 | `kind` | required | `agent` — a headless agent started with `agent spawn`; `skill` — a reviewer skill (contract below). |
 | `skill` | kind `skill`, required | The skill's name, as the Skill tool knows it: letters, digits, `.`, `_`, `-` (64 characters at most), and one `:` for `plugin:skill`. |
-| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). `model` is what `agent spawn --model` takes: `opus`, `sonnet`, `haiku`, `fable`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` (letters, digits and `. _ : @ [ ] -` only, 100 at most — a Vertex id `claude-sonnet-4-5@20250929` is fine); `effort` one of `low`, `medium`, `high`, `xhigh`, `max`. A haiku reviewer gets no effort. |
+| `model`, `effort` | kind `agent` | Default from `AGENT_HUB_REVIEW_MODEL` (`opus`) and `AGENT_HUB_REVIEW_EFFORT` (`high`). `model` is what `agent spawn --model` takes: `opus`, `sonnet`, `haiku`, `fable`, an alias of `AGENT_HUB_MODEL_MAP`, or a full id `claude-…` (letters, digits and `. _ : @ [ ] -` only, 100 at most — a Vertex id `claude-sonnet-4-5@20250929` is fine); `effort` one of `low`, `medium`, `high`, `xhigh`, `max`. A haiku reviewer gets its `effort` like any other (Haiku 5.5 has the setting; Haiku 4.5 ignores the flag). |
 | `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. The verdict is the shell's own exit: a background child that keeps the output open does not hold it up. It runs in the hub home — not in the repository you are working in, whose `make`, `./script` or `npm` it would otherwise run — with a 10 s timeout (`AGENT_HUB_REVIEW_CHECK_TIMEOUT`, in seconds, finite and above 0, overrides it); on expiry its whole process group is killed. Its output is shown only by `--all`. |
 | `until` | optional | `YYYY-MM-DD`: available through that day (hub time zone), not after — for a quota or a credit that expires. |
 | `for` | optional | The change classes the entry serves (next section), each made of letters, digits, `.`, `_`, `-` (64 characters at most). Absent: every class. |
@@ -58,7 +58,7 @@ Rules the tool enforces:
 ## Choosing
 
 ```
-hub reviewer [--for CLASS] [--stage STAGE] [--json] [--all]
+hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage STAGE] [--json] [--all]
 ```
 
 It walks the list in order and stops at the first entry that is available now: not past its `until`, serving the
@@ -73,17 +73,71 @@ start: load skill `my-review-skill`; give it the brief file, the repository, the
 $ hub reviewer --for docs        # the skill serves code and risky only
 reviewer: agent (agent opus/high)
 start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
+
+$ AGENT_HUB_ENGINE=codex hub reviewer --for code --stage web
+reviewer: agent (agent gpt-6-astra/high)
+start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model gpt-6-astra --effort high --stage web --brief <BRIEF>
 ```
 
-For an `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief file) and
-runs the line as it is — **no `--worktree`**: a reviewer only reads. With `--stage S` (else `$HUB_STAGE`) the line
+For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief
+file). For a Codex `agent` reviewer it prints `--sandbox workspace-write` and `--cwd` pointing to the stage's
+`coordinator/work` under the hub home. Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
+Create that directory before spawning, and put the absolute repository path, base and head in the brief for reading.
+The reviewer receives only its cwd as a writable root; wider explicit roots are refused, and temporary-directory
+writes are excluded. Home configuration and other agents' inboxes stay read-only. Keep the repository outside the
+hub home and the chosen cwd; do not add it to writable roots. The sandbox then lets
+Codex write its report and journal, while repository writes are denied. `read-only` cannot write either; spawning a
+Codex review role/tag with that policy emits one warning. Claude's review brief prohibits repository edits; it does
+not acquire a Codex sandbox through this command. In both cases run the line with **no `--worktree`**: a reviewer
+reads the existing checkout. With `--stage S` (else `$HUB_STAGE`) the line
 carries `--stage S`, so the reviewer joins that stage whatever the shell's `HUB_STAGE` is. `agent spawn` refuses a role whose agent still
 runs, so a second review at the same time takes another `--role`. For a `skill` reviewer the hub loads the skill and
 gives it the four inputs of the contract.
 
-`--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
+`--author` names who wrote the change, so the reviewer is chosen by that and not by the engine of the hub that runs
+the command (see [the author](#the-author-of-the-change)). `--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
 invalid), with the output of each `check`. `--json` prints the same as JSON (`chosen`, `start`, `entries`,
 `invalid`). Exit 0 with a choice, 1 when none is available, 2 on a usage error. Nothing is written.
+
+## The author of the change
+
+A reviewer must come from who *wrote* the change, and the hub's host says nothing about that: a Claude hub reviews
+Codex-written changes and the other way round. So `hub reviewer` takes the author as an argument:
+
+| `--author` | The author is |
+|---|---|
+| `claude`, `codex` | that engine, model unknown |
+| `claude/opus`, `codex/gpt-6.1-sol` | that engine and model (the model: letters, digits and `. _ : @ [ ] / -`) |
+| a role, e.g. `fix-parser` | the agent of that role in `--stage` (else `$HUB_STAGE`): its `engine` (absent means Claude) and its `resolved_model`, else `model`, from `agents/<role>/meta.json` |
+
+An author that is none of these (an unknown engine, a role with no `meta.json`, a role and no stage) is a usage error,
+exit 2: a mistyped author must not quietly turn into the host. The output names the author and where it came from
+(`author: codex/gpt-6.1-sol (role fix-parser)`); `--json` has `author` (`engine`, `model`, `source`).
+
+**Without `--author`** the author is unknown. `hub reviewer` assumes the host engine wrote the change, says so on
+stderr (`author unknown: assuming the host engine (claude) …`) and prints `author: unknown, host engine … assumed`;
+`--json` has `author: null` and `assumed_author_engine`. A hub that knows the author always passes it.
+
+**For check authors.** Every `check` runs with two more environment variables:
+
+| Variable | Value |
+|---|---|
+| `AGENT_HUB_REVIEW_AUTHOR_ENGINE` | `claude` or `codex` |
+| `AGENT_HUB_REVIEW_AUTHOR_MODEL` | the author's model, empty when `--author` gave only an engine |
+
+Without `--author` both are *removed* from the check's environment, even if the caller's shell has them: absent means
+"unknown", and a check then falls back to its own guess (the host engine, `engines.selected()`). A check that rules an
+entry in or out by the author's engine — "a Claude reviewer only for a Codex author" — reads the variable instead of
+guessing the host. The variables are also the place for the rule above ("a different model from the author").
+
+**The built-in default** (no valid list) follows the author as well: for a Codex author it is a Claude reviewer
+(`opus`), for a Claude author a Codex reviewer (`gpt-6-astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`),
+otherwise Claude as before. Without `--author` it stays the host engine's.
+
+**A check should be forgiving about missing limit data.** Limits choose the engine for a launch; they rule an engine out
+only when it is practically exhausted. A check that sees no observation, or one too old to trust, should report the
+engine as available (exit 0) and refuse only on a known window above the threshold — otherwise a hub that has no recent
+data of the other engine silently falls back to a reviewer of the author's own engine.
 
 ## Change classes
 
@@ -102,7 +156,7 @@ author cannot tell whether a change needs a review at all, it reviews and says w
 
 ## The reviewer is a different model from the author
 
-Recommended rule: whoever wrote a change does not review it, and a reviewer from the same model family as the author
+Recommended rule: whoever wrote a change does not review it — `--author` is how `hub reviewer` knows who that was — and a reviewer from the same model family as the author
 tends to read the code the way it was written. Pick `AGENT_HUB_REVIEW_MODEL` (and the `model` of `agent` entries)
 different from the model your executors write with, or list a reviewer skill that runs another vendor's model.
 *Why:* a weaker or identical reader returns a confident summary of the diff, which reads like agreement.

@@ -3,30 +3,31 @@
   <desc id="desc">A hub sends briefs to detached workers. Workers record progress in shared files. A fresh hub reads the handoff and continues coordinating the same workers.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#77dce8"/>
     </marker>
   </defs>
-  <rect width="820" height="210" rx="12" fill="#f8fafc"/>
-  <g stroke="#475569" stroke-width="2" fill="none" marker-end="url(#arrow)">
+  <rect width="820" height="210" rx="12" fill="#0b1422"/>
+  <path d="M 16 22 H 54 M 766 22 H 804 M 16 195 H 54 M 766 195 H 804" stroke="#eeb34e" stroke-width="2"/>
+  <g stroke="#77dce8" stroke-width="2" fill="none" marker-end="url(#arrow)">
     <path d="M 174 90 H 226"/>
     <path d="M 392 90 H 444"/>
     <path d="M 610 90 H 662"/>
     <path d="M 741 120 V 180 H 309 V 126"/>
   </g>
   <g stroke-width="1.5">
-    <rect x="16" y="55" width="158" height="70" rx="8" fill="#dbeafe" stroke="#2563eb"/>
-    <rect x="226" y="55" width="166" height="70" rx="8" fill="#dcfce7" stroke="#15803d"/>
-    <rect x="444" y="55" width="166" height="70" rx="8" fill="#fef3c7" stroke="#a16207"/>
-    <rect x="662" y="55" width="142" height="70" rx="8" fill="#dbeafe" stroke="#2563eb"/>
+    <rect x="16" y="55" width="158" height="70" rx="4" fill="#142a40" stroke="#77dce8"/>
+    <rect x="226" y="55" width="166" height="70" rx="4" fill="#25251f" stroke="#eeb34e"/>
+    <rect x="444" y="55" width="166" height="70" rx="4" fill="#142a40" stroke="#77dce8"/>
+    <rect x="662" y="55" width="142" height="70" rx="4" fill="#142a40" stroke="#77dce8"/>
   </g>
-  <g font-family="system-ui, sans-serif" text-anchor="middle" fill="#0f172a">
+  <g font-family="system-ui, sans-serif" text-anchor="middle" fill="#eaf4f7">
     <g font-size="18" font-weight="600">
       <text x="95" y="84">Hub</text>
       <text x="309" y="84">Workers</text>
       <text x="527" y="84">Shared files</text>
       <text x="733" y="84">Fresh hub</text>
     </g>
-    <g font-size="13">
+    <g font-size="13" fill="#b9ceda">
       <text x="95" y="106">plan &amp; decide</text>
       <text x="309" y="106">build in own checkouts</text>
       <text x="527" y="106">progress &amp; decisions</text>

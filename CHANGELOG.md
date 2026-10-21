@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **The watchdog stops the background sessions of retired hubs (R6).** A hub that handed over or retired itself kept
+- **The watchdog stops the background sessions of retired hubs (R7).** A hub that handed over or retired itself kept
   its `claude --bg` session alive, holding memory (ten such sessions were found on one machine, one of them still `busy`
   on a leftover `jwait`). Each tick now runs `claude stop` on a background session whose id is a retired hub of some
   stage and is a live role nowhere (no stage), is not a pending auto-handoff successor, and has been quiet for the
@@ -10,6 +10,450 @@
   never removes the session: `claude attach <id>` and `claude --bg --resume <id>` still reach the history. A dry run only
   prints the plan. `AGENT_HUB_WATCHDOG_REAP=off` turns it off. The hub skill now says to `roles retire hub` and end the
   turn when the stage is finished, instead of asking the owner to stop the session.
+
+- **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
+  per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never
+  appeared in the shared `agent-top`, which listed the resolved home only, though its agents run on the same machine. A
+  project home lives inside an arbitrary repository, so it cannot be found by scanning: the tools now record a home in
+  `${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json` when a stage is registered in it (`roles_save`, `agent spawn`:
+  `roles set`, `hub start`, `hub takeover`, …; atomic, under a lock, at most once a day per home, a missing home dropped on
+  the next write). `agent-top`, `--once`, `--json`, `--widget` and the pane list the stages of the resolved home,
+  `~/agent-hub`, the legacy home, `$AGENT_HUB_HOME` and the registered homes that exist (`hubcore.known_homes()`), each with
+  its own cache; while stages come from more than one home a stage outside `~/agent-hub` is `stage · <repo>`, and two
+  stages of one name in two homes are two entries. `--json` keeps every field and adds `home`, `home_label`, `name` and
+  `stage_name` to the stage and agent records and the top-level `homes` and `multi_home`; with one home the text and
+  widget output are byte-identical to before. The console's `c` / `m` / `x` and the pane's `close` act on the selected
+  stage in its own home. `tell`, `agent`, `hub` still address the resolved home only, but a "no such stage" error now adds
+  *stage S exists in home <path>; run from that project or set `AGENT_HUB_HOME=<path>`*, and the refusal for a stage that
+  lives in `~/agent-hub` or the legacy home is unchanged. A registry that cannot be read or written never fails a tool.
+  A stage is identified by its home and own name, never by the `stage · label` shown (which depends on how many homes have
+  stages): the console's stop/send/close, the pane's `close` and a card are bound to that pair when armed, so another home
+  gaining a stage of the same name cannot redirect a pending confirmation. `--stage` takes `NAME` (every home),
+  `NAME@label` or `NAME@/path` (one home), also in `/agent-top`, whose filter keeps `alpha · repo` for `--stage alpha`. A
+  child tool's registration (its pinned `AGENT_HUB_HOME` reads as `env`) never downgrades a project entry. The limit-pace
+  advice reads a stage's settings in its home and the logs of every home. The Locks list reads the board of every home
+  whose stages are shown (a lock of another home carries its label). `/agent-top --stage "alpha@my repo"` accepts quotes;
+  a label or path may hold `@` or spaces (the name ends at the first `@` or ` · `), and the pane normalises a path selector
+  like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
+  (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
+  Found by @Cartograf666 in #76.
+
+## 1.0.13 — 2026-10-15
+
+- **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level
+  deeper, under `claude-code/<version>/<build hash>/claude.app`; the lookup read only `claude-code/<version>/claude.app`,
+  found nothing and started an older `claude` from PATH instead. A user's worker died on it: Homebrew's 2.1.231 answered
+  400 to Opus 5.5, and agent-top showed the error. Both layouts are searched now; the version still comes from the
+  directory under `claude-code`.
+
+- **Codex worktree sandboxes grant only the current branch's leaf refs, including nested names.** Sibling branches
+  and reflogs are no longer writable through a shared namespace; pruned parent directories fail closed. Git root
+  discovery ignores inherited `GIT_*` selectors. Spawn/resume restores pruned leaf parents outside the sandbox;
+  the child disables automatic Git maintenance using Git's quoted parameters, compatible with Codex's default
+  secret-name environment exclusions. The review brief directs Codex
+  temporary copies into its cwd. Existing executors retain their pinned roots: respawn them to apply narrower grants.
+
+- **Limit pace finds older Claude readings, and tests clean their temporary directories.** Claude logs are searched
+  backwards in 256 KB chunks up to 8 MiB, so a long tool-result tail no longer hides the latest limit event.
+  Parser upgrades invalidate cached readings even for unchanged logs. Standalone tests and the suite harness own
+  and remove their temporary files and directories, including on failure.
+
+- **The kill guard catches redirected name lookups and shell kills through `xargs`.** Process substitutions feeding
+  `xargs kill` or a `while read` loop, and `pgrep | xargs … sh -c "kill …"`, now receive the same refusal as other
+  bulk kills. Desktop's session-card hook and the registry share one session identity matcher, including verified
+  Desktop CLI restarts.
+
+- **`hub grill open` can start from an untrusted hub home.** After Claude explicitly refuses workspace trust,
+  it tries only the hub's registered worktree, then the project's main checkout. If all refuse trust, the error
+  lists every attempted directory and recommends trusting the hub's worktree (or main checkout if none is registered).
+  A trusted calling directory stays unchanged; trust records are never modified, and an uncertain launch is never retried.
+
+- **`agent status` shows the engine of each agent.** The line now reads `role [tag] <engine>/<model>: …`
+  (`codex/gpt-6.1-sol`, `claude/claude-sonnet-5-5 (asked for sonnet)`), for both engines; a coordinator no longer
+  needs `agent-top --json` to confirm that a worker runs on Codex. Nothing else in the line changed. Found by
+  @Cartograf666 in #76.
+
+- **`run-python` usage errors no longer block hooks.** A bad `--min-version` value or a missing script exited 2,
+  which Claude and Codex hooks treat as "block", so a manifest typo would have blocked every tool call. Both now exit 1
+  and fail open. Docs note that a detached `agent` loses its exit journal line if its launch interpreter is removed
+  mid-run, while the worker's exit code is still propagated.
+
+## 1.0.12 — 2026-10-15
+
+- **The lock hook no longer stalls on long heredoc-like input with no closing delimiter.** `board_locks` now uses
+  the shared `polling_guard.strip_heredocs` scanner instead of the regex that repeatedly scanned blank lines. It
+  still treats all closed heredoc bodies as data, including those fed to a shell; ordinary lock decisions are unchanged.
+
+## 1.0.11 — 2026-10-15
+
+- **A walk of the home directory or `/` is refused: it raised the macOS "access data from other apps" prompt.** On 15.10
+  the owner got «"claude.app" would like to access data from other apps» five times between 10:00 and 11:03; one cause
+  was `find ~ -name hive1.py …` in a background session (Claude Code's shell shows `find` as `bfs`). A walk from `~`
+  enters `~/Library` (Mail, Messages, Safari, Containers), which App Data TCC protects, and the consent is not kept
+  across agent processes, so the prompt returns. Full Disk Access would end it, but would let every agent that runs
+  without questions read mail, messages and cookies. The new PreToolUse hook `scan_guard.py` (Claude and Codex, on for
+  all sessions) denies `find`, `bfs`, `fd`, `rg`, `grep -r`, `ag`, `ack`, `du`, `tree` and `ls -R` whose root is `~`,
+  `$HOME`, the absolute home path, `/`, `/Users`, `~/Library`, `~/Library/Containers`, `~/Library/Group Containers` or a
+  glob over them, and the same with no root while the working directory is the home (the session's, or after `cd ~`);
+  likewise the Grep and Glob tools with such a `path`. A named subdirectory, the hub home, a walk that stays on the
+  first level and what `ssh`, `docker exec` or `kubectl exec` runs elsewhere are not touched. The refusal says to search the project, `$AGENT_HUB_HOME` or a subdirectory, and names
+  `# scan-ok`, the marker for a walk the owner asked for. `AGENT_HUB_SCAN_GUARD=off` (environment or hub home) turns it
+  off; a hook error fails open. Not caught: scripts (`python3 -c`), `cp -r`, `rsync`, `tar` and other tools that walk a
+  tree on the side. `polling_guard.views` gained an optional `data` list for hooks that read a command's arguments.
+  `tests/t_scan_guard.sh` holds both lists, the Grep and Glob cases, the marker, the switch and fail-open.
+
+- **A heredoc opener with no terminator no longer holds `polling_guard` and `kill_guard` for 12 s and more.** Both read
+  a command through a regex that looked for the closing delimiter line again from every blank line after the opener
+  (50000 blank lines after a `<<EOF` that sits in quotes took 12 s; Claude Code 2.1.299 blocks the call when a hook
+  misses its timeout, and the fail-safe's timer cannot interrupt a regex). The terminator is now found in one pass over
+  the command's lines (`polling_guard.strip_heredocs`), also for a delimiter with a dash or a dot (`<<'END-NOTES'`),
+  which the old pattern did not read at all.
+
+- **Codex reviewers can write reports; sandboxed worktree executors can commit.** `hub reviewer` recommends
+  `workspace-write` with cwd in the stage's `coordinator/work` under the hub home, and the repository path in the
+  brief outside writable roots. Reviewers receive only their cwd, not home config or other agents' inboxes; wider
+  roots are refused. A read-only review role/tag warns that it cannot write its report or journal.
+  Linked worktree executors receive individual Git commit/merge state files, their logs, shared objects and their own
+  branch refs/reflogs (a namespace directory for nested branches, or the shared reftable store), pinned on spawn and
+  reused on resume. The private gitdir, commondir/config.worktree and packed-refs are not granted. The review docs, skill and brief
+  template describe the same boundary; macOS sandbox probes cover report/journal writes and Git operations.
+  Rebase state roots are excluded: sandboxed worktree rebase is unsupported and can move HEAD before failing with
+  `--apply`. Spawn and the worker brief warn about this; use a merge commit from the prepared base ref instead.
+
+- **`hub reviewer --author` chooses the reviewer by who wrote the change, not by the hub's host.** `--author` takes a
+  role of the stage (engine and model are read from the agent's `meta.json`) or `claude|codex[/model]`. Every
+  reviewer `check` gets `AGENT_HUB_REVIEW_AUTHOR_ENGINE` and `AGENT_HUB_REVIEW_AUTHOR_MODEL` (removed from its
+  environment when the author is unknown), and the built-in default reviewer takes the engine other than the author's.
+  Without `--author` the host engine is assumed and the command says so, on stderr and in `--json`
+  (`author: null`, `assumed_author_engine`). Before, a Claude hub gave a Codex-written change a Codex reviewer, and a
+  Codex hub, which has no fresh Claude limit observation, gave it Codex Astra. The hub skill's *Reviews* tells the hub to
+  pass `--author`. See [Reviewers](docs/reviewers.md#the-author-of-the-change).
+
+- **Limit-pace advice chooses the engine, model and effort for this launch.** Fresh remaining weekly percentages
+  replace projected pace as the room comparison: below 20% remaining prompts an equivalent-class alternative with
+  more room; when both are short, prefer the larger remainder and warn it may run out before reset. At least 3%
+  remaining allows a launch even with an exhaustion forecast. Below 3% refuses only with fresh verified data on the
+  other engine; both below 3% refuse unless `--reason` is supplied. Unknown/stale data never grounds refusal. Engine
+  locks get a permission question for this launch, defaulting to the locked engine; models are never swapped silently.
+  Below 3% with an unverified alternative, advice warns of practical exhaustion and offers a probe or `--reason`,
+  without creating a quota gate. Forecasts from the first 6 hours are displayed without journal alarms, owner
+  notifications or crossing-state records; five-hour windows remain context.
+  Advice no longer defers or sequences work until reset. See [Limit pace](docs/reference.md#limit-pace).
+
+- **A headless Claude executor starts without MCP servers by default.** `AGENT_HUB_SPAWN_MCP` now defaults to
+  `none` (it was `inherit`): an agent started by `agent spawn` no longer carries the tool lists, instructions and
+  authentication notes of every server in your config, plugins and claude.ai connectors in each turn (about 3.5k tokens
+  and a second of startup). The hub gives a launch servers only when the task needs them — a browser check, a docs
+  lookup, a GitLab or DB server: `--mcp inherit` or `--mcp FILE[,FILE]`; the hub skill, its launch reference and the
+  executor brief template (a "Tools" line) say so, and `setup` question 10 asks whether the project's agents need
+  servers. The journal's `started headless agent …` line and `--dry-run` name `MCP inherit` / `MCP only <files>` and
+  stay silent for `none`. **Behaviour change:** to get the old behaviour back, set `"AGENT_HUB_SPAWN_MCP": "inherit"`
+  in the hub home's `config.json` (or a repository's `.agent-hub/config.json`), or pass `--mcp inherit`. A resumed
+  agent keeps the choice of its launch, the headless hub successor still inherits, Codex has no equivalent switch.
+
+## 1.0.10 — 2026-10-15
+
+- **Grilling over open questions runs in a session of its own (1.0.10).** When the owner asks a hub to grill them over
+  the stage's open questions, the hub no longer grills in its own context, where a long grilling filled it and pushed
+  the hub into a handoff mid-conversation. `hub grill --stage S` writes a brief over the stage's unresolved owner
+  questions (other stages only when the owner names them) and launches a separate interactive session: in Claude
+  Desktop it prints `start_session` arguments with `initiation: "user_asked"` for the hub to call in the owner's turn
+  (the `session_cards` hook lets that through in a hub, and still refuses cards); in the Codex app `create_thread`
+  arguments for the app agent; in a terminal or background Claude hub it starts `claude --bg --remote-control
+  <S>-grill` itself and prints the link; in a terminal Codex hub the command for the owner. The session registers as
+  role `grill` (`hub grill join`; visible in agent-top, reachable with `tell S --role grill`; one per stage), grills
+  with the companion skill, records every answer in `ask` and ends with `hub grill done`: one journal line `@hub
+  GRILLED <answered, withdrawn, open, new> — <summary>` counted from the register, then the role is retired. `GRILLED`
+  is a wake word of `jwait --hub-events`; the hub acts on `ask list --pending`. A grilling about a new topic the owner
+  raises in the hub still runs in the hub. The hub skill, its references and the grilling note of the prompt hook say so.
+  Generated commands always carry the absolute hub home. All launches, including manual sessions confirmed by the owner, bind to the joining session's full
+  identity (in either order); bg handles resolve to full sessionIds. Administrative registration needs a journaled
+  reason; pending cancellation needs its launch id and a reason. Delegation clears the hub's grilling marker so its
+  automatic handoff can proceed. Recovery of an uncertain bg launch clears only that launch's original grilling
+  marker once it activates, preserving a newer grilling or successor.
+
+## 1.0.9 — 2026-10-15
+
+- **No automatic handoff in the middle of a grilling.** On 15.10 the autopilot handed a hub over while it was grilling
+  the owner, and the successor lost the thread of questions and answers. A hub's grilling is now marked when the
+  grilling skill loads (a Skill call in Claude Code, a read of its `SKILL.md` in Codex, a prompt invoking it;
+  `AGENT_HUB_GRILLING_SKILL`, default `grill`) and by `hub grilling start`, and cleared by `hub grilling end`, a
+  takeover, or `AGENT_HUB_GRILLING_STALE_MIN` (240) minutes without an owner prompt. While it holds, the context-budget
+  message says to finish the grilling instead of handing over, the autopilot's Bash/Write/Edit gate stays open, and
+  `hub succeed`/`hub handoff` refuse (exit 2) unless `--owner-asked`; a successor started before the grilling began does
+  not take over automatically. At the context ceiling (`AGENT_HUB_GRILLING_CEILING`, 95% of a Codex window, else 900k)
+  the hub writes the handoff with the grilling in its § 0 and asks the owner whether to hand over; the successor resumes
+  the grilling. The owner's permission belongs to an accepted successor request and its handoff: a refused request
+  grants nothing, and a different handoff cannot use it. The grilling ceiling also takes effect below warn/block.
+
+- **`await` no longer loses its journal line on macOS when it stops the command.** `killpg` on a process group whose
+  only members are zombies answers EPERM there (Linux: ESRCH); `await` caught only the second, so a timeout or a
+  SIGTERM/SIGINT on the supervisor could end in a traceback (exit 1) and no `TIMEOUT`/`FAILED` line, in about 1% of
+  stops. An EPERM is now not an error: the supervisor waits a grace period for the command's leader to exit, and if it
+  does not (a signal the kernel refused, e.g. a process of another user), the line says `could not be stopped (EPERM)`
+  instead of claiming the command was stopped, and the supervisor does not wait for ever. Any other crash of the
+  supervisor's wait is a `FAILED … (await crashed: …)` line. A stop signal that lands between the command's start and
+  the supervisor learning its pid is held and acted on instead of leaving the command running.
+
+- **Headless agents can start without the MCP servers they never use.** A Claude agent loaded every server of the
+  user's config, enabled plugins and claude.ai connectors; on the owner's machine (a dozen servers, eight of them
+  unauthenticated) that is about 3,460 input tokens in every turn's context and about a second of startup per run,
+  measured with two otherwise identical `claude -p` runs (37,470 vs 34,010 first-turn tokens). `agent spawn --mcp none`
+  starts an agent with no MCP server, `--mcp FILE[,FILE]` with only the servers of those MCP config files, and
+  `AGENT_HUB_SPAWN_MCP` (environment, hub home, or a repository's `config.json` for `inherit`/`none`) sets the default.
+  The default stays `inherit`: an agent that relies on a GitLab or database server keeps it; the setup skill offers
+  `none` (and keeps `inherit` under `--defaults`). `none` drops the project's own `.mcp.json` servers too: a repository
+  whose agents need them sets `inherit` in its `.agent-hub/config.json`, which wins over a hub home's `none`. A resume keeps the spawn's choice, a headless autopilot successor inherits, and Codex, which has no switch
+  for its plugins' servers, refuses the flag.
+
+- **A kill by name or pattern is refused: it, not the host, killed four agents on 14.10.** Four headless agents and
+  Claude Desktop got SIGTERM at 22:56 from one `pkill` run by a fifth agent: `pkill -f "[s]leep 300" -P 1`. macOS (BSD)
+  `pkill` reads options only before the first pattern, so `-P` and `1` became two more patterns, and `1` matched
+  nearly every process of the user (the unified log shows `sent by pkill[74672]` for widgets and iCloud Drive too); the
+  agent that ran it survived because `pkill` skips its own ancestors. Spawning was already detached (own session and
+  process group, stdio in files) and no detachment protects a pid from a signal sent to it. The new PreToolUse hook
+  `kill_guard.py` (Claude and Codex) denies `pkill`, `killall`, `kill $(pgrep …)` and `pgrep … | xargs kill` and points
+  at `kill <pid>`, `kill -- -<pgid>` and `agent stop`; `# kill-ok: <reason>` passes a deliberate one, but never a
+  `pkill` with an option or a second pattern after the first. `AGENT_HUB_KILL_GUARD=off` turns it off.
+  `tests/t_kill_guard.sh` also pins the detachment: an agent of either engine outlives SIGTERM and SIGHUP to its host's
+  process group, the host alone, and the host's group killed while `agent spawn` still waits for the init event.
+  The guard reads `pidof` and a `grep` of `ps` output as pid sources like `pgrep` (at any stage of a pipeline), the loop
+  and variable forms in one command (`for p in $(pgrep …); do kill $p`, `pgrep … | while read p; do kill $p`,
+  `P=$(pgrep …); kill $P`), `eval` and `killall5`; a single `&` separates statements (`pkill -x node &` is an ordinary
+  overridable deny); a segment whose command word is `ssh` is not read.
+
+- **Trusted WSL launch and bounded foreground cancellation.** Windows transport resolves
+  the system WSL executable, including Sysnative for 32-bit PowerShell. A broken output
+  pipeline cancels the owned Linux foreground group and bounds Windows-client cleanup;
+  workers that detach into their own session survive.
+- **Isolated, owner-bound foreground guardians.** Python ignores repository modules and
+  inherited Python settings. Windows-owned temporary-file handles cancel foreground work
+  when PowerShell dies, including after the command leader exits. Separate acknowledgement
+  files prevent early startup failures from being reported as cleanup timeouts.
+- **Configured Windows hub-home fallback.** A fresh repository uses the hub home selected
+  during installation, preserving the shared lock board. Explicit environment, project
+  and legacy selections retain priority.
+- **Windows transport through WSL2.** Native Windows Codex uses a conditional plugin envelope;
+  a terminal launcher remains a separate Linux coordinator mode. Argument/environment payloads
+  travel in per-call files rather than the Windows command line, preserving large prompts,
+  Unicode, stdin, streaming output and child exit status. Payloads may contain sensitive inputs;
+  normal completion removes them, while forced termination can bypass cleanup.
+- **One Windows proxy helper per Linux worker.** An explicit multiplex mode compiles the helper once,
+  bounds connections and flow control, and preserves worker PID/stdin and exact-owned cleanup.
+  The legacy raw helper interface remains compatible with existing workers. No global daemon,
+  Windows listener or network configuration change is introduced.
+  An owned WSL client now keeps the relay's interop stdio alive after the initiating Desktop
+  bridge returns; a private Linux descriptor handoff preserves worker stdin/PID and cleanup.
+- **Native pipeline guard parity.** Kill-guard escape scope retains actual Bash comments
+  without promoting multiline data to comments, and executable stdin retains producer
+  context across bridge stages. Native tests also verify the child receives normalized
+  Windows system environment paths; owner-loss cleanup latency is documented as best effort.
+- **Native Windows hook compatibility.** Recognized literal bridge calls retain independent cwd and
+  native Windows role-profile paths. Variable/dynamic paths and other unsupported PowerShell forms
+  remain outside exact-source coverage; the hooks are advisory rather than a general security boundary.
+  Linux/macOS role-path defaults and shared skill/template/context policies remain unchanged.
+
+## 1.0.8 — 2026-10-15
+
+- **The successor of an automatic handoff starts in the hub's project.** The context-budget hook put the hook input's
+  directory into the `hub succeed --cwd` it suggested, and that directory drifts with the hub's shell: a hub that had
+  `cd`-ed into the hub home got a successor there, outside git, and when `claude --bg` refused the untrusted folder `hub
+  succeed` quietly fell back to a headless hub that Claude Desktop does not list. `hub start`/`hub takeover` now record
+  the hub's worktree in `roles.json`; `hub succeed` and the hook take it from there. A `--cwd` outside git, or in another
+  repository than the stage's project, exits 2 and starts nothing (a `--no-project` stage excepted). The fall back to a
+  headless hub is a `WARNING` in the output and the journal, with the reason and the `--replace --force` that restarts
+  it as a visible session. A hub registered before this release has no recorded worktree: `hub succeed` then takes the
+  project from `stage.json`, and `--fallback` never needs a directory. A headless successor that is the designed
+  outcome (Codex, `--headless`) gets a neutral line, not the warning.
+
+## 1.0.7 — 2026-10-15
+
+- **A registered hub no longer turns executor work into Desktop session cards.** The hook `session_cards.py` refuses,
+  in a session registered as a stage's `hub`, `start_session` with `initiation` `own_initiative` or `offer`,
+  `hand_off_to_session` and `spawn_task`, and names `agent spawn`, `ask add` and `hub handoff` in the message; the owner's
+  own `user_asked` and an accepted `proposal_id` pass, as does every non-hub session. Hubs also get one line saying the
+  host's card rules are superseded.
+- **Limit pace: how each engine's week is going, before the spend.** On 07.10 the Claude week ran out and cut off four
+  agents mid-work; on 08.10 the Codex week went from 0 to 100 % in 11.5 hours; nothing compared spend with the
+  window's pace, so hubs found out when agents died. `agent spawn`, the `hub start`/`takeover` digest and
+  `agent-top --once` now show each engine's week against its pace (usage vs the elapsed share, the last 6 hours' burn
+  and the window average, when it runs out) and advise in the owner's order: lower an effort above the task class's
+  default, move to the other engine at an equivalent class (Opus ↔ Astra, Sonnet ↔ Sol medium, Haiku ↔ Luna), defer
+  non-urgent work to the reset, then ask the owner. A stage locked to an engine (`AGENT_HUB_STAGE_ENGINES`) gets an
+  `ask add` with the numbers, never a switch. `agent spawn` refuses only when the week runs out before its reset by
+  every rate, half of it is used, the work is not mechanical and no engine with fresh data and headroom can take it
+  (an unknown or stale other engine gets the advice and a ready `ask add`, not a refusal); `--reason`
+  passes and is journalled. The watchdog (R6) writes one `@hub LIMIT …` line per crossing. New: `agent spawn
+  --task-class`, `agent spawn --dry-run`, `AGENT_HUB_LIMIT_PACE`. See [Limit pace](docs/reference.md#limit-pace).
+
+- **The hub skill is a 17 KB core plus references.** `skills/hub/SKILL.md` was 49 KB (about 17,700 tokens) that every
+  hub loaded and re-read on every call, and about half of it was procedure for a Codex hub or for a situation that
+  comes up once a shift. It is now a 17,409-byte core (about 6,700 tokens, measured by input tokens): first commands, starting
+  and taking over, waiting (with `await` for CI, merge and lock waits), talking, planning, launch choice, executors, a
+  short Claude Desktop host block and the twelve recommended rules. The rest sits in
+  `skills/hub/references/` — `stage-lifecycle.md`, `autopilot.md`, `owner-and-planning.md`,
+  `launch-and-executors.md`, `codex-hub.md` — moved word for word, each with a "read … when …" line in the core;
+  a Codex hub reads `codex-hub.md` and `autopilot.md` at start. Pointers to *Terminal follow-through* (the handoff
+  template and skill, the Codex successor briefs) name the new file. The tests that read the Autopilot paragraphs
+  read `references/autopilot.md`, and `tests/t_hub_skill_layout.sh` holds the core's size budget and every pointer.
+  `docs/proposals/hub-rules-slim.md` proposes the same cut for the owner's `hub-rules.md`.
+- **Hooks stay safe on Claude Code 2.1.299.** From 2.1.299 a plugin hook that cannot hand back its answer (it crashes,
+  runs past its `timeout`, prints half a JSON document) blocks the user's call instead of letting it through. All seven
+  hook scripts now start with `hooks/failsafe.py`: stdout is delivered only if it is one complete JSON document, the
+  exit status is always 0 (a missing or broken sibling module used to end in exit 1 for `context_budget`,
+  `handoff_size` and `delegation`), and a timer answers "no decision" 1.5 s before the configured `timeout` (all hooks now have 10 s; `board_locks` and
+  `polling_guard` had 5) and says so on stderr.
+  `tests/t_hook_failsafe.sh` feeds every hook malformed input, breaks a module on purpose, stalls stdin, and checks the
+  deadlines against `hooks.json` and `codex-hooks.json`.
+- **`jwait` waits 50 minutes by default (was 55).** Claude Code compacts a 200K+ conversation left idle about 54 minutes;
+  a 55-minute wait always ended after that point for a hub that did not set `"idleCompaction": false`. Hubs of
+  `hub start`/`takeover`/`succeed` already get the setting or the warning (1.0.5); `setup` now offers the setting too, and
+  detached `agent spawn`/`agent send` workers get `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS=100000000` unless the caller sets
+  it. `AGENT_HUB_JWAIT_FOR` still overrides the default.
+- **A hub in Claude Desktop is told the handoff threshold must come first.** Desktop runs its own bundled Claude Code
+  (2.1.295 against the terminal's 2.1.299 on 14.10), and nothing documented or observable says whether that session reads
+  `"idleCompaction": false`. `hub start`/`takeover` of a Desktop hub now say so and name the context budget's warn
+  threshold against the 200K at which idle compaction starts (`AGENT_HUB_CONTEXT_WARN` is the knob).
+- **`await`: a hub no longer wakes for CI, merge or lock progress.** `await [--ok MERGED] [--on RC=WORD] -- <wait
+  command>` runs the wait detached from the hub's context (a supervisor in its own session, output in a log) and
+  journals exactly one line, `@hub WORD LABEL — LINK (exit N, …)`, when the command ends: `DONE`/`MERGED`, `FAILED`,
+  `TIMEOUT` or a word of the caller's choice. Nothing is written on progress. The hub keeps its single `jwait`. In the
+  token audit of 07–14.10, 202 of a week's 913 background wakes were such waits, each re-reading ~130k tokens of hub
+  context. [Waiting for CI](docs/launch-modes.md#waiting-for-ci-a-merge-or-a-lock).
+
+## 1.0.6 — 2026-10-14
+
+- **A stage whose hub is no longer needed can be closed.** Finished stages stayed in agent-top, the watchdog, the night
+  queue and the question summaries for good (31 stages on the owner's home, most of them long done), and their hubs kept
+  locks and roles. `hub close --stage S --why "…"` refuses while an agent runs or an owner question waits (`--force`
+  stops the agents, leaves the questions), then stops an idle background hub, releases the stage's locks, retires its
+  roles, journals the close and marks `stage.json`; the stage drops out of those views, `agent spawn` refuses it, and
+  its files stay. A hub session or lock that another open stage still holds (or may: a registry unread) is left
+  alone. `hub start` or `hub takeover` reopens it and continues the hub numbering. agent-top's Summary lists the stages, marks the idle ones
+  (open, no live agent, quiet for 48 h, `AGENT_TOP_IDLE_S`) and closes one with `c` in the console or the `close` button
+  (pressed twice) in the `/agent-top` pane; `--json` carries `stage_info`, `closed_hidden` and `idle_after_s`. The hub
+  skill has a *Closing a stage* procedure, the status skill names idle stages.
+
+## 1.0.5 — 2026-10-14
+
+- **Hubs are not compacted when idle.** Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle about
+  54 minutes (on by default since 2.1.299). A hub waiting on a long `jwait` is such a conversation: compacted, the
+  context budget reads the smaller size and the hub goes on from a summary instead of handing over. The background
+  successor of `hub succeed` now starts with `"idleCompaction": false` in its `--settings`, in bypass mode too, and
+  `hub start`/`hub takeover` of a Claude hub warn unless the settings file that decides it, in Claude Code's order
+  (managed, the project's `settings.local.json`, its `settings.json`, the user's), turns it off.
+
+- **Portable Python selection.** `bin/run-python` chooses a compatible interpreter on `PATH`, or validates an
+  explicit `DELAMAIN_PYTHON` override. Native Codex hooks require 3.11+ through this launcher; terminal tools can
+  request 3.10+ or 3.11+ without editing installed files. Claude hooks and CLI shebangs are unchanged. Detached
+  agents write their exit journal with the interpreter that launched them, preserving their original exit code.
+
+## 1.0.4 — 2026-10-14
+
+- **Hubs grill when the owner asks.** On 14.10 two of two hubs answered «грилинг» with one batch of A/B questions with
+  defaults (and one with an "accept all three?" popup), not the companion `grilling` skill: free-text Russian did not
+  load the skill, and the hub skill capped grilling at "stop once the business result is clear". The prompt hook
+  (`delegation.py prompt`, both engines) now names the skill when the owner's prompt asks for grilling (грилинг,
+  грилл ми, погриль, grill me, grilling; not «гриль», «грили», "grilled" or a skills/grilling/ path), and the hub
+  skill says an owner-requested grilling runs as written until the topic's frontier is empty, open owner questions
+  included; its questions wait for the owner's answers instead of taking the recommendation on silence.
+
+## 1.0.3 — 2026-10-14
+
+- **The watchdog wakes Claude background hubs again.** `watchdog install` copied `CLAUDE_CONFIG_DIR` from the
+  installing shell into the job's `run.sh`, and a Codex shell sets it to `~/.claude`. That value is not neutral: with
+  it the claude CLI reads `~/.claude/.claude.json` instead of `~/.claude.json`, with no trusted folders and no login,
+  so from 09.10 every `claude --bg --resume` of a wake failed with "Workspace not trusted" (49 times in one hub home).
+  `install` now unsets a `CLAUDE_CONFIG_DIR` that names `~/.claude` while `~/.claude.json` exists (another directory,
+  or `~/.claude` without `~/.claude.json`, is still exported), and `watchdog status` says `install again` for a job
+  written before the fix. Every claude CLI call of the tools (`agent spawn`, a manual `watchdog run`, `hub succeed`)
+  drops the same value from its environment.
+- **A hub that takes over in a Desktop session under "No folder" lands in its project's folder.** `change_directory`
+  straight to the hub's worktree waited for the owner's folder-trust prompt (dropped after 5 minutes unanswered) and,
+  once applied, filed the session in the sidebar under a folder of its own named after the worktree. The `MOVE`
+  instructions of `hub takeover` and the hub skill now go through the main clone: `change_directory` to it (trusted,
+  filed under the project), end the turn with no background command, next turn `EnterWorktree` into the worktree.
+  Probed 14.10 on the Dolya hub.
+
+- **Haiku takes an effort like every other model.** Claude Haiku 5.5 has an effort setting (`low` to `max`), and
+  Claude Code 2.1.296 resolves the alias `haiku` to it (2.1.287 to 2.1.295 still give Haiku 4.5; the minimum supported
+  version is unchanged). `agent spawn` no longer drops the effort of a haiku model: `--effort`, else the
+  `AGENT_HUB_EFFORT_DEFAULTS` entry, else `AGENT_HUB_DEFAULT_EFFORT`, else `high` goes to the CLI, is recorded in
+  `meta.json` and the journal start line, counts for `--reason` and is seen by `AGENT_HUB_EFFORT_RULES`. The same for a
+  haiku `agent` reviewer in `hub reviewer` and for a Haiku successor of `hub succeed` (the hub's own effort is inherited,
+  or the call is refused when it cannot be read). Probed: Haiku 4.5 also accepts `--effort` and ignores it, so the flag
+  is safe on every supported CLI. `hub effort` reads a Haiku 5.5 session like any other (its record, hook input and
+  `$CLAUDE_EFFORT` carry the turn's effort); only a Haiku turn that recorded no effort (Haiku 4.5) is still treated as
+  having none. A resume (`agent send`) of a Haiku agent spawned before this change, with no effort on record, gets the
+  effort a spawn would (same defaults and `AGENT_HUB_EFFORT_RULES` check) and records it. The example subagent policy keeps Haiku free at any type but denies it at `low` (Haiku runs at high, medium
+  allowed); the docs add no low default for Haiku.
+
+## 1.0.2 — 2026-10-08
+
+- **Codex `tell` supports immediate delivery through the public app-server proxy.** A verified active turn uses
+  exact-turn steer. For a recipient observed loaded idle, a `turn/start` acknowledgement records `accepted` with
+  `delivery_mode: "unverified"`; another client can activate after the final read, so a new turn is not guaranteed.
+  One signed journal line and the matching acknowledgement record the result. An unavailable runtime returns a pending native-caller handoff,
+  which the Codex hub handles immediately under verified human communication authority and the current registry.
+  Native tool acceptance does not establish active same-turn steer; unknown outcomes forbid retry. Claude delivery
+  and detached recipients retain their existing behavior. In an owned Desktop control, native input arrived during
+  the existing active turn; native idle delivery remains unverified.
+- **Codex hub terminal results trigger follow-through against Business DoD.** Hub, handoff and emitted Codex CLI/native
+  successor instructions consume reports, verify ownership, continue independent authorized ready work, or record
+  a concrete blocker and expected event. Executor brief stops and empty queue snapshots preserve the hub's remaining
+  goal and explicit owner boundaries; preparation dependencies stay separate from final publication and resource gates.
+  Claude successor instructions retain their existing behavior.
+- **Canonical hub waits use `jwait --hub-events`.** Standard terminal/question events and configured extra wake
+  words resolve inside the waiter, removing regex quoting from generated digest commands. Custom filters, default
+  file/non-hub waits, tags, exclusions and replay semantics remain compatible.
+
+## 1.0.1 — 2026-10-08
+
+- **Автоматический native handoff учитывает уже данное разрешение владельца.** Перед `create_thread` агент
+  проверяет исходную инструкцию человека, унаследованный handoff/план, ответ в реестре и standing permission;
+  разрешение на автоматическую передачу контекста той же стадии действует до отзыва без повторного вопроса.
+  Native prep и brief передают ссылки на источники и границы разрешения. При отсутствии/отзыве разрешения
+  или новом бизнес-scope сохраняются запрос и предыдущий хаб; агент спрашивает один раз. Независимый CLI
+  исполнитель начинает разрешённую работу без ожидания чужой передачи контекста.
+
+- **Desktop-передача Codex сохраняет нативную поверхность.** Агентские `--surface cli` и `--headless`
+  требуют явного выбора владельца через `AGENT_HUB_DESKTOP_CLI_HANDOFF` в конфигурации hub home;
+  репозиторий и окружение не могут дать это разрешение. Без разрешения на native create_thread запрос остаётся
+  pending, предыдущий хаб работает до проверенного takeover. Terminal/detached-передача сохраняет CLI-путь.
+
+- **Verified Codex native requests survive the current hub's same-shift host refresh.** Full thread UUID,
+  native kind, request/chain and original registration/takeover boundary remain intact. Self-only
+  `hub desktop-recover` repairs a proven legacy refresh using the original full registration identity,
+  exact shift/cwd and unchanged observed policy; ambiguous evidence and later/manual hubs fail without
+  mutation. Exact native self-refresh validates under one locked minimal path, without resource/queue/project
+  takeover side effects; incompatible resource instructions are rejected. Recovery creates no thread, reservation
+  or shift and changes no settings.
+
+- **The watchdog can wake a confirmed idle Codex app hub in its own thread.** `hub start`/`takeover` record app
+  provenance only for the current UUID with both app markers and no detached worker identity. Runtime status is
+  rechecked before `codex queue`; terminal/unknown hosts notify only, with no native resume fallback. The takeover
+  digest now describes host-specific support. Codex API-error recovery retries only a final own-turn
+  `server_overloaded` with matching start and no later user/turn boundary; quota/auth/unknown errors and interruption
+  remain excluded, and the failed turn is rechecked before queueing.
+  A fenced `native-plan`/`native-claim`/`native-ack` protocol supports a separately installed app-native heartbeat
+  when Desktop cannot be reached through the CLI daemon. It requires native idle/actionability checks, preserves
+  unknown delivery, deduplicates shared UUIDs across stages, and does not spend model calls itself; the native
+  automation consumer may be model-assisted. UUID receipts survive replacement by a different stage actor; both
+  native claims and CLI queues consult the same local fence. Unknown CLI outcomes also prevent native fallback,
+  and only verified recipient own-turn progress releases an uncertain delivery.
+
+- **Codex native delegation guards recognize CLI 0.160.0 namespace concatenation.** Spawn, followup and
+  messaging now reach the configured policies; level 0 blocks task reactivation without blocking pure messages.
+  Real CLI controls cover the declared manifest, nested shell/patch calls, native TOML effort and stdin limits.
+
+- **agent-top follows Delamain’s visual identity** in the terminal, Claude Code pane and HTML widget, with
+  navy panels, ice-blue navigation and amber accents. Status colors, monochrome and limited-color terminals,
+  narrow layouts and the pane’s focus controls remain supported.
+
+- **Delamain's visual identity now follows the AI dispatcher and autonomous fleet metaphor.** New pixel-art
+  illustrations show task dispatch, shared records and coordinator handoff; the workflow sketch uses the same
+  navy, ice-blue and taxi-amber palette. The README and repository About describe coordination for both Claude Code
+  and Codex. Generation prompts and the character reference are in `docs/assets/illustration-prompts.md`.
 
 ## 1.0.0 — 2026-10-07
 

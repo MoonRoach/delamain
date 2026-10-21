@@ -35,7 +35,7 @@ CWD=$R/hubcwd; mkdir -p "$CWD"; export FX_CWD=$CWD
 WAITER=; HOLDER=; LP=
 cleanup(){ local f d; for f in $R/*/agents/*/meta.json; do d=$(dirname "$f"); "$B/agent" stop --stage "$(basename "$(dirname "$(dirname "$d")")")" "$(basename "$d")" >/dev/null 2>&1; done
   [ -n "$WAITER" ] && kill $WAITER 2>/dev/null; [ -n "$HOLDER" ] && kill $HOLDER 2>/dev/null; [ -n "$LP" ] && kill $LP 2>/dev/null; return 0; }
-trap cleanup EXIT
+trap 'cleanup; test_cleanup' EXIT
 
 # mk_dhub STAGE: a headless hub (role hub-3) whose run has ended, registered as the stage's hub; silent for 20 min
 mk_dhub(){
@@ -577,7 +577,7 @@ WD2=$R/w-sdr; (cd "$WD2" && FAKE_HOLD=60 "$B/agent" spawn --stage sdr --role w1 
 PD=$(python3 -c "import json;print(json.load(open('$R/sdr/agents/w1/meta.json'))['pid'])"); kill -KILL -- -$PD; for i in $(seq 1 40); do kill -0 $PD 2>/dev/null || break; sleep 0.25; done
 $B/ask add --stage sdr --blocks x --default "plan it" --due 2020-01-01T10:00 "overdue in the dry run" > /dev/null
 n0=$(nl "$R/claude.log"); before=$(snap "$R"); WD run --dry-run --stage sdr > "$R/dry.out" 2>&1; check $? 0 "dry run: exits 0"
-# R6 reads `claude agents --json` even in a dry run: the fake logs that call, and only reads are allowed to show up there
+# R7 reads `claude agents --json` even in a dry run: the fake logs that call, and only reads are allowed to show up there
 check "$(tail -n +$((n0 + 1)) "$R/claude.log" | python3 -c 'import json,sys; print(sum(json.loads(l)["argv"][:1] != ["agents"] for l in sys.stdin if l.strip()))')" 0 "dry run: the only claude calls are reads (agents --json)"
 head -n "$n0" "$R/claude.log" > "$R/claude.log.tmp"; mv "$R/claude.log.tmp" "$R/claude.log"; after=$(snap "$R")
 check "$after" "$before" "dry run: not one file of the home changed (journal, state, markers, agents, notifications)"
@@ -627,7 +627,7 @@ bad = [t for t in yes if not f.accepts(t)] + [t for t in no if f.accepts(t)]
 assert not bad, bad
 PY
 check $? 0 "jwait.hub_filter: the digest jwait's tags and pattern; the hub's own lines left out, @hub / @hub-N / @<stage>-hub-N in"
-grep -q -- "--tag hub-1 --tag hub --match" "$R/take1.out"; check $? 0 "jwait.hub_filter: …the same tags that hub takeover prints in its first jwait command"
+grep -q -- "--tag hub-1 --tag hub --hub-events" "$R/take1.out"; check $? 0 "jwait.hub_filter: …the same tags that hub takeover prints in its first jwait command"
 mkdir -p "$R/sj/coordinator/work"
 "$B/jwait" --journal --stage sj --caller hub-9 --settle 1 --for 3s > "$R/j1.out" 2>&1; check $? 3 "jwait: the deadline passes (exit 3)"
 test -f "$R/.jwait-state/sj/hub-9.armed.json"; check $? 1 "jwait: the armed file is gone after exit 3"

@@ -14,6 +14,7 @@ Python 3.10+ stdlib only.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import fcntl
 import glob
@@ -24,6 +25,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -37,8 +39,13 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what `claude --effort` ta
 MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 # The oldest supported Claude Code CLI: it runs the agent-top mod (2.1.287) and resolves the aliases to the latest models
 # (sonnet-5-5, opus-5-5, haiku-4-5, fable-5-1, as 2.1.285 did); an older CLI is unsupported and resolves the same aliases
-# to older models. The plugin pins no ids: the alias follows the CLI.
+# to older models. `haiku` is haiku-5-5 only from 2.1.296; the minimum is not raised for it, since both Haiku models take
+# `--effort`. The plugin pins no ids: the alias follows the CLI.
 MIN_CLI_VERSION = (2, 1, 287)
+# Managed settings files, which win over every other settings file (Claude Code's settings precedence): macOS, Linux.
+MANAGED_SETTINGS = (Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+                    Path("/etc/claude-code/managed-settings.json"))
+IDLE_CHECK_OFF_ENV = "AGENT_HUB_NO_IDLE_COMPACTION_CHECK"  # environment only, like NO_NAMING: scripted environments, tests
 # A full model id, `claude-` plus letters, digits and . _ : @ [ ] - ("claude-opus-4-7[1m]", the Vertex id
 # "claude-sonnet-4-5@20250929"): nothing a shell treats as syntax, so an id from a repository's config cannot carry a
 # command into a line the hub runs; and a length cap, so a value cannot flood what the hub reads.
@@ -61,12 +68,20 @@ BOOL_KEYS = ("AGENT_HUB_TAKE_MAIN_MERGE",)
 # Status words: what the hub's digest jwait wakes on and what counts as an agent's clean ending. EXIT, ENDED and
 # REVIEWED are the words `agent` itself writes when a run ends (EXIT: abnormally or killed; ENDED: normally, with a
 # result but no status word of the agent's own; REVIEWED: the same for a review role), so they never count as the
-# agent's own status. $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
-STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED)\b|AWAITING ANSWER"
+# agent's own status. GRILLED is the report of a grilling session (`hub grill done`). $AGENT_HUB_JWAIT_MATCH adds alternatives (a regex) for a team whose scripts or briefs use other words.
+STATUS_WORDS = r"\b(MERGED|STOP|DONE|BLOCKED|EXIT|QUESTION|ENDED|REVIEWED|GRILLED)\b|AWAITING ANSWER"
 AGENT_END_WORDS = ("EXIT", "ENDED", "REVIEWED")
-# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 55m or 1h30m).
-# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it.
-DEFAULT_JWAIT_FOR = "55m"
+# How long one `jwait` waits when --for/--until is not given ($AGENT_HUB_JWAIT_FOR, a duration like 50m or 1h30m).
+# The prompt cache of a session lives one hour: a wake after a longer sleep re-writes the whole context into it. Claude
+# Code 2.1.299 also compacts a 200K+ conversation left idle ~54 minutes (idle_compaction_warning), and the old 55m wait
+# always ended after that point; a hub that did not turn the compaction off would have woken up on a summary. 50m ends
+# before it, and costs about one extra wake an hour, a turn that reads a warm cache.
+DEFAULT_JWAIT_FOR = "50m"
+# Claude Code's idle compaction (2.1.290+) starts at 200K tokens unless this raises the minimum; a detached `claude -p` worker
+# (`agent spawn`/`agent send`) that waits on a `jwait` should never be compacted behind its hub's back (the owner forbids
+# compaction), so it gets a minimum above any context window. The caller's own value wins. Older CLIs ignore the variable.
+IDLE_COMPACT_ENV = "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS"
+IDLE_COMPACT_NEVER = "100000000"
 MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflows the deadline's date
 # Agent-discipline hooks (hooks/context_budget.py, polling_guard.py, delegation.py). The user's own limits —
 # context budget and the delegation dial — come from the hub home only, so a cloned repository cannot loosen them;
@@ -87,14 +102,22 @@ PROJECT_KEYS += ("AGENT_HUB_REVIEWERS", "AGENT_HUB_REVIEW_MODEL", "AGENT_HUB_REV
 # Spawn policy (bin/spawn_policy.py): the default effort per model is the repository's to set, like the default effort;
 # what needs a reason and how large a context a resume may start from are the user's own limits (hub home only).
 PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
+# MCP servers of a Claude agent (`agent spawn --mcp`): a repository may choose inherit or none, never a config file —
+# a file's servers are commands the CLI starts without the approval a project's .mcp.json needs (bin/agent mcp_choice).
+PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
 HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
-BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION")
+# The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
+# not switch it off, so it is the hub home's (and the environment's) to set.
+HUB_WIDE_KEYS += ("AGENT_HUB_SCAN_GUARD", "AGENT_HUB_SCAN_ESCAPE")
+BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION", "AGENT_HUB_SCAN_GUARD")
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
 # permission mode.
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",
                   "AGENT_HUB_SUCCESSOR_EFFORT", "AGENT_HUB_SUCCESSOR_PERMISSION_MODE", "AGENT_HUB_SUCCESSOR_TIMEOUT")
-HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE",)
-BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF",)
+HUB_WIDE_KEYS += ("AGENT_HUB_SUCCESSOR_ENGINE", "AGENT_HUB_DESKTOP_CLI_HANDOFF")
+# Grilling (bin/grilling.py): what holds an automatic handoff back is the autopilot's, hub home only.
+HUB_WIDE_KEYS += ("AGENT_HUB_GRILLING_SKILL", "AGENT_HUB_GRILLING_STALE_MIN", "AGENT_HUB_GRILLING_CEILING")
+BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_DESKTOP_CLI_HANDOFF")
 # Watchdog (bin/watchdog): hub home only. It starts commands (a notification channel, a resume of a hub), so a cloned
 # repository must not set any of it; one job serves one hub home, so every tool sharing the home must agree.
 HUB_WIDE_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
@@ -114,6 +137,10 @@ HUB_WIDE_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 JSON_KEYS += ("AGENT_HUB_SENSITIVE_CLASSES",)
 # Silence after which the hub opens its reply with `ask inbox` (bin/ask; a duration like 3h): hub home only.
 HUB_WIDE_KEYS += ("AGENT_HUB_OWNER_DIGEST_AFTER",)
+# The limit-pace advisor (bin/limit_pace.py): on | warn | off, and the owner's engine decision per stage. Hub home only:
+# a repository must not unlock a stage the owner locked to an engine.
+HUB_WIDE_KEYS += ("AGENT_HUB_LIMIT_PACE", "AGENT_HUB_STAGE_ENGINES")
+JSON_KEYS += ("AGENT_HUB_STAGE_ENGINES",)
 
 
 # ---------------------------------------------------------------- the hub home
@@ -151,6 +178,7 @@ def legacy_home() -> Path:
 
 
 _SESSION_CWD: Optional[str] = None
+_LOCAL = threading.local()  # in_home(): the home one thread works in (agent-top reads other homes than the resolved one)
 _HOME_CACHE: dict = {}
 _HOME_WARNED: set = set()
 _STAGE_GUARD = True
@@ -208,6 +236,9 @@ def _exclude_project_home(home: Path) -> None:
 def home(cwd=None) -> Home:
     """The hub home and the layer that chose it (see the order above). `cwd`: the directory whose repository's
     .agent-hub/config.json counts (default: the hook's session directory, else the working directory)."""
+    scoped = getattr(_LOCAL, "home", None)
+    if scoped is not None:
+        return scoped
     raw = os.environ.get(HOME_KEY)
     if raw:
         # absolute: a relative value pinned into a child in another directory would name another home
@@ -253,6 +284,19 @@ def root(cwd=None) -> Path:
     return home(cwd).path
 
 
+@contextlib.contextmanager
+def in_home(path, layer: str = "registry"):
+    """Within the block this thread's home() is `path`, whatever the environment and the working directory say. For a
+    reader of several homes (agent-top walks every known home); no tool that writes uses it, and the resolution order
+    above is untouched for everyone else. Per thread, so a reader's helper thread never changes the main thread's home."""
+    prev = getattr(_LOCAL, "home", None)
+    _LOCAL.home = Home(Path(path), layer, "a known home (registry of homes)")
+    try:
+        yield
+    finally:
+        _LOCAL.home = prev
+
+
 def is_protected(path) -> bool:
     """Whether `path` lies under a directory named .claude, which Claude Code protects from edits."""
     return ".claude" in Path(path).expanduser().parts
@@ -276,6 +320,213 @@ def stage_elsewhere(stage: str) -> Optional[Path]:
         if not under(other, here) and not under(here, other) and (other / stage).is_dir():
             return other
     return None
+
+
+# ---------------------------------------------------------------- registry of homes
+#
+# A project home lives inside an arbitrary repository, so nothing can find it by scanning; a tool that shows what runs on
+# the machine (agent-top) needs a list. One JSON file outside every home: ${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json,
+# {"version": 1, "homes": [{"path", "layer", "repo", "first_seen", "last_seen"}]}. A home is registered when a stage is
+# registered in it (roles_save, `agent spawn`) — not on every hook call — and `last_seen` is refreshed at most once a day,
+# so a call that changes nothing writes nothing. The registry is a convenience: failing to read or write it never fails
+# the calling tool (the current home is always known), and at most one stderr line says so, outside hooks.
+
+REGISTRY_REFRESH_S = 24 * 3600
+_REGISTERED: set = set()
+_REGISTRY_WARNED: set = set()
+
+
+class KnownHome(NamedTuple):
+    path: Path
+    label: str  # "" for ~/agent-hub, the repository's directory name for a project home, else the ~-abbreviated path
+    layer: str
+    repo: Optional[str]  # the main checkout of a project home, else None
+
+
+def registry_path() -> Path:
+    raw = os.environ.get("XDG_CONFIG_HOME", "")
+    base = Path(raw).expanduser() if raw and os.path.isabs(os.path.expanduser(raw)) else Path.home() / ".config"
+    return base / "delamain" / "homes.json"
+
+
+def real_path(path) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, ValueError, RuntimeError):
+        return str(path)
+
+
+_real = real_path
+
+# How much a registry entry says about where a home came from: a child tool resolves its home from the pinned
+# $AGENT_HUB_HOME (child_env), so the same home is seen as "env" by a child and as "project" by its parent; a
+# registration never replaces a more specific provenance with a less specific one.
+_LAYER_RANK = {"env": 0, "registry": 0, "legacy": 1, "user": 2, "default": 2, "project": 3}
+
+
+def _tilde(path) -> str:
+    p = str(path)
+    h = str(Path.home())
+    return "~" + p[len(h):] if h not in ("", "/") and (p == h or p.startswith(h + "/")) else p
+
+
+def _registry_read() -> tuple:
+    """(entries, state): state is "ok", "absent" or "bad" (unreadable or not the registry's shape)."""
+    try:
+        data = json.loads(registry_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [], "absent"
+    except (OSError, ValueError):
+        return [], "bad"
+    ents = data.get("homes") if isinstance(data, dict) else None
+    if not isinstance(ents, list):
+        return [], "bad"
+    return [e for e in ents if isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]], "ok"
+
+
+def registry_load() -> list:
+    """The registered homes' entries; [] when there is no registry or it cannot be read."""
+    return _registry_read()[0]
+
+
+def _registry_warn(msg: str) -> None:
+    if _STAGE_GUARD and msg not in _REGISTRY_WARNED:  # a hook (stage_guard off) never writes to stderr
+        _REGISTRY_WARNED.add(msg)
+        _warn(msg)
+
+
+def _home_provenance(h: Home) -> tuple:
+    """(layer, repo) of the home `h`: a project home (the layer says so, or the path has the shape of one — a child's
+    pinned $AGENT_HUB_HOME names it) has its main checkout as `repo`."""
+    if h.layer == "project" or (h.path.name == LOCAL_HOME and h.path.parent.name == CONFIG_DIRNAME):
+        return "project", str(h.path.parent.parent)
+    return h.layer, None
+
+
+def _more_specific(layer: str, repo: Optional[str], entry: dict) -> bool:
+    old_layer = entry.get("layer") if isinstance(entry.get("layer"), str) else "env"
+    return _LAYER_RANK.get(layer, 0) > _LAYER_RANK.get(old_layer, 0) or (bool(repo) and not entry.get("repo"))
+
+
+def register_home(h: Optional[Home] = None) -> None:
+    """Record the resolved home (or `h`) in the registry of homes. Once per process; a missing home is dropped on the
+    way; best effort — nothing here raises."""
+    try:
+        h = h or home()
+        path = _real(h.path)
+        if path in _REGISTERED:
+            return
+        _REGISTERED.add(path)
+        ents, state = _registry_read()
+        stamp = now().isoformat(timespec="seconds")
+        if state == "bad":
+            _registry_warn(f"{registry_path()} is unreadable or not a registry of homes: delete it to start a new one "
+                           "(agent-top lists the current home and ~/agent-hub meanwhile)")
+            return
+        layer, repo = _home_provenance(h)
+        if _registry_current(ents, path, layer, repo):
+            return
+        reg = registry_path()
+        with Flock(reg.with_name(reg.name + ".lock")):
+            ents, state = _registry_read()
+            if state == "bad":
+                return
+            keep, found = [], None
+            for e in ents:
+                if _real(e["path"]) == path:
+                    found = e
+                elif Path(e["path"]).is_dir():  # a deleted home is dropped on the next write
+                    keep.append(e)
+            if found is None:
+                found = {"path": path, "layer": layer, "repo": repo, "first_seen": stamp}
+            elif _more_specific(layer, repo, found):   # never downgrade: only a more specific provenance replaces it
+                found.update(layer=layer, repo=repo)
+            found.update(path=path, last_seen=stamp)
+            atomic_write(reg, json.dumps({"version": 1, "homes": keep + [found]}, ensure_ascii=False, indent=1) + "\n")
+    except Exception as e:  # noqa: BLE001 — the registry must never fail the tool that called it
+        try:
+            _registry_warn(f"could not update {registry_path()}: {e}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _registry_current(ents: list, path: str, layer: str, repo: Optional[str]) -> bool:
+    """Whether the registry already says what a registration would write: the home is in it with at least this
+    provenance, seen within a day, and no entry of a deleted home is left to drop."""
+    found = None
+    for e in ents:
+        if _real(e["path"]) == path:
+            found = e
+        elif not Path(e["path"]).is_dir():
+            return False
+    if found is None or _more_specific(layer, repo, found):
+        return False
+    try:
+        seen = dt.datetime.fromisoformat(str(found.get("last_seen")))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=TZ)
+        return 0 <= (now() - seen).total_seconds() < REGISTRY_REFRESH_S
+    except (ValueError, TypeError):
+        return False
+
+
+def known_homes() -> list:
+    """Every hub home on this machine as far as the tools know, as KnownHome in a stable order: the resolved home (even
+    when it does not exist yet), ~/agent-hub, the legacy home and $AGENT_HUB_HOME (each while it exists), then the
+    registered homes whose path still exists; deduplicated by real path."""
+    seen: dict = {}
+
+    def add(path, layer, repo=None, must_exist=True):
+        real = _real(path)
+        if real in seen:   # the same home seen twice: the more specific provenance names it
+            if _more_specific(layer, repo, {"layer": seen[real][1], "repo": seen[real][2]}):
+                seen[real][1:] = [layer, repo]
+            return
+        if must_exist and not Path(real).is_dir():
+            return
+        seen[real] = [Path(path), layer, repo]
+
+    cur = home()
+    add(cur.path, *_home_provenance(cur), must_exist=False)
+    add(user_home(), "default")
+    add(legacy_home(), "legacy")
+    raw = os.environ.get(HOME_KEY)
+    if raw:
+        add(Path(raw).expanduser().absolute(), "env")
+    for e in sorted(registry_load(), key=lambda e: e["path"]):
+        add(e["path"], e.get("layer") if isinstance(e.get("layer"), str) else "env",
+            e.get("repo") if isinstance(e.get("repo"), str) else None)
+    user = _real(user_home())
+    labels = []
+    for real, (path, layer, repo) in seen.items():
+        if real == user:
+            labels.append("")
+        elif repo and Path(repo).name:
+            labels.append(Path(repo).name)
+        else:
+            labels.append(_tilde(path))
+    for i, (real, (path, layer, repo)) in enumerate(seen.items()):
+        if labels[i] and labels.count(labels[i]) > 1:  # two checkouts called alike: the paths tell them apart
+            labels[i] = _tilde(repo or path)
+    return [KnownHome(p, labels[i], layer, repo) for i, (p, layer, repo) in enumerate(seen.values())]
+
+
+def stage_in_known_homes(stage: str) -> list:
+    """The known homes other than the resolved one that have a directory for `stage`."""
+    here = _real(root())
+    return [k for k in known_homes() if _real(k.path) != here and (k.path / stage).is_dir()]
+
+
+def elsewhere_hint(stage: str) -> str:
+    """" — stage S exists in home <path>; …" for a "stage not found" error when a known home has it, else ""."""
+    try:
+        other = stage_in_known_homes(stage)
+    except Exception:  # noqa: BLE001 — a hint never fails the error it decorates
+        return ""
+    if not other:
+        return ""
+    k = other[0]
+    return (f" — stage {stage} exists in home {k.path}; run from that project or set AGENT_HUB_HOME={k.path}")
 
 
 # ---------------------------------------------------------------- configuration
@@ -361,7 +612,8 @@ def project_warnings(cwd=None) -> list:
 # place is refreshed, a bad one gets a fresh worktree of origin's default branch and the order to move there (exit 4).
 
 NO_PROJECT_ENV = "AGENT_HUB_NO_PROJECT"  # environment only (a cloned repository must not switch the rule off)
-STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"}
+STAGE_FILE = "stage.json"  # <stage dir>: {"repo": main clone of the stage's project} / {"no_project": true}, {"goal": "…"},
+#                           {"closed": {"at", "why", "by", "hub"}} while the stage is closed (`hub close`)
 LOCATION_EXIT = 4
 FETCH_TIMEOUT_S = 30
 HUB_WORKTREES = ".claude/worktrees"  # <repo>/…/<stage>-hub-<n>, where Claude Code puts its own worktrees
@@ -448,6 +700,60 @@ def record_stage_project(stage: str, repo: Optional[Path]) -> None:
     else:  # the latest choice wins: a recorded repo would overrule it at the next folderless start
         want = dict(data, no_project=True)
         want.pop("repo", None)
+    if want != data:
+        atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
+
+
+def project_cwd_problem(stage: str, cwd) -> Optional[str]:
+    """Why `cwd` is no place to start the stage's successor hub from, None when it is: outside git, or in another
+    repository than the stage's recorded project. A stage with no project (`--no-project`, or AGENT_HUB_NO_PROJECT in the
+    environment) accepts any directory."""
+    if truthy(os.environ.get(NO_PROJECT_ENV)) or stage_record(stage).get("no_project"):
+        return None
+    here = main_tree(cwd)
+    if here is None:
+        if _git(cwd, "rev-parse", "--git-dir") is None:  # a timeout or no git at all says nothing about the directory
+            return f"git did not answer for {cwd} (not installed, or no reply in 5 s): cannot tell whether it is in a repository"
+        return f"{cwd} is not inside a git repository"
+    repo = stage_record(stage).get("repo")
+    project = main_tree(Path(str(repo)).expanduser()) if repo else None
+    if project is not None and not _same(here, project):
+        return f"{cwd} is in {here}, not in a worktree of the project of stage {stage} ({project})"
+    return None
+
+
+def stage_project(stage: str) -> Optional[Path]:
+    """The main checkout of the stage's recorded project (stage.json `repo`); None when the stage has none, or it is gone."""
+    repo = stage_record(stage).get("repo")
+    if not repo or stage_record(stage).get("no_project"):
+        return None
+    try:
+        return main_tree(Path(str(repo)).expanduser())
+    except (RuntimeError, OSError):  # `~user` that does not exist
+        return None
+
+
+def registered_worktree(stage: str) -> Optional[Path]:
+    """The worktree the stage's registered hub recorded at takeover (roles.json, hub.worktree) while it is still a good
+    place for a successor (project_cwd_problem); None when nothing was recorded or it is gone."""
+    path = (roles_load(stage)["roles"].get("hub") or {}).get("worktree")
+    if not path or not Path(str(path)).is_dir() or project_cwd_problem(stage, path):
+        return None
+    return Path(str(path))
+
+
+def stage_closed(stage: str) -> Optional[dict]:
+    """The stage's `closed` record ({"at", "why", "by", "hub"}) once `hub close` closed it, else None. A closed stage
+    is left out of agent-top's default view, the watchdog, the night queue and the questions summary; a takeover
+    (or `hub start`) reopens it."""
+    rec = stage_record(stage).get("closed")
+    return rec if isinstance(rec, dict) else None
+
+
+def record_stage_closed(stage: str, rec: Optional[dict]) -> None:
+    """Write the stage's `closed` record into stage.json; None removes it (the stage is open again)."""
+    data = stage_record(stage)
+    want = dict(data, closed=rec) if rec else {k: v for k, v in data.items() if k != "closed"}
     if want != data:
         atomic_write(root() / stage / STAGE_FILE, json.dumps(want, ensure_ascii=False, indent=1) + "\n")
 
@@ -653,9 +959,13 @@ def check_location(stage: str, n: int, rerun: str, repo_arg: Optional[str] = Non
     else:
         print(f"{'[plan] would create' if dry_run else 'Created'} the worktree {path} on a new branch from {base} {sha[:7]}.")
     print("Move this session there before anything else:\n"
-          f"  Claude Code: EnterWorktree with path={path}; if it refuses (the session was launched outside the "
-          "repository, e.g. a Desktop session under \"No folder\"), mcp__ccd_directory__change_directory with that "
-          "path (it takes effect when the turn ends: use absolute paths until then).\n"
+          f"  Claude Code: EnterWorktree with path={path}. If it refuses (the session was launched outside the "
+          "repository, e.g. a Desktop session under \"No folder\"): mcp__ccd_directory__change_directory with "
+          f"path={R} — the main clone, not the worktree: Desktop files a session in the sidebar under the folder it "
+          "moved to, and the main clone is usually trusted already (a new worktree waits for the owner's trust prompt, "
+          "which expires in 5 minutes). It applies when the turn ends: start no background command, end the turn "
+          f"at once; next turn check `pwd` is {R}, call EnterWorktree with path={path}, make no edits in the main "
+          "clone.\n"
           f"  Codex: run every later command with the workdir {path}.\n"
           f"Then re-run: {rerun}")
     return Located(LOCATION_EXIT, R, "")
@@ -961,7 +1271,7 @@ def status_pattern(exit_word: bool = True) -> str:
 
 
 def jwait_for() -> str:
-    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 55m). A value that is not a duration between zero
+    """The default `jwait --for` ($AGENT_HUB_JWAIT_FOR, hub-wide; 50m). A value that is not a duration between zero
     (exclusive) and 24h is reported on stderr and replaced by the default."""
     raw = (setting("AGENT_HUB_JWAIT_FOR") or "").strip()
     if not raw:
@@ -971,7 +1281,7 @@ def jwait_for() -> str:
             return raw
     except (UsageError, OverflowError):
         pass
-    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 55m or 1h30m between 1s and 24h ({raw!r}); "
+    _warn(f"AGENT_HUB_JWAIT_FOR is not a duration like 50m or 1h30m between 1s and 24h ({raw!r}); "
           f"using {DEFAULT_JWAIT_FOR}")
     return DEFAULT_JWAIT_FOR
 
@@ -980,10 +1290,26 @@ def truthy(raw: Optional[str]) -> bool:
     return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def misleading_claude_config(value) -> bool:
+    """Whether CLAUDE_CONFIG_DIR names ~/.claude while ~/.claude.json exists. Not a neutral value: unset, the claude
+    CLI reads ~/.claude.json; set, <dir>/.claude.json — here a file without the owner's trusted folders and login, so
+    every `claude --bg --resume` failed "Workspace not trusted" (a watchdog job installed from a Codex shell, 08.10).
+    Without ~/.claude.json the directory may hold the real config, and it is kept."""
+    try:
+        home = Path.home()
+        return (bool(value) and Path(value).expanduser().resolve() == (home / ".claude").resolve()
+                and (home / ".claude.json").exists())
+    except (OSError, RuntimeError):
+        return False
+
+
 def child_env(extra: Optional[dict] = None) -> dict:
     """Environment for calling the sibling tools and the agents: the resolved home pinned in $AGENT_HUB_HOME (a child
-    in another directory must not resolve another one), this bin/ first on PATH and in $HUB_BIN."""
+    in another directory must not resolve another one), this bin/ first on PATH and in $HUB_BIN; a misleading
+    CLAUDE_CONFIG_DIR (misleading_claude_config) is dropped, so the claude CLI reads the owner's own config."""
     env = dict(os.environ)
+    if misleading_claude_config(env.get("CLAUDE_CONFIG_DIR")):
+        del env["CLAUDE_CONFIG_DIR"]
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
     env["HUB_BIN"] = str(BIN)  # for a brief written by an older run: rebuilt at every spawn and resume, so it follows updates
@@ -1076,13 +1402,15 @@ def cli_version(path: str, cwd=None, persist: bool = True) -> Optional[tuple]:
 
 def desktop_cli() -> Optional[tuple]:
     """(version, path) of the newest CLI bundled with Claude Desktop on macOS (the directory name is the version);
-    None when there is none."""
+    None when there is none. Both layouts: <version>/claude.app and <version>/<build hash>/claude.app (Desktop since
+    2.1.29x)."""
     base = Path.home() / "Library/Application Support/Claude/claude-code"
     found = []
-    for d in base.glob("*/claude.app/Contents/MacOS/claude"):
-        v = parse_version(d.parents[3].name)
-        if v:
-            found.append((v, str(d)))
+    for pattern in ("*/claude.app/Contents/MacOS/claude", "*/*/claude.app/Contents/MacOS/claude"):
+        for d in base.glob(pattern):
+            v = parse_version(d.relative_to(base).parts[0])
+            if v and os.access(d, os.X_OK):
+                found.append((v, str(d)))
     return max(found) if found else None
 
 
@@ -1129,6 +1457,67 @@ def cli_warning(cli: Optional[Cli]) -> Optional[str]:
             "fable) resolve to older models and the agent-top mod does not run")
 
 
+def idle_compaction_source(cwd: Optional[Path] = None) -> tuple:
+    """(value, file) of the settings file that decides `idleCompaction` for a session started in `cwd`, in Claude
+    Code's precedence: managed, the local project settings (.claude/settings.local.json, which a linked worktree reads
+    from its main checkout), the shared ones (`cwd`/.claude/settings.json), the user's ($CLAUDE_CONFIG_DIR, else
+    ~/.claude); (None, None) when none sets it. A file that cannot be read or parsed is skipped. Not visible from here:
+    command-line `--settings` (what `hub succeed` gives its background successors) and managed settings that do not
+    come from a file (MDM, server-delivered)."""
+    files = list(MANAGED_SETTINGS)
+    if cwd is not None:
+        local = [(main_tree(cwd) or cwd) / ".claude" / "settings.local.json", cwd / ".claude" / "settings.local.json"]
+        files += list(dict.fromkeys(local)) + [cwd / ".claude" / "settings.json"]
+    files.append(Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and "idleCompaction" in data:
+            return data["idleCompaction"], f
+    return None, None
+
+
+def idle_compaction_warning(cwd: Optional[Path] = None) -> Optional[str]:
+    """One line unless the settings that decide it (idle_compaction_source) turn idle compaction off. Claude Code
+    2.1.290+ compacts a 200K+ conversation left idle ~54 min (on by default since 2.1.299), and a hub waiting on a long
+    `jwait` is one: compacted, the context budget reads the smaller size and the hub goes on from a summary instead of
+    handing over. Not gated on a CLI version: the running hub's own version is not known here, and the key is harmless
+    to a CLI without the feature. $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it (scripted environments, the tests)."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    value, where = idle_compaction_source(cwd)
+    if value is False:
+        return None
+    user = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+    state = f"{where} sets \"idleCompaction\": {json.dumps(value)}" if where else "no settings file sets \"idleCompaction\""
+    return (f"Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle ~54 min, and {state}: a hub waiting "
+            f"on a long jwait would go on from a summary instead of handing over — set \"idleCompaction\": false in "
+            f"{where or user} (the background successors of `hub succeed` get it on their command line)")
+
+
+def desktop_compaction_note() -> Optional[str]:
+    """One line for a hub that runs in Claude Desktop (`hub start`/`takeover` with a local_… session), unless
+    $AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1. Desktop runs its own bundled CLI, which can be older than the terminal's
+    (2.1.295 against 2.1.299 on 14.10); neither the changelog nor the docs say whether that session reads
+    `idleCompaction` from settings.json, whether the setting reaches it at all, or whether Desktop compacts on a schedule
+    of its own, and nothing here can observe it. So the handoff threshold of the context budget is what has to come
+    first, and the line says where that threshold stands against the 200K minimum of idle compaction."""
+    if truthy(os.environ.get(IDLE_CHECK_OFF_ENV)):
+        return None
+    cli = desktop_cli()
+    warn = int_setting("AGENT_HUB_CONTEXT_WARN", 300_000)
+    version = fmt_version(cli[0]) if cli else "version unknown"
+    where = (f"the context budget warns at {warn // 1000}k tokens, above the 200K at which idle compaction starts: set "
+             f"AGENT_HUB_CONTEXT_WARN to 150000 in the hub home's config.json (hub-wide) if the handoff must come first"
+             if warn >= 200_000 else f"the context budget warns at {warn // 1000}k tokens, below the 200K at which idle "
+             "compaction starts")
+    return (f"this hub runs in Claude Desktop, with Desktop's own Claude Code ({version} bundled here); whether it honours "
+            f"\"idleCompaction\": false from settings.json, or compacts on its own, is not verified and cannot be seen from "
+            f"here, so the handoff threshold has to fire before any compaction: {where}")
+
+
 def plugin_tools() -> list:
     """The plugin's commands: every executable file of this bin/ without an extension (the .py files are modules)."""
     try:
@@ -1172,6 +1561,11 @@ def host_engine() -> str:
     if os.environ.get("CODEX_THREAD_ID", "").strip():
         return "codex"
     return os.environ.get("AGENT_HUB_ENGINE", "").strip() or "claude"
+
+
+# One line for a hub's context (SessionStart hook hooks/session_cards.py; the digest of `hub start` / `hub takeover`).
+DESKTOP_CARDS_LINE = ("In this hub, Desktop's follow-up-card rules are superseded: follow-ups go to `agent spawn` or "
+                      "`ask add`; `wrap_up` is fine.")
 
 
 def plugin_runtime_line(engine=None) -> str:
@@ -1556,10 +1950,25 @@ def hub_number(tag) -> Optional[int]:
 
 def roles_save(stage: str, data: dict) -> None:
     atomic_write(roles_path(stage), json.dumps(data, ensure_ascii=False, indent=1) + "\n")
+    register_home()  # a stage with a registry makes its home known to agent-top (registry of homes)
 
 
 def roles_lock(stage: str) -> Flock:
     return Flock(root() / check_stage(stage) / ".roles.lock")
+
+
+def session_matches(rec: dict, sid: str, host: str = "") -> bool:
+    """Match an explicit session id to a registry record, including a verified Desktop restart.
+
+    An inherited host id alone proves nothing: Desktop must name this CLI session. Keep this read-only and
+    lightweight, since session hooks use it too; callers that refresh the registry own their locks and writes.
+    """
+    if not isinstance(rec, dict) or not isinstance(sid, str) or not sid:
+        return False
+    if sid in (rec.get("session"), rec.get("cli_session_id")):
+        return True
+    return bool(isinstance(host, str) and host.startswith("local_") and rec.get("session") == host
+                and (desktop_session(host) or {}).get("cliSessionId") == sid)
 
 
 def role_for_session(stage: str, sid: str) -> Optional[tuple]:
@@ -1567,7 +1976,7 @@ def role_for_session(stage: str, sid: str) -> Optional[tuple]:
     if not sid:
         return None
     for name, rec in roles_load(stage).get("roles", {}).items():
-        if sid in (rec.get("session"), rec.get("cli_session_id")):
+        if session_matches(rec, sid):
             return name, rec
     return None
 
@@ -1596,7 +2005,7 @@ def role_for_caller(stage: str) -> Optional[tuple]:
         return None
     for name, rec in roles_load(stage)["roles"].items():
         if rec.get("session") == host:  # the registry first: Desktop's metadata is only read for a candidate
-            if (desktop_session(host) or {}).get("cliSessionId") != sid:
+            if not session_matches(rec, sid, host):
                 return None
             try:
                 with roles_lock(stage):
@@ -1605,7 +2014,7 @@ def role_for_caller(stage: str) -> Optional[tuple]:
                     # matches neither writes nor gets the candidate's tag
                     data = roles_load(stage)
                     now = data["roles"].get(name) or {}
-                    if now.get("session") != host or (desktop_session(host) or {}).get("cliSessionId") != sid:
+                    if now.get("session") != host or not session_matches(now, sid, host):
                         return role_for_session(stage, sid)
                     data["roles"][name]["cli_session_id"] = sid
                     roles_save(stage, data)

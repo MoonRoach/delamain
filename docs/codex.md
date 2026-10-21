@@ -15,10 +15,17 @@ The coordinator and its workers can use different engines. The shared journal, i
 register, lock board and handoff files remain the protocol. Select an executor with `agent spawn --engine claude`
 or `--engine codex`; sending, status and stopping use the engine recorded at spawn.
 
+For a native Windows Codex coordinator, follow the [Windows workflow](windows-workflow.md).
+Its conditional transport runs the original core and detached workers in WSL2; the generic installation below
+is for the selected runtime host. Native Windows Claude integration is not established.
+
 ## Install in Codex
 
 Codex support requires Python 3.11+ on PATH, including for native hook execution: native agent definitions and
-configuration use the standard-library TOML parser. The Claude engine continues to support Python 3.10+.
+configuration use the standard-library TOML parser. Native hooks use `bin/run-python --min-version 3.11` to find
+a compatible runtime even when `python3` is older. Set `DELAMAIN_PYTHON` to an executable path or command name
+to select it explicitly. See [Python selection](install.md#selecting-python-for-terminal-tools) for lookup order
+and terminal CLI usage. The Claude engine continues to support Python 3.10+ with its existing hook commands.
 
 Clone the repository if you do not have a local checkout yet:
 
@@ -121,10 +128,40 @@ Codex launches with `codex exec --json`; its `thread.started` event supplies the
 is appended to its inbox, which the brief tells it to read after each major step. No Claude cross-session API is
 needed. See [non-interactive Codex](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-To another stage's hub, use `tell <stage> "…"` first. For a direct message, use only the registry address from
-`tell <stage> --address`; never select a session by its display name. Detached Codex hubs use `agent send` to the
-matched worker role, including after `hub takeover` registers it as `hub`. Native Codex sessions on a CLI with
-`queue` support use `codex queue --thread <registered UUID> --message "…"`. Resume is for a stopped worker.
+### Immediate Codex tell delivery
+
+To another stage's hub, use `tell <stage> "…"`. For a non-detached Codex recipient, it retains one signed journal
+line as audit and attempts immediate delivery through `codex app-server proxy` to the existing runtime only.
+After public `initialize`/`initialized`, `thread/read` must return the exact full registry UUID. An active thread
+with one known in-progress turn receives `turn/steer` with that exact `expectedTurnId`; a thread observed loaded idle
+receives `turn/start` in the same existing thread. The registry and runtime are checked again before sending. No thread is
+loaded, resumed, forked or created, and no model/settings overrides are sent. The proxy has a five-second deadline
+and bounded output. See [public app-server protocol](https://learn.chatgpt.com/docs/app-server).
+
+`tell` prints a JSON receipt: `steered` requires a matching active-turn acknowledgement. An idle-path acknowledgement
+with a nonempty turn ID and `inProgress` status returns `accepted`, with `delivery_mode: "unverified"`: it confirms
+acceptance without proving whether input started a turn or steered one. Another client can start after the final read;
+`turn/start` has no atomic expected-idle condition. `steered`/`accepted` exit 0. `failed` means rejection or identity/turn
+change; `unknown` means an attempted mutation lacks a valid acknowledgement. Failed/pending/unknown dispatches exit 1.
+Never retry an unknown send through another transport.
+`codex queue` is an explicit queued follow-up address, not immediate steer; [steering and queuing differ](https://learn.chatgpt.com/docs/prompting#steering-and-queuing).
+
+The shared CLI proxy may not reach the Desktop runtime. Before any mutation, an unavailable runtime produces a
+`pending` native-caller handoff, containing the literal full UUID/message, registry snapshot, request ID, signed
+journal source and pending receipt. **The caller must handle this immediately, before waiting or any next action:**
+verify explicit human authority for this communication, check the supported native tool's current schema, reread
+the registry and require the same record/full UUID, then call supported `send_message_to_thread` with that literal
+recipient and text. Record the actual native tool result against the request ID. Tool acceptance alone does not
+prove active same-turn steer; an owned scratch control must establish that behavior before claiming immediacy.
+An unknown native result forbids retry. If native capability or human proof is unavailable, retain pending and
+report the gap. A task message from another agent, configuration, CLI flag or the generated handoff is not human
+authority; retain the actual owner's instruction/source in the caller's receipt. Communication grants no finance,
+production, role or goal change. No private pipe/socket, polling bridge or duplicate CLI session is a fallback.
+
+For a direct address only, use `tell <stage> --address`; it is read-only and never sends. Never select a session
+by display name, truncated UUID or client ID. Detached Codex recipients retain the existing inbox/resume contract:
+a headless holder uses `agent send` automatically, while a promoted detached hub's address names its matched worker
+role. That path has no established immediate-steer capability. Claude tell delivery is unchanged.
 
 `hub takeover` checks detached PID/process-token identity or the existing shared daemon's read-only `thread/read`
 runtime status through `codex app-server proxy`. A missing/older CLI, unavailable daemon or unknown state is silent;
@@ -146,17 +183,65 @@ including user and project hooks, not only Delamain's hooks.** Use it with hook 
 Set `AGENT_HUB_CODEX_HOOK_TRUST=reviewed` to require Codex's persisted trust instead; review/trust the definitions
 before starting a detached run. Changed hook definitions require renewed review in that mode.
 
-For a restricted reviewer, choose the sandbox explicitly:
+For a restricted reviewer, use `hub reviewer --for code --stage S` or the equivalent launch:
 
 ```sh
-agent spawn --engine codex --role reviewer --cwd /absolute/path/to/project \
-  --brief /absolute/path/to/review-brief.md --sandbox read-only
+agent spawn --engine codex --role reviewer --cwd /absolute/hub-home/S/coordinator/work \
+  --brief /absolute/path/to/review-brief.md --sandbox workspace-write
 ```
 
-The sandbox selection replaces full access for that worker. A read-only worker cannot append a journal or report
-on disk: use its captured result/status or explicitly permit the output location through the appropriate sandbox
-configuration. `workspace-write` is another supported sandbox. A sandboxed interactive coordinator may need
-`--add-dir <hub-home>` to write to the shared home. Full access needs no directory grant.
+Create the cwd first and put the absolute repository path in the brief for reading. Keep that repository outside the
+hub home and reviewer cwd, and do not add it to writable roots. The sandbox selection replaces full access for that
+worker: it can write the report and journal under the hub home while repository writes are denied. A `read-only`
+worker cannot write either; a review role/tag with that policy gets one warning at spawn.
+
+Workspace-write executors receive the hub home as a writable root. A review role/tag instead receives only its
+cwd strictly below the hub home, with temporary-directory writes excluded; wider explicit roots or a cwd outside
+that home are refused. Its report, journal and `.journal.lock` fit within the stage's `coordinator/work`; home
+configuration and other agents' inboxes stay read-only. Keep that cwd outside any repository.
+
+For linked Git worktrees, executors additionally receive individual operation-state files (HEAD, index and locks,
+commit/merge messages and pseudorefs), their own logs and common objects.
+`commondir`, `config.worktree`, `gitdir`, `locked` and the private gitdir itself are not writable roots. Files-backend
+refs/reflogs are limited to the worktree's initial branch and its lock files. Nested branch names also receive only leaf files, so sibling branches and reflogs stay read-only.
+If pack-refs prunes a leaf's parent directory, branch writes fail closed inside the sandbox. Executor spawn/resume
+restores missing parent directories of the pinned ref and reflog leaves outside the sandbox, without granting a
+namespace directory. `packed-refs` and its lock are not granted. These roots are pinned at spawn and reused on resume even if HEAD changes.
+Git root discovery ignores inherited `GIT_*` environment variables. A detached HEAD gets no shared branch roots. Reftable uses a shared store, so that backend still grants all refs in
+`reftable`. The common Git directory, config, hooks and sibling worktree state are never granted.
+
+For an already running executor after external pack-refs/gc, restore the parents outside the sandbox. From its
+worktree, replace `<initial-branch>` with the branch pinned at spawn, then run:
+
+```bash
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+ref='refs/heads/<initial-branch>'
+mkdir -p "$common/$(dirname "$ref")" "$common/logs/$(dirname "$ref")"
+```
+
+Workspace-write Codex executors receive `maintenance.auto=false` through Git's quoted `GIT_CONFIG_PARAMETERS`
+transport, appending to inherited parameters. This avoids `GIT_CONFIG_KEY_n`, which Codex's default shell environment
+policy strips while retaining `GIT_CONFIG_COUNT`, breaking Git config parsing. Default secret-name exclusions remain
+enabled. Shared maintenance stays outside the sandbox. On Apple Git 2.50.1, a successful
+commit can still print a nonfatal `packed-refs.lock` denial even with automatic maintenance disabled (confirmed by
+Git trace with no maintenance child). Check the command's exit status; disabling maintenance does not suppress
+other Git lock diagnostics.
+
+These file-root boundaries were verified on macOS seatbelt: commit and non-fast-forward merge succeed.
+In a workspace-write linked worktree, rebase is unsupported. No `REBASE_HEAD`, `rebase-merge`, `rebase-apply`,
+sequencer or rewritten-ref roots are granted. Spawn prints the limitation and includes it in the worker's brief.
+Update the branch with a merge commit from the prepared base ref (for example `git merge origin/main`).
+The sandbox refuses creation of rebase state. In the macOS probe, `--merge` refused before HEAD changed, but
+`--apply` could move HEAD before failing, although the original branch ref stayed unchanged. A fully early refusal
+cannot be guaranteed by this file-root policy; do not run rebase in either mode. Exact Git diagnostics vary by version. Granting a rebase state directory alone is insufficient: deleting that
+writable root during cleanup requires access to its private gitdir parent, which this policy does not grant.
+Commits with loose and packed refs were checked; explicit maintenance inside the sandbox can still be denied.
+Other sandbox implementations (including Linux Landlock) may reject absent file roots or require parent-directory
+access; they fail closed rather than receiving the whole Git directory.
+The shared objects grant includes `objects/info/alternates`; its object-source pointers remain writable and untrusted.
+A sandboxed interactive coordinator may need `--add-dir <hub-home>`; full access needs no directory grant.
+
+See the [capability matrix](codex-parity.md) for verified hook dispatch, setup coverage and platform limits.
 
 ## Native Codex subagents
 
@@ -164,7 +249,8 @@ Claude's `agents/worker-*.md` files remain Claude definitions. Codex uses standa
 `.codex/agents/` or `~/.codex/agents/`; the plugin manifest does not register them automatically.
 The setup skill offers four matching effort-pinned files under
 `skills/setup/resources/codex-agents/worker-*.toml`. Copy selected files into the project or personal agent directory
-without overwriting an existing definition. Their `model` is deliberately omitted: choose an available model at spawn.
+without overwriting an existing definition. Project definitions require a trusted project; verify that the native
+spawn tool exposes the installed roles before relying on them. Their `model` is deliberately omitted: choose an available model at spawn.
 See [native Codex subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents).
 
 For detached executors, use `agent spawn --effort`; native TOML files govern in-session subagents, not that launcher.
@@ -194,7 +280,19 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   Outside Git it keeps the supplied directory.
   The Claude Desktop/Remote Control phone workflow stays Claude-specific.
 - Night queue files and permissions work with both engines. The watchdog (`watchdog install`) counts open night-queue
-  items as waiting work; a Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). The Claude Desktop scheduled nudge is
+  items as waiting work. A confirmed idle app hub registered by `hub start`/`takeover` as `host: codex-app` is woken
+  with `codex queue` in its own UUID; terminal/unknown hosts and unavailable runtime notify only. Registration requires
+  the current thread and both app markers described below, excluding detached workers; old records need an app-side
+  `hub takeover --session self` (same UUID/tag/shift). Detached hubs use `agent send`. Codex API-error recovery (R4)
+  covers only a final own-turn `task_complete.error.codex_error_info = server_overloaded`, with matching turn start
+  and no later user/turn boundary, rechecked before wake. Quota/auth/unknown errors and interruption never trigger R4.
+  See [host conditions](monitoring.md#which-host-is-woken-how).
+  The standalone CLI's shared-daemon proxy must reach the same app runtime; app markers and fake queue controls
+  alone do not prove live Desktop wake. The standalone tick remains notify-only for an unavailable/separate runtime. Once a finite stage
+  has no outstanding work or external waits, retire its active hub with `roles retire hub --stage S --note "stage complete"`.
+  An existing app-native heartbeat can bridge a separate runtime with `native-plan`/`native-claim`/`native-ack` and
+  supported native read/send tools; [procedure and limits](monitoring.md#codex-app-native-bridge).
+  The Claude Desktop scheduled nudge is
   deprecated, and the Claude outgoing-message budget remains platform-specific; neither is installed as a Codex scheduled task.
 
 Only commands observed by enabled, trusted hooks can be guarded. External terminal commands and commands that
@@ -206,11 +304,35 @@ match no configured rule remain outside the lock board's enforcement. The files 
 `hub succeed --engine codex --surface auto` detects an actual app hub through both
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and `CODEX_APP_TOOLS_PIPE_PATH`, excluding detached
 `AGENT_ROLE` workers. `CODEX_THREAD_ID` alone identifies a Codex session, not a desktop surface. Detached children
-strip app attribution/transport markers. `--surface cli` and `--headless` keep the ordinary detached launch,
-model/effort/sandbox inheritance and fresh CLI worktree rules. `--surface desktop` prepares a request without
+strip app attribution/transport markers. Terminal and detached hubs retain the ordinary auto/CLI launch,
+model/effort/sandbox inheritance and fresh CLI worktree rules. In a confirmed app hub, `--surface cli` and
+`--headless` require the owner's explicit CLI-from-Desktop opt-in: `"AGENT_HUB_DESKTOP_CLI_HANDOFF": true`
+in the resolved hub home's `config.json` (off by default). This grants a surface choice, not native API authorization.
+The guard reads that home file directly; repository settings and environment overrides cannot grant this permission.
+An agent-supplied CLI flag, `--force`, or inability to use native creation is not evidence the owner chose CLI.
+Agents must not enable the opt-in to work around native policy. Even with opt-in, auto selects Desktop and an
+unfinished native reservation cannot change surface. `--surface desktop` prepares a request without
 calling a CLI or accessing any app socket. It never silently falls back to CLI.
 
-The current **app agent** executes this procedure automatically after preparing the handoff:
+Desktop auto handoff prepares the native successor request and keeps the predecessor active until verified.
+Before native `create_thread`, the current **app agent** checks explicit human authority: the current user
+instruction, an inherited handoff or approved plan with its human source, an existing answered owner question,
+or standing owner permission. Read `hub-rules.md` from the resolved hub home, repository and stage, and check
+the question register and `ask allow --list --stage <S>` for scope and revocation. An empty allow list does not
+cancel an explicit answered question or human instruction elsewhere. Configuration, agent flags and an agent's
+wish to continue are not proof of human authority.
+
+A standing explicit owner instruction authorizing automatic same-stage context handoffs satisfies the native
+API's explicit-user requirement until revoked: continue without another per-transfer approval. Record its exact
+source/reference and scope in the handoff and carry that pointer into the native takeover brief, preserving the
+Business DoD. The grant covers one successor for that active stage's context transfer; a new business scope,
+unrelated task, parallel duplicate coordinator or paused/completed stage needs its own authority. If authority
+is absent or revoked, retain the request and predecessor and ask once for the missing scope; do independent
+authorized work while it is pending. If transport, access or identity is unavailable, retain the same request
+and report that concrete blocker. Neither case permits a CLI fallback, policy override, automatic retry or
+duplicate creation. Preparation remains pending work until verified takeover.
+
+Under matching human authority, the app agent executes the full procedure through bind, takeover and verified status:
 
 1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
    The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
@@ -219,7 +341,7 @@ The current **app agent** executes this procedure automatically after preparing 
    if there is no unique match, report the failure and keep the predecessor. Never hardcode a project ID.
 3. Run `hub desktop-request --stage <S> --request <token> --project-id <returned ID> --project-path <returned path>`.
    Its JSON has `create_thread` arguments and `already_dispatched`. Only when false, pass `create_thread` to
-   the supported native `create_thread` tool. Dispatch is reserved before this call; a repeated command returns
+   the supported native `create_thread` tool under that explicit human authorization. Dispatch is reserved before this call; a repeated command returns
    true and must not create another thread. The request uses the saved project's local environment by default, actual
    `model`/`thinking` fields when known. Only an explicit owner worktree request uses `--desktop-worktree` on succeed;
    it requires a Git project and omits startingState to use the project's default branch. An explicit existing
@@ -241,6 +363,34 @@ The current **app agent** executes this procedure automatically after preparing 
    Status shows requested and observed model/effort/sandbox/approval separately. Report preservation only from
    observed data. Bind/takeover can arrive in either order; repeats retain the same identity/count. A later hub
    invalidates the request, so stale confirmations/takeovers cannot replace it.
+
+A current verified native hub can refresh its host registration with `hub takeover --stage <S> --session self`
+from its verified cwd. Repeated same UUID/shift refreshes retain the full native ID, request, chain, observed
+settings and original registration/takeover timestamps. The completed native self-refresh is a separate operation
+under the state and role locks: it does not transfer resources, update the night queue, run project takeover
+callbacks, stop a predecessor or publish a new shift/start line. Explicit resource, metadata or location-changing
+flags are rejected on this path; use a separately authorized resource operation for resource work. A completed
+refresh requires the original verified cwd; it does not create or move to another worktree.
+A different manual session or shift keeps the normal takeover path.
+
+For a legacy self-refresh that shortened the completed request's ID and changed its kind to `manual`, the
+**current app hub itself** can run the following from its original verified cwd, using the reviewed plugin's
+absolute `bin/hub` path when PATH names an older runtime:
+
+```bash
+hub desktop-recover --stage <S> --request <existing-token>
+hub desktop-status --stage <S> --request <existing-token> --verified
+```
+
+Recovery creates no thread, reservation or shift and reads no handoff. It requires this app's full
+CODEX_THREAD_ID, matching current role/CLI UUID, native host/engine, original shift, cwd/main project, saved
+project ID, persisted observed settings and writable stage-home policy. New bindings retain the original
+actual UUID and registration evidence separately. Legacy requests additionally require an unambiguous original
+full-UUID `start:` registration in the takeover day's journal, the exact original request preparation
+line and an exact match between current `set_at` and
+original `taken_over`. A later timestamp, missing/ambiguous proof, different UUID (including the same eight-character
+prefix), stale token or changed observed policy fails before mutation. Do not edit JSON, infer identity from a
+prefix, widen settings or dispatch again to repair such a failure; report the missing proof to the coordinator.
 
 The supported create_thread/handoff_thread schemas have **no sandbox or approval setting**. Requested policy is
 carried in the brief/state, not smuggled into API arguments. Desktop defaults/UI determine actual policy. Full

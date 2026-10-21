@@ -103,7 +103,9 @@ log = head + text("s1", "sub-agent work", -100, sid_alive, parent="t9") \
     + tool("m4", "t2", "Bash", {"command": "pytest -x tests/", "description": "run the tests"}, -30, sid_alive) \
     + line({"type": "tool_progress", "tool_use_id": "t2-heartbeat-0", "tool_name": "Bash", "elapsed_time_seconds": 30}) \
     + line({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 0.07, "resetsAt": NOW + 3600},
-                                                                                "seven_day": {"utilization": 0.5, "resetsAt": NOW + 86400}}}}) \
+                                                                                "seven_day": {"utilization": 0.5, "resetsAt": NOW + 86400, "isUsingOverage": True}},
+                                                                    # CLI 2.1.295+ tells whether the account has extra usage turned on; unknown fields must not matter
+                                                                    "extraUsage": {"enabled": True, "usedCredits": 1.5}, "futureField": [1, {"a": None}]}}) \
     + '{"type":"assistant","message":{"id":"mZ","content":[{"type":"te'          # half-written last line, no newline
 unread = [{"at": "2026-01-15T10:00:00+00:00", "msg": "old message", "log_offset": 0},
           {"at": "2026-01-15T10:30:00+00:00", "msg": "new message from the hub", "log_offset": len(head.encode("utf-8"))}]

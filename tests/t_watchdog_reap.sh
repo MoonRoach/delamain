@@ -1,5 +1,5 @@
 #!/bin/bash
-# Watchdog R6: the `claude --bg` session of a hub that is retired in its stage and live nowhere is stopped (`claude stop`,
+# Watchdog R7: the `claude --bg` session of a hub that is retired in its stage and live nowhere is stopped (`claude stop`,
 # never removed) once it has been quiet for the wake-after time. Positive: a retired hub quiet 30 min (by its transcript,
 # by startedAt when it has no transcript, `busy` or not, matched by session or cli_session_id). Negatives, each left alone:
 # a hub that is live in its stage, a session retired in one stage and live in another, a pending successor (either
@@ -115,7 +115,7 @@ check "$(count 'stopped the background session of retired hub-2 (a0000002), quie
 check "$(count 'stopped the background session of retired hub-15 (a0000004)' "$(J a)")" 1 "journal: a hub matched by cli_session_id"
 grep -q "a: stopped the background session of retired hub-3 (a0000003), quiet 30 min" "$R/tick.out"; check $? 0 "a busy retired hub is stopped too: the quiet transcript decides, not the status"
 check "$(count 'stopped the background' "$(J a)")" 4 "journal: four lines in all"
-grep -q "remote:\|local:" "$R/notify.log" "$R/remote.log"; check $? 1 "nothing is notified: R6 stays on the machine"
+grep -q "remote:\|local:" "$R/notify.log" "$R/remote.log"; check $? 1 "nothing is notified: R7 stays on the machine"
 grep -c "claude rm\|\"rm\"" "$R/claude.log" | grep -q '^0$'; check $? 0 "never claude rm"
 check "$(FX claude-calls "$R/claude.log" | grep -c '^resume')" 0 "no resume either"
 # the fake removes a stopped row, so a second tick has nothing to do; a repeat of the same rows is stopped again only by a new tick
@@ -152,7 +152,7 @@ for bad in '{' '[]' '{"pending": 7}' '{"pending":{"kind":"bg","id":7}}' '{"pendi
   grep -q "^\[[0-9 :-]*\] machine: not stopping any retired hub's session this tick: .*auto-handoff.json" "$R/corrupt.out"; check $? 0 "auto-handoff.json $bad: one line says why"
 done
 rm "$R/sc/auto-handoff.json"; reset_log; mkrows
-WD run > "$R/corrupt.out" 2>&1; check "$(stops)" "$EXPECT" "control: the same stage without the corrupt file does not hold R6 back"
+WD run > "$R/corrupt.out" 2>&1; check "$(stops)" "$EXPECT" "control: the same stage without the corrupt file does not hold R7 back"
 rm -r "$R/sc"
 
 # ---- `claude stop` is addressed by the 8-character id: a fresh listing right before it must show one and the same session

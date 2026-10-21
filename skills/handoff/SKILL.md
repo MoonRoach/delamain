@@ -24,15 +24,24 @@ pointers to the registers — never copies of them.
      Preserve owner-supplied constraints; tell the successor to continue it and choose implementation details independently.
    - **§ 0 First steps**: 3–6 commands or files, in order. The first is always `hub takeover …`.
    - **§ 1 Where things stand**: each row a fact and where it shows (a command, a file, a URL).
-   - **§ 2 Queue**: by dependency; item = action | "done" check | stop condition | who (model). Blocked items name the question id.
+   - **§ 2 Queue**: a finite snapshot of remaining authorized Business DoD, with its source/scope and owner boundaries.
+     List next ready work first; separate preparation dependencies from publication/merge/stage/production gates.
+     Item = action | "done" check | brief stop condition | who (model); waits name the blocker, owner/resource and
+     expected event (question id when applicable). Reconcile every remaining DoD item into ready work or a concrete wait.
    - **§ 4 Owner questions**: anything the owner was asked in chat without a record goes into `ask add` first; then its id here.
    - **§ 5 Risks**: what breaks when nobody watches, and how it shows.
    - **§ 6 Skills**: which skills the successor loads first.
 For Codex autopilot, keep the launch surface in the handoff: actual app hub → `hub succeed --surface desktop`
 (native launch procedure in [docs/codex.md](../../docs/codex.md#desktop-autopilot)); console/detached hub → CLI.
-Give the queue finite completion checks. A successor waits only for outstanding work/events and finishes when the
-queue is done. Desktop request/client IDs are pending references; record actual thread/cwd and observed policy only
-once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
+Before native dispatch, use that procedure's human-authority check. Carry the precise human source/reference,
+scope and revocation conditions in the handoff, including an inherited answered question or standing instruction.
+An explicit owner grant for automatic same-stage context handoffs persists until revoked; the successor continues
+under it without another per-transfer approval. If absent/revoked or outside scope, preserve the request and
+predecessor and ask once. Keep the Business DoD unchanged; an automatic marker/configuration is not human authority.
+Give the queue finite completion checks. A Codex successor applies the hub skill's
+[Terminal follow-through](../hub/references/codex-hub.md#terminal-follow-through) and reconciles this snapshot against Business DoD
+before DONE, preserving explicit owner boundaries. Desktop request/client IDs are pending references; record actual
+thread/cwd and observed policy only once takeover verifies. Keep the predecessor active until `hub desktop-status --verified` succeeds.
 
 3. Check it: `hub handoff --stage <S> --finish` refuses (exit 2, the lines listed) while § 0–2 still hold `TODO`; `hub succeed`
    makes the same check and `hub takeover` warns the successor about a handoff that fails it. `--allow-todo` overrides, and

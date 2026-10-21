@@ -1,8 +1,12 @@
 # Delamain
 
-Keep long-running coding work moving across chat sessions with Claude Code or Codex.
+One coordinator. An autonomous fleet. Coding work that keeps moving across chat sessions.
 
-The name comes from Delamain, the AI that runs the cab fleet in Cyberpunk 2077: one coordinator, a fleet of autonomous workers, each with its own character.
+Delamain coordinates long-running coding work with **Claude Code or Codex**: dispatch workers from briefs,
+follow their progress, and hand the next coordinator the records it needs to continue.
+
+The name is a nod to [Delamain, the AI cab-fleet operator in Cyberpunk 2077](https://cyberpunk.fandom.com/wiki/Delamain_%28AI%29):
+one dispatcher, independent workers with distinct roles, and a service that keeps moving when the coordinator changes.
 
 **Ask your agent first:** [Should we install this? Agent guide →](docs/agents/README.md#assess-fit-before-installing)
 
@@ -21,7 +25,7 @@ It gives you:
 Skip it for a small task one session can finish, or when built-in subagents already cover your needs.
 It runs locally for **one person on one machine**.
 
-![A hub conductor assigns distinct coding, testing, review, documentation and assembly tasks to workers; their results flow into a shared journal.](docs/assets/agent-orchestra.png)
+![Delamain's blue AI dispatcher assigns coding, testing, review, documentation and assembly tasks to five autonomous cabs; their reports converge on a shared journal.](docs/assets/delamain-fleet.png)
 
 ## Start
 
@@ -37,6 +41,10 @@ It runs locally for **one person on one machine**.
    Confirm `/delamain:hub` is available after installation. [Installation and permissions →](docs/install.md)
 
    **Codex** (Python 3.11+): [clone, install and trust hooks →](docs/codex.md#install-in-codex).
+
+   **Native Windows Codex with WSL2:** [follow the task from setup to the user result →](docs/windows-workflow.md).
+   The original core runs in Linux through the [Desktop transport](docs/windows-desktop.md).
+   A [WSL terminal coordinator](docs/windows-wsl.md) is a separate explicit mode.
 
    Detached workers default to broad permissions. Review the linked permission settings before launching them.
 

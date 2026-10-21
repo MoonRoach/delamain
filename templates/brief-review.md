@@ -33,9 +33,11 @@ money arithmetic, a retry loop, a rename that missed a caller. For a change of c
 production, permissions) say here which risk the review is narrowed to, and leave style out.>
 
 ## How to review
-- **Read-only.** Do not edit, commit, push, merge or run anything that changes state. Read anything in the repository;
-  rerun a test only when a finding needs it (the author's results are above). A read-only sandbox — a Codex `read-only`
-  one — cannot write files or create temp dirs: do not try.
+- **Repository is read-only.** Do not edit, commit, push, merge or run anything that changes repository state.
+  Read anything in the repository; rerun a test only when a finding needs it (the author's results are above).
+  Write your report and journal line under the hub home. A Codex reviewer uses `workspace-write` with cwd there,
+  and the reviewed repository outside writable roots; `read-only` cannot write the report or journal.
+- A Codex reviewer puts temporary copies in a subdirectory of its cwd; `/tmp` and `$TMPDIR` are outside its writable roots.
 - Check the change against the intent above, not only the diff in isolation: read the callers and the tests of what it
   touches. Cap the reading by the diff size: a small diff reads its callers and tests, not the repository.
 - Findings, ranked **high** (wrong result, data loss, security, breaks the build), **medium** (a real defect with a

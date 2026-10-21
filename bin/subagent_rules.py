@@ -18,8 +18,7 @@ No matching rule = allow. `when` keys (all must match; a value is a glob or a li
     model          the model the subagent runs on: the call's `model`, else the definition's `model:`, else
                    "inherit"; for agent spawn both the alias given and the id it maps to are tried
     model_from     param | definition | inherit
-    effort         the definition's pinned `effort:`, else "inherit"; for agent spawn the effort used ("none" for
-                   a model that takes no effort flag)
+    effort         the definition's pinned `effort:`, else "inherit"; for agent spawn the effort used
 
 `reason` may name any of these fields in braces: "{model} at {effort} is not allowed".
 

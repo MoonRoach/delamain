@@ -8,7 +8,11 @@ type On = Parameters<TestBody>[1]
 import {
   barCells,
   capToasts,
+  closedHiddenCount,
+  closeTarget,
+  closedStages,
   ctxPercent,
+  idleStages,
   isOwnCommand,
   journalColor,
   levelColor,
@@ -18,6 +22,14 @@ import {
   parseSnapshot,
   planRun,
   remember,
+  ringTarget,
+  inStages,
+  normPath,
+  parseSelector,
+  splitWords,
+  stageCols,
+  stageMatches,
+  stageSelector,
   statusText,
   tagColor,
   taskText,
@@ -164,7 +176,7 @@ test('/agent-top opens the pane; rows open the card with the feed, Back returns 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ key: 'header' }))?.text).toMatch(/^◆ agent-top +● 1 +✓ 1 +✗ 0 /)
+    expect((await ui.find({ key: 'header' }))?.text).toMatch(/^Delamain · agent-top +● 1 +✓ 1 +✗ 0 /)
     expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
     expect(await ui.find({ key: 'open:stage-a/rev' })).toBeDefined()
     expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/▸ Bash: run the tests/)
@@ -275,6 +287,28 @@ test('/agent-top <role> --stage S opens that agent card; an unknown role says so
 
   const none = await run($, 'ghost', 'agent-top')
   expect(none.text).toBe('agent-top pane opened: no agent "ghost"; ● 2 ✓ 0 ✗ 0')
+})
+
+test('/agent-top --stage S reads that stage itself: a closed stage, left out of the default call, is still shown', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('process.run', ($, e) => {
+    calls.push([...e.argv])
+    if (e.argv.includes('--agent')) return ran(cardJson(agent({ stage: 'shop', dir_name: 'worker' }), []))
+    return ran(e.argv.includes('--stage')
+      ? snapshot([agent({ stage: 'shop', dir_name: 'worker' })], { stages: ['shop'] })
+      : snapshot([agent()], { stages: ['stage-a'], closed_hidden: ['shop'] }))
+  })
+  const ok = await run($, 'worker --stage shop', 'agent-top')
+  expect(ok.text).toMatch(/^agent-top pane opened: /)
+  expect(calls.some(c => c.slice(1).join(' ') === '--json --stage shop')).toBe(true)
+  expect(calls.some(c => c.join(' ').endsWith('--agent worker --stage shop --feed 30'))).toBe(true)
 })
 
 test('where no pane can be placed, /agent-top answers with the text picture', async ($, on) => {
@@ -539,6 +573,8 @@ test('planRun: every tick while the pane shows the list, every 15 s otherwise, t
   expect(planRun({ ...base, lastWatchAt: 85000 })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true })).toEqual({ watch: true, extra: null })
   expect(planRun({ ...base, isOpen: true, isAll: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, isOpen: true, hasStages: true })).toEqual({ watch: false, extra: 'all' })
+  expect(planRun({ ...base, hasStages: true })).toEqual({ watch: false, extra: null })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true })).toEqual({ watch: false, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'card', hasTarget: true, lastWatchAt: 85000 })).toEqual({ watch: true, extra: 'card' })
   expect(planRun({ ...base, isOpen: true, view: 'journal' })).toEqual({ watch: true, extra: null })
@@ -897,7 +933,7 @@ test('layouts: dock has the cyan frame, a card framed in its state colour and fr
   await run($)
   for (const surface of ['terminal', 'desktop'] as const) {
     let ui = await $.ui.mount({ ...paneProps({ placement: 'dock', cols: 76, rows: 40 }), surface })
-    expect((await ui.find({ key: 'frame' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: 'cyan' })
+    expect((await ui.find({ key: 'frame' }))?.props).toMatchObject({ borderStyle: 'round', borderColor: '#77dce8' })
     expect((await ui.find({ key: 'now:stage-a/worker' }))?.text).toMatch(/sonnet-5-5\/hi · 7t · 52k$/)
     await ui.press({ key: 'view-summary' })
     expect((await ui.find({ key: 'sum-limits' }))?.props).toMatchObject({ borderStyle: 'round', borderDimColor: true })
@@ -929,6 +965,73 @@ test('layouts: dock has the cyan frame, a card framed in its state colour and fr
   }
 })
 
+test('unbacked section labels and feed tools inherit host text; ice titles keep contrasting backing', async ($, on) => {
+  mock.clock(on)
+  const feed = [
+    { at: '12:00:01', kind: 'tool', sub: false, tool: 'Bash', text: 'run tests', detail: null },
+    { at: '12:00:02', kind: 'result_err', sub: false, tool: 'Bash', text: 'bad command', detail: null },
+  ]
+  stubPane(on, () => snapshot([agent()]), undefined, [], feed)
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const props of [
+      paneProps({ placement: 'inline', cols: 76 }),
+      paneProps({ placement: 'inline', cols: 30 }),
+      paneProps({ placement: 'dock', cols: 40 }),
+      paneProps({ placement: 'dock', cols: 76 }),
+    ]) {
+      const ui = await $.ui.mount({ ...props, surface })
+      await ui.press({ key: 'view-summary' })
+      // Inline/compact sections are unbacked Text, so the host controls contrast on light and dark themes.
+      const rules = await ui.findAll({ type: 'Text', text: /^──/ })
+      if (props.props.placement === 'inline' || props.props.bodyColumns < 44) expect(rules.length).toBeGreaterThan(0)
+      for (const label of rules) {
+        expect(label.props.color).toBeUndefined()
+        expect(label.props.backgroundColor).toBeUndefined()
+        expect(label.props.dimColor).not.toBe(true)
+      }
+      const title = await ui.find({ type: 'Text', text: /^(Delamain · )?agent-top$/ })
+      expect(title).toBeDefined()
+      expect(title?.props.color).toBeDefined()
+      expect(title?.props.backgroundColor).toBeDefined()
+      expect(title?.props.color).not.toBe(title?.props.backgroundColor)
+      await ui.press({ key: 'view-agents' })
+      await ui.press({ key: 'open:stage-a/worker' })
+      const tool = await ui.find({ type: 'Text', text: /^▸ Bash +$/ })
+      expect(tool).toBeDefined()
+      expect(tool?.props.color).toBeUndefined()
+      expect(tool?.props.backgroundColor).toBeUndefined()
+      expect(tool?.props.dimColor).not.toBe(true)
+      // Host-adaptive tool labels must not erase the feed's semantic error distinction.
+      expect((await ui.find({ type: 'Text', text: /^◂ error *$/ }))?.props.color).toBe('red')
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  }
+})
+
+test('the branded header shrinks before controls; severity badges and engine focus remain distinct', async ($, on) => {
+  mock.clock(on)
+  stubPane(on, () => snapshot([agent(), agent({ role: 'quiet', dir_name: 'quiet', quiet: true })]))
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const cols of [23, 30, 44, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ cols }), surface })
+      await ui.press({ key: 'view-agents' })
+      const header = await ui.find({ key: 'header' })
+      expect(cells(header)).toBeLessThanOrEqual(cols)
+      expect(header?.text).toMatch(cols >= 44 ? /^Delamain · agent-top/ : /^agent-top/)
+      expect((await ui.find({ type: 'Text', text: cols >= 44 ? 'Delamain · agent-top' : 'agent-top' }))?.props.bold).toBe(true)
+      expect(await ui.find({ key: 'open:stage-a/worker' })).toBeDefined()
+      expect((await ui.find({ key: 'open:stage-a/worker' }))?.props.autoFocus).toBe(true)
+      expect((await ui.find({ type: 'Text', text: /QUIET|◐/ }))?.props.backgroundColor).toBe('yellow')
+      await ui.press({ key: 'view-journal' })
+      expect(await ui.find({ key: 'view-journal' })).toBeDefined() // selected tab keeps its address
+      await ui.unmount()
+    }
+  }
+})
+
 test('the journal: a tag pill in a stable colour, the line coloured by its first word, a rule per stage', async ($, on) => {
   mock.clock(on)
   stubPane(on, () =>
@@ -946,7 +1049,7 @@ test('the journal: a tag pill in a stable colour, the line coloured by its first
   expect((await ui.find({ type: 'Text', text: 'DONE: tests green' }))?.props.color).toBe('green')
   expect((await ui.find({ type: 'Text', text: 'FAIL lint' }))?.props.color).toBe('red')
   expect(await ui.find({ type: 'Text', text: /^── stage-b ─+$/ })).toBeDefined()
-  expect((await ui.find({ key: 'tab:journal' }))?.props.backgroundColor).toBe('cyan') // the active tab: filled
+  expect((await ui.find({ key: 'tab:journal' }))?.props.backgroundColor).toBe('#77dce8') // the active tab: filled
   expect((await ui.find({ key: 'view-journal' }))?.props.label).toBe(' Journal ') // and still a Button: the ring never loses it
   expect((await ui.find({ key: 'view-summary' }))?.props).toMatchObject({ label: 'Summary', hotkey: 's', dimColor: true })
   await ui.unmount()
@@ -1124,4 +1227,666 @@ test('a card call the engine kills on its timeout says so in one short line', as
   await ui.press({ key: 'open:stage-a/worker' })
   expect((await ui.find({ key: 'feed-note' }))?.text).toBe('feed unavailable: agent-top gave no answer in 60 s · retrying')
   await ui.unmount()
+})
+
+// ---------------------------------------------------------------- Summary's Stages section: idle stages and the two-press close
+
+const HUB = /\/bin\/hub$/
+const CLOSE_ARGV = (stage: string): string[] => ['close', '--stage', stage, '--why', 'closed from the agent-top pane']
+
+/** One stage's `stage_info` row of `agent-top --json`; idle for 3 h 20 m unless said otherwise. */
+const stageInfo = (o: Row = {}): Row => ({
+  goal: 'Ship the retro fixes', closed: null, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: true, live: 0, ...o,
+})
+const CLOSED = { at: '2026-10-04T11:00:00+00:00', why: 'closed from the agent-top pane', by: 'hub' }
+
+/** A snapshot of a live `stage-a` and the given other stages (idle unless their info says otherwise). */
+const withStages = (info: Record<string, Row>, extra: Row = {}): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', ...Object.keys(info)],
+    stage_info: { 'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, goal: 'Build the thing' }), ...info },
+    closed_hidden: [],
+    idle_after_s: 7200,
+    ...extra,
+  })
+
+/** The pane's stubs; `hub` answers `bin/hub`, `json` every `agent-top` call. Every argv is logged in `calls`. */
+function stubStages(on: On, json: (argv: readonly string[]) => string, hub: (argv: readonly string[]) => unknown, calls: string[][] = [], moves: string[] = []): void {
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', ($, e) => (moves.push(`${e.origin.kind}:${e.element ?? ''}`), {}))
+  on('process.run', ($, e) => {
+    calls.push([...e.argv])
+    return (HUB.test(e.argv[0] ?? '') ? hub(e.argv) : ran(json(e.argv))) as ReturnType<typeof ran>
+  })
+}
+
+const hubCalls = (calls: string[][]): string[][] => calls.filter(c => HUB.test(c[0] ?? '')).map(c => c.slice(1))
+
+test('parseSnapshot reads stage_info, closed_hidden and idle_after_s; an older CLI or a malformed row leaves them empty', async () => {
+  const s = parseSnapshot(
+    snapshot([agent()], {
+      stage_info: { 'stage-a': stageInfo({ closed: CLOSED, idle: false }), b: stageInfo({ goal: 'G', idle_s: null, last_activity_at: null, live: 2 }) },
+      closed_hidden: ['x', 'y'],
+      idle_after_s: 7200,
+    }),
+    0,
+  )
+  expect(s.stage_info['stage-a']).toEqual({ goal: 'Ship the retro fixes', closed: CLOSED, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: false, live: 0 })
+  expect(s.stage_info.b).toEqual({ goal: 'G', closed: null, last_activity_at: null, idle_s: null, idle: true, live: 2 })
+  expect(s.closed_hidden).toEqual(['x', 'y'])
+  expect(s.idle_after_s).toBe(7200)
+
+  const older = parseSnapshot(snapshot([agent()]), 0) // none of the three fields
+  expect([older.stage_info, older.closed_hidden, older.idle_after_s]).toEqual([{}, [], null])
+
+  const odd = parseSnapshot(snapshot([agent()], { stage_info: { a: 5, b: { closed: 'yes', idle_s: 'x', idle: 'true', live: null } }, closed_hidden: ['x', 7, null], idle_after_s: 'soon' }), 0)
+  expect(odd.stage_info).toEqual({ b: { goal: '', closed: null, last_activity_at: null, idle_s: null, idle: false, live: 0 } })
+  expect([odd.closed_hidden, odd.idle_after_s]).toEqual([['x'], null])
+})
+
+test('idleStages: only idle, open stages without live agents, the longest idle first, in the stage filter; closedStages, closedHiddenCount', async () => {
+  const snap = parseSnapshot(
+    snapshot([agent()], {
+      stages: ['a', 'b', 'c', 'd', 'e', 'f', 'gone'],
+      stage_info: {
+        a: stageInfo({ idle_s: 100 }),
+        b: stageInfo({ idle_s: 9000 }),
+        c: stageInfo({ idle_s: null }),
+        d: stageInfo({ idle: false }),
+        e: stageInfo({ closed: CLOSED, idle: false }),
+        f: stageInfo({ live: 1 }), // the CLI would not call it idle; a stage with a live agent is never offered anyway
+        stray: stageInfo(), // not in `stages`
+      },
+      closed_hidden: ['old', 'a'],
+    }),
+    0,
+  )
+  expect(idleStages(snap, []).map(r => r.stage)).toEqual(['b', 'a', 'c'])
+  expect(idleStages(snap, ['a', 'c', 'e']).map(r => r.stage)).toEqual(['a', 'c'])
+  expect(closedStages(snap, []).map(r => r.stage)).toEqual(['e'])
+  expect(closedStages(snap, ['a'])).toEqual([])
+  expect([closedHiddenCount(snap, []), closedHiddenCount(snap, ['a']), closedHiddenCount(snap, ['b'])]).toEqual([2, 1, 0])
+  expect(idleStages(parseSnapshot(snapshot([agent()]), 0), [])).toEqual([]) // an older CLI: nothing to offer
+})
+
+test('Summary: an idle stage has a close Button, the first press only arms it, the second runs `hub close` with exactly the agreed argv and refreshes', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  let isClosed = false
+  stubStages(
+    on,
+    () => (isClosed ? withStages({}, { closed_hidden: ['retro'] }) : withStages({ retro: stageInfo() })),
+    () => ((isClosed = true), ran('closed stage retro: 0 roles retired\nmore\n')),
+    calls,
+  )
+  await run($)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    isClosed = false
+    calls.length = 0
+    const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface })
+    await ui.press({ key: 'view-summary' })
+    expect((await ui.find({ key: 'stage:retro' }))?.text).toMatch(/^retro +idle 3h20 +Ship the retro fixes ?close$/)
+    expect(await ui.find({ key: 'stage:stage-a' })).toBeUndefined() // it has a live agent
+    const button = await ui.find({ key: 'close:retro' })
+    expect(button?.type).toBe('Button')
+    expect(button?.props.label).toBe('close')
+    expect(await ui.find({ key: 'sum-stages' })).toBeUndefined() // inline: a rule, not a frame
+    expect(await ui.find({ type: 'Text', text: /^── Stages ─+$/ })).toBeDefined()
+
+    await ui.press({ key: 'close:retro' }) // the first press: armed, nothing runs
+    expect(hubCalls(calls)).toEqual([])
+    expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('confirm close')
+    expect((await ui.find({ type: 'Text', text: 'confirm close' }))?.props).toMatchObject({ color: 'red', bold: true })
+    expect((await ui.find({ key: 'close-hint' }))?.text).toMatch(/^press again to close retro: its hub's locks are released, roles/)
+    expect(calls.some(c => c.includes('--force'))).toBe(false)
+
+    await ui.press({ key: 'close:retro' }) // the second one: the command
+    expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+    expect(calls.find(c => HUB.test(c[0] ?? ''))?.[0]).toMatch(/\/bin\/hub$/)
+    expect(calls.at(-1)?.slice(1)).toEqual(['--json']) // refreshed at once: the stage is gone from the list
+    expect(await ui.find({ key: 'close:retro' })).toBeUndefined()
+    expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+    const note = await ui.find({ key: 'close-note' })
+    expect(note?.text).toBe('✓ closed stage retro: 0 roles retired')
+    expect((await ui.find({ type: 'Text', text: /^✓ closed stage retro/ }))?.props.color).toBe('green')
+    expect((await ui.find({ type: 'Text', text: /^no idle stages · 1 closed hidden \(l shows them\)$/ }))?.props.dimColor).toBe(true)
+    expect(calls.some(c => c.includes('--force'))).toBe(false)
+    await ui.unmount()
+  }
+})
+
+test('a refused close (exit 2) shows the first stderr line in red and keeps the stage; a failed step (exit 1), a missing hub and a timeout say so too; never --force', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  let answer: () => unknown = () => ran('', 2, 'refused: retro has 1 live agent (worker)\nstop it first\n')
+  stubStages(on, () => withStages({ retro: stageInfo() }), () => answer(), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  const closeOnce = async () => {
+    await ui.press({ key: 'close:retro' })
+    await ui.press({ key: 'close:retro' })
+  }
+
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: refused: retro has 1 live agent (worker)')
+  expect((await ui.find({ type: 'Text', text: /^✗ retro: refused/ }))?.props.color).toBe('red')
+  expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('close') // still there, disarmed: a retry needs two presses again
+  expect(await ui.find({ text: /stop it first/ })).toBeUndefined()
+
+  answer = () => ran('partial\n', 1, 'FAILED: could not stop the background hub\n')
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: FAILED: could not stop the background hub')
+  answer = () => ran('', 1, '') // nothing said
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✗ retro: hub exited with 1')
+  answer = () => ran('', 127, '')
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub cannot run/)
+  answer = () => ({ deny: 'spawn ENOENT: no such file or directory' })
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub is missing/)
+  answer = () => ({ deny: 'delamain: $.process.run(/p/bin/hub) aborted: still running after 60000 ms' })
+  await closeOnce()
+  expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗ retro: hub gave no answer in 60 s; look at the stage/)
+
+  expect(hubCalls(calls)).toEqual(Array.from({ length: 6 }, () => CLOSE_ARGV('retro')))
+  expect(calls.some(c => c.includes('--force'))).toBe(false)
+  await ui.unmount()
+})
+
+test('a close whose hub session still runs shows the ATTENTION in yellow, whole, how to end it included', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  const attention =
+    'closed stage retro: done. ATTENTION: the stage\'s hub "Hub retro #4" (hub-4, sid 11111111) still runs: other hubs can still message it by name and it answers — archive it in Desktop (local_abc). Hidden from agent-top.'
+  stubStages(on, () => withStages({ retro: stageInfo() }), () => ran(`${attention}\nmore\n`), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro' })
+  await ui.press({ key: 'close:retro' })
+  const note = await ui.find({ key: 'close-note' })
+  expect(note?.text).toMatch(/^⚠ closed stage retro: done\. ATTENTION/)
+  expect((await ui.find({ type: 'Text', text: /^⚠ closed stage retro/ }))?.props).toMatchObject({ color: 'yellow' })
+  expect((await ui.findAll({ type: 'Text', text: /archive it in Desktop \(local_abc\)/ })).length).toBe(1)
+  await ui.unmount()
+})
+
+test('a first press expires after 10 s, and arming another stage drops the first: only a second press on the same Button closes', async ($, on) => {
+  const clock = mock.clock(on)
+  const calls: string[][] = []
+  stubStages(on, () => withStages({ retro: stageInfo(), spike: stageInfo({ idle_s: 9000 }) }), () => ran('closed\n'), calls)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  const labels = async () => [(await ui.find({ key: 'close:spike' }))?.props.label, (await ui.find({ key: 'close:retro' }))?.props.label]
+  expect(await labels()).toEqual(['close', 'close'])
+  expect((await ui.findAll({ type: 'Button' })).map(b => b.key).filter(k => k?.startsWith('close:'))).toEqual(['close:retro', 'close:spike']) // the longest idle first
+
+  await ui.press({ key: 'close:retro' })
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  await clock.advance(9000)
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  await clock.advance(1500) // 10 s since the press
+  expect(await labels()).toEqual(['close', 'close'])
+  expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+  await ui.press({ key: 'close:retro' }) // a press after the expiry is a first press again
+  expect(await labels()).toEqual(['close', 'confirm close'])
+
+  await ui.press({ key: 'close:spike' }) // another stage armed: retro is dropped
+  expect(await labels()).toEqual(['confirm close', 'close'])
+  await ui.press({ key: 'close:retro' }) // so this arms retro again and runs nothing
+  expect(await labels()).toEqual(['close', 'confirm close'])
+  expect(hubCalls(calls)).toEqual([])
+
+  await ui.press({ key: 'view-journal' }) // leaving the view drops an armed stage as well
+  await ui.press({ key: 'view-summary' })
+  expect(await labels()).toEqual(['close', 'close'])
+  await ui.unmount()
+})
+
+test('one close at a time: while it runs the Button says closing… and presses are ignored; the result comes with the refresh', async ($, on) => {
+  const clock = mock.clock(on)
+  const calls: string[][] = []
+  let isClosed = false
+  stubStages(
+    on,
+    () => (isClosed ? withStages({ spike: stageInfo() }) : withStages({ retro: stageInfo(), spike: stageInfo({ idle_s: 9000 }) })),
+    async () => {
+      await clock.sleep(5000)
+      isClosed = true
+      return ran('closed stage retro\n')
+    },
+    calls,
+  )
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro' })
+  await ui.press({ key: 'close:retro' })
+  expect((await ui.find({ key: 'close:retro' }))?.props.label).toBe('closing…')
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+
+  await ui.press({ key: 'close:retro' }) // ignored: no second command, no arming
+  await ui.press({ key: 'close:spike' })
+  await ui.press({ key: 'close:spike' })
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('close')
+  expect(await ui.find({ key: 'close-hint' })).toBeUndefined()
+
+  await clock.advance(5000)
+  expect((await ui.find({ key: 'close-note' }))?.text).toBe('✓ closed stage retro')
+  expect(await ui.find({ key: 'close:retro' })).toBeUndefined() // refreshed: gone
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('close')
+  await ui.press({ key: 'close:spike' }) // idle again: the next one is a normal first press
+  expect((await ui.find({ key: 'close:spike' }))?.props.label).toBe('confirm close')
+  expect(hubCalls(calls)).toEqual([CLOSE_ARGV('retro')])
+  await ui.unmount()
+})
+
+test('with nothing idle the Stages section says so and counts the closed stages the default view hides; `l` shows them (dim, no button)', async ($, on) => {
+  mock.clock(on)
+  const calls: string[][] = []
+  stubStages(
+    on,
+    argv =>
+      argv.includes('--all')
+        ? withStages({ old: stageInfo({ closed: CLOSED, idle: false, goal: 'Done long ago' }), other: stageInfo({ closed: { ...CLOSED, at: '2026-10-03T11:00:00+00:00', why: 'wrapped up' }, idle: false }) })
+        : withStages({ busy: stageInfo({ idle: false, live: 1 }) }, { closed_hidden: ['old', 'other'] }),
+    () => ran('closed\n'),
+    calls,
+  )
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ type: 'Text', text: /no idle stages/ }))?.text).toBe('no idle stages · 2 closed hidden (l shows them)')
+  expect(await ui.findAll({ type: 'Button', text: /close/ })).toEqual([])
+  expect((await ui.find({ key: 'toggle-all' }))?.props).toMatchObject({ hotkey: 'l', label: 'old' }) // `l` works in Summary too
+
+  await ui.press({ key: 'toggle-all' })
+  expect(calls.at(-1)?.slice(1)).toEqual(['--json', '--all'])
+  expect(await ui.find({ type: 'Text', text: /^── Stages ─+$/ })).toBeDefined() // still in Summary
+  expect((await ui.find({ key: 'closed:old' }))?.text).toMatch(/^ closed +old +closed from the agent-top pane$/)
+  expect((await ui.find({ key: 'closed:other' }))?.text).toMatch(/^ closed +other +wrapped up$/)
+  const pill = await ui.find({ type: 'Text', text: ' closed ' })
+  expect(pill?.props).toMatchObject({ backgroundColor: 'gray', color: 'black' })
+  expect((await ui.find({ type: 'Text', text: 'old' }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: /no idle stages$/ }))?.text).toBe('no idle stages') // nothing hidden any more
+  expect((await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('close:'))).toEqual([])
+  const rows = (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(k => k.startsWith('closed:'))
+  expect(rows).toEqual(['closed:old', 'closed:other']) // the latest closed first
+  await ui.unmount()
+})
+
+test('Stages rows fit the body at 23 to 76 columns, inline and docked, idle, armed, refused and closed', async ($, on) => {
+  mock.clock(on)
+  const long = 'a-very-long-stage-name-indeed'
+  const goal = 'A goal long enough to need clipping on every width of the pane'
+  stubStages(
+    on,
+    () =>
+      withStages({
+        [long]: stageInfo({ goal, idle_s: 400000 }),
+        retro: stageInfo({ goal: '' }),
+        [`${long}-closed`]: stageInfo({ closed: { ...CLOSED, why: 'a reason long enough to need clipping too' }, idle: false }),
+        shut: stageInfo({ closed: CLOSED, idle: false }),
+      }),
+    () => ran('', 2, 'refused: a stage with a long name has live agents, open owner questions and more besides\n'),
+  )
+  await run($)
+  const wide: string[] = []
+  const prefixes = ['stage:', 'act:', 'closed:', 'close-']
+  const measure = async (ui: Awaited<ReturnType<typeof $.ui.mount>>, tag: string, inner: number) => {
+    for (const b of await ui.findAll({ type: 'Box' })) {
+      const k = b.key ?? ''
+      if (prefixes.some(p => k.startsWith(p)) && cells(b) > inner) wide.push(`${tag}: ${k} takes ${cells(b)} > ${inner}`)
+    }
+  }
+  for (const placement of ['inline', 'dock'] as const) {
+    for (const cols of [23, 24, 25, 30, 40, 44, 60, 76]) {
+      const ui = await $.ui.mount({ ...paneProps({ placement, cols, rows: 60 }), surface: 'terminal' })
+      const inner = cols - (placement === 'dock' && cols >= 44 ? 8 : 0)
+      await ui.press({ key: 'view-summary' })
+      expect((await ui.findAll({ type: 'Box' })).filter(b => (b.key ?? '').startsWith('stage:')).length).toBe(2)
+      await measure(ui, `${placement} ${cols} idle`, inner)
+      await ui.press({ key: `close:${long}` })
+      expect((await ui.find({ key: 'close-hint' }))?.text).toMatch(/^press again/)
+      await measure(ui, `${placement} ${cols} armed`, inner)
+      await ui.press({ key: `close:${long}` })
+      expect((await ui.find({ key: 'close-note' }))?.text).toMatch(/^✗/)
+      await measure(ui, `${placement} ${cols} refused`, inner)
+      await ui.unmount()
+    }
+  }
+  expect(wide).toEqual([])
+})
+
+test('ringTarget: an agent row follows the cursor; a close Button gone from the drawing sends the ring to the Summary tab', async () => {
+  const tabs = ['view-agents', 'view-journal', 'view-summary', 'refresh']
+  expect(ringTarget('close:retro', null, [...tabs, 'close:retro', 'close:spike'])).toBe('close:retro') // still there: stays
+  expect(ringTarget('close:retro', null, [...tabs, 'close:spike'])).toBe('view-summary') // closed, or no longer idle
+  expect(ringTarget('close:retro', null, tabs)).toBe('view-summary')
+  expect(ringTarget('close:retro', null, ['refresh'])).toBeNull() // not drawn at all (another view): the ring is left alone
+  expect(ringTarget('open:s/a', 's/b', [...tabs, 'open:s/a', 'open:s/b'])).toBe('open:s/b')
+  expect(ringTarget('open:s/a', null, [...tabs, 'open:s/a'])).toBe('open:s/a')
+  expect(ringTarget('view-journal', 's/b', tabs)).toBe('view-journal')
+  expect(ringTarget(null, 's/b', tabs)).toBeNull()
+})
+
+// ---------------------------------------------------------------- stages of several hub homes
+
+const PROJ_HOME = '/work/proj/.agent-hub/local'
+const HOMES = [
+  { path: '/home/u/agent-hub', label: '', layer: 'default', repo: null, stages: ['alpha'] },
+  { path: PROJ_HOME, label: 'proj', layer: 'project', repo: '/work/proj', stages: ['alpha · proj', 'retro · proj'] },
+]
+/** A snapshot of two homes: `alpha` in each (the project's is `alpha · proj`) and an idle `retro` in the project's. */
+const twoHomes = (extra: Row = {}): string =>
+  snapshot([agent(), agent({ stage: 'alpha · proj', role: 'rev', dir_name: 'rev', tag: 'r-1', stage_name: 'alpha', home: PROJ_HOME, home_label: 'proj' })], {
+    stages: ['stage-a', 'alpha · proj', 'retro · proj'],
+    homes: HOMES,
+    multi_home: true,
+    stage_info: {
+      'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'stage-a', home: '/home/u/agent-hub', home_label: '' }),
+      'alpha · proj': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+      'retro · proj': stageInfo({ name: 'retro', home: PROJ_HOME, home_label: 'proj' }),
+    },
+    ...extra,
+  })
+
+test('parseSnapshot reads homes, multi_home and where a stage lives; an older CLI leaves them empty; closeTarget and stageCols', async () => {
+  const s = parseSnapshot(twoHomes(), 0)
+  expect(s.homes).toEqual(HOMES)
+  expect(s.multi_home).toBe(true)
+  expect(s.stage_info['retro · proj']).toMatchObject({ name: 'retro', home: PROJ_HOME, home_label: 'proj' })
+  expect(closeTarget(s, 'retro · proj')).toEqual({ name: 'retro', home: PROJ_HOME, key: `${PROJ_HOME}\u0000retro` })
+  expect(closeTarget(s, 'stage-a')).toEqual({ name: 'stage-a', home: '/home/u/agent-hub', key: '/home/u/agent-hub\u0000stage-a' })
+  expect([stageCols(s), stageCols(null)]).toEqual([28, 16])
+
+  const older = parseSnapshot(withStages({ retro: stageInfo() }), 0) // an older CLI: no home fields at all
+  expect([older.homes, older.multi_home]).toEqual([[], false])
+  expect(older.stage_info.retro).toEqual({ goal: 'Ship the retro fixes', closed: null, last_activity_at: '2026-10-04T08:40:00+00:00', idle_s: 12000, idle: true, live: 0 })
+  expect(closeTarget(older, 'retro')).toEqual({ name: 'retro', home: null, key: 'retro' }) // the old call, unchanged
+  expect(stageCols(older)).toBe(16)
+
+  const odd = parseSnapshot(snapshot([agent()], { homes: [5, { label: 'x' }, { path: '/p', stages: ['a', 7], repo: 3 }], multi_home: 'yes' }), 0)
+  expect(odd.homes).toEqual([{ path: '/p', label: '', layer: '', repo: null, stages: ['a'] }])
+  expect(odd.multi_home).toBe(false)
+})
+
+test('two homes: the list names a stage of another home `stage · label`, a same-named stage is a second one, the Summary names it too', async ($, on) => {
+  mock.clock(on)
+  stubPane(on, () => twoHomes())
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ cols: 76 }), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^── stage-a ─+$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^── alpha · proj ─+$/ })).toBeDefined()
+  expect(await ui.find({ key: 'open:alpha · proj/rev' })).toBeDefined() // the agent key carries the id: two homes never collide
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ key: 'stage:retro · proj' }))?.text).toMatch(/^retro · proj +idle 3h20 +Ship the retro fixes ?close$/)
+  await ui.unmount()
+})
+
+test('closing a stage of another home runs `hub close` with the stage\'s own name in that home (AGENT_HUB_HOME); a stage of an older CLI keeps the old call', async ($, on) => {
+  mock.clock(on)
+  const calls: { argv: string[]; env: Record<string, string> }[] = []
+  let json = twoHomes()
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => {
+    calls.push({ argv: [...e.argv], env: { ...(e.init?.env ?? {}) } })
+    return (HUB.test(e.argv[0] ?? '') ? ran('closed stage retro\n') : ran(json)) as ReturnType<typeof ran>
+  })
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:retro · proj' })
+  await ui.press({ key: 'close:retro · proj' })
+  const hub = calls.filter(c => HUB.test(c.argv[0] ?? ''))
+  expect(hub.map(c => c.argv.slice(1))).toEqual([CLOSE_ARGV('retro')]) // not 'retro · proj': that is no stage name
+  expect(hub[0]?.env.AGENT_HUB_HOME).toBe(PROJ_HOME)
+  await ui.unmount()
+
+  calls.length = 0 // an older CLI: no home fields, the stage id is the name, no environment is added
+  json = withStages({ retro: stageInfo() })
+  const old = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await old.press({ key: 'view-summary' })
+  await old.press({ key: 'close:retro' })
+  await old.press({ key: 'close:retro' })
+  const oldHub = calls.filter(c => HUB.test(c.argv[0] ?? ''))
+  expect(oldHub.map(c => c.argv.slice(1))).toEqual([CLOSE_ARGV('retro')])
+  expect(oldHub[0]?.env.AGENT_HUB_HOME).toBeUndefined()
+  await old.unmount()
+})
+
+const DEFAULT_HOME = '/home/u/agent-hub'
+/** One home's `alpha` (the project's) idle beside the live `stage-a`: what the pane sees while only that home has an `alpha`. */
+const onlyProjectAlpha = (): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', 'alpha'],
+    multi_home: false,
+    stage_info: {
+      'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'stage-a', home: DEFAULT_HOME, home_label: '' }),
+      alpha: stageInfo({ name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+    },
+  })
+/** The same after ~/agent-hub gained an `alpha` too: the id `alpha` is now the default home's, the project's is `alpha · proj`. */
+const bothAlphas = (): string =>
+  snapshot([agent()], {
+    stages: ['stage-a', 'alpha', 'alpha · proj'],
+    multi_home: true,
+    stage_info: {
+      'stage-a': stageInfo({ idle: false, live: 1, idle_s: 4, name: 'stage-a', home: DEFAULT_HOME, home_label: '' }),
+      alpha: stageInfo({ name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+      'alpha · proj': stageInfo({ name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+    },
+  })
+
+test('an armed close belongs to the stage (home, name), not to the id on its Button: another home gaining an `alpha` moves the id, never the confirmation', async ($, on) => {
+  mock.clock(on)
+  const calls: { argv: string[]; env: Record<string, string> }[] = []
+  let json = onlyProjectAlpha()
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => {
+    calls.push({ argv: [...e.argv], env: { ...(e.init?.env ?? {}) } })
+    return (HUB.test(e.argv[0] ?? '') ? ran('closed stage alpha\n') : ran(json)) as ReturnType<typeof ran>
+  })
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  await ui.press({ key: 'close:alpha' }) // armed on the project home's `alpha`
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('confirm close')
+
+  json = bothAlphas() // ~/agent-hub gains an `alpha`: the id `alpha` now names the default home's stage
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('close') // the other stage is not armed
+  expect((await ui.find({ key: 'close:alpha · proj' }))?.props.label).toBe('confirm close') // the armed one moved with its identity
+  calls.length = 0
+  await ui.press({ key: 'close:alpha' }) // the press that would have confirmed on the old id
+  expect(calls.filter(c => HUB.test(c.argv[0] ?? ''))).toEqual([]) // …runs nothing: it arms the default home's stage instead
+  expect((await ui.find({ key: 'close:alpha' }))?.props.label).toBe('confirm close')
+  expect((await ui.find({ key: 'close:alpha · proj' }))?.props.label).toBe('close')
+
+  await ui.press({ key: 'close:alpha · proj' }) // arms the project home's again…
+  await ui.press({ key: 'close:alpha · proj' }) // …and confirms it
+  const hub = calls.filter(c => HUB.test(c.argv[0] ?? ''))
+  expect(hub.map(c => c.argv.slice(1))).toEqual([CLOSE_ARGV('alpha')])
+  expect(hub[0]?.env.AGENT_HUB_HOME).toBe(PROJ_HOME)
+
+  // and the other way: armed on the id as it is when the confirming press comes, even if the id changed in between
+  calls.length = 0
+  json = onlyProjectAlpha()
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'close:alpha' })
+  json = bothAlphas()
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'close:alpha · proj' })
+  expect(calls.filter(c => HUB.test(c.argv[0] ?? '')).map(c => c.env.AGENT_HUB_HOME)).toEqual([PROJ_HOME]) // acts on the armed stage's home
+  await ui.unmount()
+})
+
+test('--stage NAME keeps that stage of every home, NAME@label (or @path, or the displayed `name · label`) one home\'s; the pane, journal, questions and /agent-top <role> agree', async ($, on) => {
+  mock.clock(on)
+  const two = snapshot(
+    [
+      agent({ stage: 'alpha', role: 'a-w', dir_name: 'a-w', stage_name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+      agent({ stage: 'alpha · proj', role: 'p-w', dir_name: 'p-w', stage_name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+      agent({ stage: 'beta · proj', role: 'b-w', dir_name: 'b-w', stage_name: 'beta', home: PROJ_HOME, home_label: 'proj' }),
+    ],
+    {
+      stages: ['alpha', 'alpha · proj', 'beta · proj'],
+      multi_home: true,
+      homes: HOMES,
+      stage_info: {
+        alpha: stageInfo({ idle: false, name: 'alpha', home: DEFAULT_HOME, home_label: '' }),
+        'alpha · proj': stageInfo({ idle: false, name: 'alpha', home: PROJ_HOME, home_label: 'proj' }),
+        'beta · proj': stageInfo({ idle: false, name: 'beta', home: PROJ_HOME, home_label: 'proj' }),
+      },
+      questions: { 'alpha · proj': { open: 1, overdue: 0, line: 'alpha · proj — open 1', items: ['Q-A-001 ?'], ids: ['Q-A-001'] }, 'beta · proj': { open: 1, overdue: 0, line: 'beta · proj — open 1', items: ['Q-B-001 ?'], ids: ['Q-B-001'] } },
+      journal_tail: [
+        { stage: 'alpha', time: '12:01', tag: 'a-w', text: 'default home line' },
+        { stage: 'alpha · proj', time: '12:02', tag: 'p-w', text: 'project home line' },
+        { stage: 'beta · proj', time: '12:03', tag: 'b-w', text: 'beta line' },
+      ],
+    },
+  )
+  const snap = parseSnapshot(two, 0)
+  const ids = (sel: string[]) => inStages(snap.agents, sel, snap).map(a => a.stage)
+  expect(ids([])).toEqual(['alpha', 'alpha · proj', 'beta · proj'])
+  expect(ids(['alpha'])).toEqual(['alpha', 'alpha · proj']) // a bare name: that stage in every home
+  expect(ids(['alpha@proj'])).toEqual(['alpha · proj'])
+  expect(ids([`alpha@${PROJ_HOME}`])).toEqual(['alpha · proj'])
+  expect(ids(['alpha@'])).toEqual(['alpha']) // the default home's label is empty
+  expect(ids(['alpha · proj'])).toEqual(['alpha · proj']) // as displayed
+  expect(ids(['beta@elsewhere', 'gamma'])).toEqual([])
+  expect(inStages([{ stage: 'x' }, { stage: 'y · r' }], ['y'], null).map(r => r.stage)).toEqual(['y · r']) // no stage_info: the id's own words
+  expect(stageMatches('a@b', { name: 'a', home: '/h', label: 'b' })).toBe(true)
+  expect(stageSelector({ stage: 'alpha · proj', stage_name: 'alpha', home: PROJ_HOME })).toBe(`alpha@${PROJ_HOME}`)
+  expect(stageSelector({ stage: 'old' })).toBe('old')
+
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => (calls.push([...e.argv]), ran(two)))
+  await run($, '--stage alpha')
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  expect(await ui.find({ key: 'open:alpha/a-w' })).toBeDefined()
+  expect(await ui.find({ key: 'open:alpha · proj/p-w' })).toBeDefined() // `--stage alpha` does not hide the project home's
+  expect(await ui.find({ key: 'open:beta · proj/b-w' })).toBeUndefined()
+  await ui.press({ key: 'view-journal' })
+  expect(await ui.find({ type: 'Text', text: 'project home line' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'default home line' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'beta line' })).toBeUndefined()
+  await ui.press({ key: 'view-summary' })
+  expect(await ui.find({ key: 'q:alpha · proj' })).toBeDefined()
+  expect(await ui.find({ key: 'q:beta · proj' })).toBeUndefined()
+  await ui.unmount()
+  expect(calls.some(c => c.includes('--stage') && c[c.indexOf('--stage') + 1] === 'alpha')).toBe(true)
+})
+
+test('a card is asked for by `name@home`, so its stage is the one that was opened whatever its id is called by the next refresh', async ($, on) => {
+  mock.clock(on)
+  const a = agent({ stage: 'alpha · proj', role: 'p-w', dir_name: 'p-w', stage_name: 'alpha', home: PROJ_HOME, home_label: 'proj' })
+  const calls: string[][] = []
+  on('command.register', REGISTERED)
+  on('session.surfaces', () => ({ value: ['terminal'] }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', DONE_VOID)
+  on('ui.status', DONE_VOID)
+  on('ui.focus', () => ({}))
+  on('process.run', ($, e) => (calls.push([...e.argv]), ran(e.argv.includes('--feed') ? cardJson(a, []) : snapshot([a], { stages: ['alpha · proj'], multi_home: true }))))
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40 }), surface: 'terminal' })
+  await ui.press({ key: 'open:alpha · proj/p-w' })
+  const feed = calls.find(c => c.includes('--feed'))
+  expect(feed?.[feed.indexOf('--stage') + 1]).toBe(`alpha@${PROJ_HOME}`)
+  await ui.unmount()
+})
+
+test('parseArgs takes a qualified selector without spaces: --stage alpha@proj', async () => {
+  expect(parseArgs('--stage alpha@proj --stage=beta@/work/p worker')).toEqual({ role: 'worker', stages: ['alpha@proj', 'beta@/work/p'], isAll: false })
+  expect(onceArgs(parseArgs('--stage alpha@proj'))).toContain('alpha@proj')
+})
+
+test('parseArgs reads quotes and backslash-spaces like a shell: a label or a path with spaces stays one selector', async () => {
+  expect(splitWords(`a "b c" 'd e' f\\ g "h\\"i" ''`)).toEqual(['a', 'b c', 'd e', 'f g', 'h"i', ''])
+  expect(parseArgs('--stage "alpha@space repo" worker')).toEqual({ role: 'worker', stages: ['alpha@space repo'], isAll: false })
+  expect(parseArgs("--stage 'alpha@/work/my repo/.agent-hub/local' --all").stages).toEqual(['alpha@/work/my repo/.agent-hub/local'])
+  expect(parseArgs('--stage=alpha@"my repo" worker')).toEqual({ role: 'worker', stages: ['alpha@my repo'], isAll: false })
+  expect(parseArgs('--stage alpha@my\\ repo').stages).toEqual(['alpha@my repo'])
+  expect(parseArgs('--stage "alpha@unclosed repo').stages).toEqual(['alpha@unclosed repo'])
+  expect(parseArgs('--stage alpha@proj worker').role).toBe('worker') // unquoted words split as before
+  expect(onceArgs(parseArgs('--stage "alpha@space repo"'))).toContain('alpha@space repo') // and reach the CLI as one argument
+})
+
+test('a path selector matches the way the CLI normalises it (trailing slash, ., .., //); a label or path with @ is split at the first @ or " · "', async () => {
+  const id = { name: 'alpha', home: '/work/repo/.agent-hub/local', label: 'repo' }
+  for (const q of ['/work/repo/.agent-hub/local', '/work/repo/.agent-hub/local/', '/work//repo/./.agent-hub/local', '/work/x/../repo/.agent-hub/local/'])
+    expect(stageMatches(`alpha@${q}`, id)).toBe(true)
+  expect(stageMatches('alpha@/work/other/.agent-hub/local/', id)).toBe(false)
+  expect(normPath('/a//b/./c/../d/')).toBe('/a/b/d')
+  expect(normPath('/')).toBe('/')
+
+  expect(parseSelector('alpha@repo@branch')).toEqual({ name: 'alpha', qual: 'repo@branch' })
+  expect(parseSelector('alpha · repo@branch')).toEqual({ name: 'alpha', qual: 'repo@branch' }) // the displayed form, with an '@' in its label
+  expect(parseSelector('alpha@a · b')).toEqual({ name: 'alpha', qual: 'a · b' })
+  expect(parseSelector('alpha')).toEqual({ name: 'alpha', qual: null })
+  const at = { name: 'alpha', home: '/w/repo@branch/.agent-hub/local', label: 'repo@branch' }
+  expect(stageMatches('alpha · repo@branch', at)).toBe(true)
+  expect(stageMatches('alpha@repo@branch', at)).toBe(true)
+  expect(stageMatches('alpha@/w/repo@branch/.agent-hub/local/', at)).toBe(true)
+  expect(stageMatches('alpha@repo', at)).toBe(false)
+  const rows = [{ stage: 'alpha · repo@branch', stage_name: 'alpha', home: at.home, home_label: 'repo@branch' }, { stage: 'alpha', stage_name: 'alpha', home: '/h', home_label: '' }]
+  expect(inStages(rows, ['alpha · repo@branch'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
+  expect(inStages(rows, ['alpha@/w/repo@branch/.agent-hub/local/'], null).map(r => r.stage)).toEqual(['alpha · repo@branch'])
+})
+
+test('a lock keeps its home and label from the CLI, and the Summary shows the label only while stages come from several homes', async ($, on) => {
+  mock.clock(on)
+  const locks = [
+    { kind: 'main-merge', repo: 'demo', owner_name: 'hub-a', until: '2099-01-01T00:00', active: true, why: 'merging', home: DEFAULT_HOME, home_label: '' },
+    { kind: 'main-merge', repo: 'demo', owner_name: 'hub-b', until: '2099-01-01T00:00', active: true, why: 'merging', home: PROJ_HOME, home_label: 'proj' },
+  ]
+  const parsed = parseSnapshot(snapshot([agent()], { locks, multi_home: true }), 0)
+  expect(parsed.locks.map(l => [l.home, l.home_label])).toEqual([[DEFAULT_HOME, ''], [PROJ_HOME, 'proj']])
+  const older = parseSnapshot(snapshot([agent()], { locks: [{ kind: 'k', repo: 'r', owner_name: 'o', until: 'u', active: true, why: 'w' }] }), 0)
+  expect(older.locks[0]).toEqual({ kind: 'k', repo: 'r', owner_name: 'o', until: 'u', active: true, why: 'w' }) // an older CLI: no home fields
+
+  let json = snapshot([agent()], { locks, multi_home: true })
+  stubPane(on, () => json)
+  await run($)
+  const ui = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  await ui.press({ key: 'view-summary' })
+  expect((await ui.find({ key: 'lock:0' }))?.text).toMatch(/main-merge +demo +until 01-01 00:00 +hub-a: merging/) // the default home's: no label
+  expect((await ui.find({ key: 'lock:1' }))?.text).toMatch(/main-merge +demo \(proj\) +until 01-01 00:00 +hub-b: merging/) // another home's: whose it is
+  await ui.unmount()
+
+  json = snapshot([agent()], { locks, multi_home: false }) // one home: the rows are as they were
+  const one = await $.ui.mount({ ...paneProps({ rows: 40, cols: 76 }), surface: 'terminal' })
+  await one.press({ key: 'view-summary' })
+  expect((await one.find({ key: 'lock:1' }))?.text).not.toContain('(proj)')
+  await one.unmount()
 })

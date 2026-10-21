@@ -13,14 +13,20 @@ session list: a replaced hub can still run under the same display name. Then:
      next wake-up): the full session id, kind and title; for a Claude session the name a cross-session message
      goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer). Codex uses
      `agent send` for a detached holder (including one promoted to hub), or `codex queue --thread <UUID>` on a CLI
-     with queue support, never a Claude session name.
+     with queue support for explicit queued follow-ups, never a Claude session name.
+For a non-detached Codex recipient tell dispatches immediately through the existing public app-server proxy:
+active turns use turn/steer with exact expectedTurnId; observed loaded idle threads use turn/start with delivery
+mode unverified (the acknowledgement may refer to a turn another client started). Unavailable runtimes
+produce a pending native-caller handoff: the caller must execute the supported native send immediately, before
+waiting or any next action, after verifying human authority and the current registry UUID. A handoff alone is
+not delivery. Failed/pending/unknown dispatch exits 1; unknown sends must not be retried through another transport.
 A headless agent reads its inbox, not a journal: for a holder of kind headless tell delivers through
 `agent send --stage <stage> <role> "text (from <your tag>)"` itself (it journals the line too), says so, and exits with
 that command's code.
 The answer reaches you only in YOUR journal: the other hub answers with `tell <your stage> "…"`; its jwait does not read
 your stage's journal, and yours does not read its.
-The journal is the preferred channel between hubs. A direct message goes only to the registry address, never to a
-session picked by its name in a list. Text that starts with a dash goes after `--`.
+The journal retains the audit trail between hubs; non-detached Codex delivery is immediate when supported.
+A direct message goes only to the registry address, never to a session picked by its name in a list. Text that starts with a dash goes after `--`.
 --address: print only the direct address, write nothing (no text allowed).
 Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write or delivery failed, 2 usage
 (no tag to sign with, empty text, text with --address).
@@ -37,6 +43,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import codex_sessions  # noqa: E402
+import codex_tell  # noqa: E402
 
 
 def stages_with(role: str) -> list:
@@ -64,7 +71,7 @@ def holder(stage: str, role: str) -> dict:
         return rec
     why = f"stage {stage!r} has no registry" if not hc.roles_path(stage).is_file() else f"stage {stage!r} has no {role!r} in its registry"
     have = ", ".join(stages_with(role)) or "none"
-    raise hc.Failure(f"{why} ({hc.roles_path(stage)}); stages with a {role!r}: {have}")
+    raise hc.Failure(f"{why} ({hc.roles_path(stage)}); stages with a {role!r}: {have}" + hc.elsewhere_hint(stage))
 
 
 def claude_name(rec: dict) -> str:
@@ -150,6 +157,13 @@ def main(argv: list) -> int:
         except OSError as e:
             raise hc.Failure(f"could not write the journal {hc.journal_path(stage)}: {e}") from None
         print(line)
+        if rec.get("engine") == "codex" and not codex_sessions.detached(stage, rec):
+            result = codex_tell.dispatch(stage, args.role, rec,
+                                         ("QUESTION " if args.question else "") + text + f" (from {tag})",
+                                         {"tag": tag, "journal_path": str(hc.journal_path(stage)), "journal_line": line})
+            print("codex tell receipt: " + json.dumps(result, ensure_ascii=False))
+            # Pending native work is not successful delivery. Never silently retry unknown sends.
+            return 0 if result["state"] in ("steered", "accepted") else 1
     print("\n".join(address_lines(stage, args.role, rec)))
     return 0
 

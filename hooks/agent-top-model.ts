@@ -5,6 +5,10 @@ export type AgentState = 'live' | 'done' | 'error' | 'dead'
 
 export type Agent = {
   stage: string
+  /** The stage's own name and the hub home it lives in (and that home's label); absent from an older CLI. */
+  stage_name?: string
+  home?: string
+  home_label?: string
   role: string
   dir_name: string
   title: string
@@ -39,7 +43,8 @@ export type Agent = {
 
 export type Counts = { live: number; done: number; error: number; dead: number }
 
-export type Lock = { kind: string; repo: string; owner_name: string; until: string; active: boolean; why: string }
+/** `home` and `home_label`: the hub home whose board holds the lock (absent from an older CLI). */
+export type Lock = { kind: string; repo: string; owner_name: string; until: string; active: boolean; why: string; home?: string; home_label?: string }
 
 /**
  * `items` are display lines (the CLI cuts them to 12); `ids` are every open question id of the stage, from the untruncated
@@ -48,6 +53,26 @@ export type Lock = { kind: string; repo: string; owner_name: string; until: stri
 export type StageQuestions = { open: number; overdue: number; line: string; items: string[]; ids: string[] | null }
 
 export type JournalLine = { stage: string; time: string; tag: string; text: string }
+
+/**
+ * One stage's row of `agent-top --json` `stage_info`. `idle` is the CLI's word: not closed, no live agent and no activity
+ * for longer than `idle_after_s`. `closed` is set under --all (closed stages are left out of `stages` otherwise).
+ */
+export type StageInfo = {
+  goal: string
+  closed: { at: string; why: string; by: string } | null
+  last_activity_at: string | null
+  idle_s: number | null
+  idle: boolean
+  live: number
+  /** The stage's own name, the hub home it lives in and that home's short label ("" for ~/agent-hub); absent from an older CLI. */
+  name?: string
+  home?: string
+  home_label?: string
+}
+
+/** One known hub home of `agent-top --json` `homes`; `stages` are the ids (keys of `stage_info`) of the stages shown from it. */
+export type HomeRow = { path: string; label: string; layer: string; repo: string | null; stages: string[] }
 
 export type Snapshot = {
   generated_at: string
@@ -58,6 +83,16 @@ export type Snapshot = {
   questions: Record<string, StageQuestions>
   /** `ask summary` succeeded on this fetch: an empty `questions` then means no registers, not a failed `ask`. */
   questionsOk: boolean
+  /** Per stage of `stages`; {} from an older CLI. */
+  stage_info: Record<string, StageInfo>
+  /** Every known hub home (the CLI lists the registry's, ~/agent-hub and the current one); [] from an older CLI. */
+  homes: HomeRow[]
+  /** Stages come from more than one home: a stage outside ~/agent-hub is then called `stage · label`. false from an older CLI. */
+  multi_home: boolean
+  /** The closed stages the default view leaves out of `stages` (--all shows them); [] from an older CLI. */
+  closed_hidden: string[]
+  /** The idle threshold in seconds; null from an older CLI. */
+  idle_after_s: number | null
   limits: { info: { unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number }> }; seen_at: number } | null
   codex_limits: Record<string, { info: unknown; seen_at: number }>
   journal_tail: JournalLine[]
@@ -80,7 +115,8 @@ export function feedNote(card: Card | null, cardError: string | null): { text: s
 
 export type View = 'list' | 'card' | 'journal' | 'summary'
 
-export type Target = { stage: string; dirName: string; role: string }
+/** `sel`: what the CLI is asked for (`name@home`: the stage in its own home, whatever its id is called now); default: `stage`. */
+export type Target = { stage: string; dirName: string; role: string; sel?: string }
 
 /** Whether two card targets name the same agent (a card answer for another one is dropped). */
 export const sameTarget = (a: Target | null, b: Target | null): boolean =>
@@ -102,6 +138,9 @@ export function toAgent(raw: unknown): Agent | null {
     : null
   return {
     stage: raw.stage,
+    ...(typeof raw.stage_name === 'string' ? { stage_name: raw.stage_name } : {}),
+    ...(typeof raw.home === 'string' ? { home: raw.home } : {}),
+    ...(typeof raw.home_label === 'string' ? { home_label: raw.home_label } : {}),
     role: raw.role,
     dir_name: str(raw.dir_name, raw.role),
     title: str(raw.title),
@@ -168,10 +207,44 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
         until: str(l.until),
         active: l.active === true,
         why: str(l.why),
+        ...(typeof l.home === 'string' ? { home: l.home } : {}),
+        ...(typeof l.home_label === 'string' ? { home_label: l.home_label } : {}),
       }))
     : []
   const journal: JournalLine[] = Array.isArray(data.journal_tail)
     ? data.journal_tail.filter(isObject).map(j => ({ stage: str(j.stage), time: str(j.time), tag: str(j.tag), text: str(j.text) }))
+    : []
+  const stageInfo: Record<string, StageInfo> = {}
+  if (isObject(data.stage_info)) {
+    for (const [stage, i] of Object.entries(data.stage_info)) {
+      if (!isObject(i)) continue
+      stageInfo[stage] = {
+        goal: str(i.goal),
+        closed: isObject(i.closed) ? { at: str(i.closed.at), why: str(i.closed.why), by: str(i.closed.by) } : null,
+        last_activity_at: typeof i.last_activity_at === 'string' ? i.last_activity_at : null,
+        idle_s: numOrNull(i.idle_s),
+        idle: i.idle === true,
+        live: numOr(i.live, 0),
+        ...(typeof i.name === 'string' ? { name: i.name } : {}),
+        ...(typeof i.home === 'string' ? { home: i.home } : {}),
+        ...(typeof i.home_label === 'string' ? { home_label: i.home_label } : {}),
+      }
+    }
+  }
+  const homes: HomeRow[] = Array.isArray(data.homes)
+    ? data.homes.filter(isObject).flatMap(h =>
+        typeof h.path === 'string'
+          ? [
+              {
+                path: h.path,
+                label: str(h.label),
+                layer: str(h.layer),
+                repo: typeof h.repo === 'string' ? h.repo : null,
+                stages: Array.isArray(h.stages) ? h.stages.filter((x): x is string => typeof x === 'string') : [],
+              },
+            ]
+          : [],
+      )
     : []
   const limits = isObject(data.limits) && isObject(data.limits.info) ? (data.limits as Snapshot['limits']) : null
   const codex: Snapshot['codex_limits'] = {}
@@ -188,6 +261,11 @@ export function parseSnapshot(stdout: string, fetchedAt: number): Snapshot {
     locks,
     questions,
     questionsOk: data.questions_ok === true,
+    stage_info: stageInfo,
+    homes,
+    multi_home: data.multi_home === true,
+    closed_hidden: Array.isArray(data.closed_hidden) ? data.closed_hidden.filter((x): x is string => typeof x === 'string') : [],
+    idle_after_s: numOrNull(data.idle_after_s),
     limits,
     codex_limits: codex,
     journal_tail: journal,
@@ -221,9 +299,41 @@ export function parseCard(stdout: string, dirName: string, fetchedAt: number): C
 
 export type CommandArgs = { role: string | null; stages: string[]; isAll: boolean }
 
-/** `/agent-top [role] [--stage S]... [--all]` (also `--stage=S`). Unknown flags are ignored. */
+/**
+ * The words of a command line as a shell reads them: split at whitespace, except inside '…' or "…" (a label from a repository
+ * directory with a space, a path with spaces) and after a backslash (`alpha@my\\ repo`); the quotes are dropped. An unclosed
+ * quote runs to the end of the text.
+ */
+export function splitWords(text: string): string[] {
+  const words: string[] = []
+  let cur = ''
+  let has = false
+  let quote: '"' | "'" | null = null
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i] ?? ''
+    if (quote !== null) {
+      if (c === quote) quote = null
+      else if (c === '\\' && quote === '"' && (text[i + 1] === '"' || text[i + 1] === '\\')) cur += text[(i += 1)] ?? ''
+      else cur += c
+    } else if (c === '"' || c === "'") {
+      quote = c
+      has = true
+    } else if (c === '\\' && i + 1 < text.length) {
+      cur += text[(i += 1)] ?? ''
+      has = true
+    } else if (/\s/.test(c)) {
+      if (has || cur !== '') words.push(cur)
+      cur = ''
+      has = false
+    } else cur += c
+  }
+  if (has || cur !== '') words.push(cur)
+  return words
+}
+
+/** `/agent-top [role] [--stage S]... [--all]` (also `--stage=S`); S may be quoted. Unknown flags are ignored. */
 export function parseArgs(text: string): CommandArgs {
-  const words = text.split(/\s+/).filter(Boolean)
+  const words = splitWords(text)
   const out: CommandArgs = { role: null, stages: [], isAll: false }
   for (let i = 0; i < words.length; i += 1) {
     const w = words[i] ?? ''
@@ -271,15 +381,16 @@ export function isOwnCommand(command: string, pluginName: string): boolean {
 export const TICK_MS = 3000
 export const IDLE_MS = 15000
 
-export type Plan = { watch: boolean; extra: 'card' | 'all' | null }
+export type Plan = { watch: boolean; extra: 'card' | 'all' | null } // 'all': the pane's own list (--all, or named stages)
 
 /**
  * What one refresh runs. The "watch" call (default view, every stage) feeds the status line and the toasts, so it
  * runs every tick while the pane shows it and every IDLE_MS otherwise. The "extra" call feeds only the pane: the
- * card (one agent, its feed) or the all-agents list.
+ * card (one agent, its feed) or the pane's own list: --all, or the stages it was opened on (--stage: a closed stage is
+ * left out of the watch call, and a named one is shown).
  */
-export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; view: View; isAll: boolean; hasTarget: boolean; force: boolean }): Plan {
-  const extra: Plan['extra'] = !i.isOpen ? null : i.view === 'card' ? (i.hasTarget ? 'card' : null) : i.isAll ? 'all' : null
+export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; view: View; isAll: boolean; hasStages?: boolean; hasTarget: boolean; force: boolean }): Plan {
+  const extra: Plan['extra'] = !i.isOpen ? null : i.view === 'card' ? (i.hasTarget ? 'card' : null) : i.isAll || i.hasStages ? 'all' : null
   const isIdleDue = i.now - i.lastWatchAt >= IDLE_MS - TICK_MS / 2
   const watch = (i.isOpen && extra === null) || isIdleDue || (i.force && extra === null)
   return { watch, extra }
@@ -290,6 +401,17 @@ export function planRun(i: { now: number; lastWatchAt: number; isOpen: boolean; 
 export function statusText(s: Snapshot | null): string | undefined {
   if (!s || s.agents.length === 0) return undefined
   return `agents ● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}`
+}
+
+/**
+ * Where the focus ring goes once a drawing changed the pane's Buttons: the element it was last on (an agent row follows the
+ * cursor), or null to leave it. A stage's `close` Button that is gone from the drawing (the stage was closed, or stopped being
+ * idle) sends the ring to the Summary tab, which every drawing has.
+ */
+export function ringTarget(ringKey: string | null, cursorKey: string | null, controls: readonly string[]): string | null {
+  let meant = ringKey?.startsWith('open:') && cursorKey !== null ? `open:${cursorKey}` : ringKey
+  if (meant?.startsWith('close:') && !controls.includes(meant)) meant = 'view-summary'
+  return meant !== null && controls.includes(meant) ? meant : null
 }
 
 /** The surfaces that draw the prompt footer (`SessionMode`), where the counts are a Button and not the status line. */
@@ -369,11 +491,106 @@ export function capToasts(texts: string[], max = 3): string[] {
   return texts.length <= max ? texts : [...texts.slice(0, max - 1), `+${texts.length - (max - 1)} more events (open /agent-top)`]
 }
 
+/**
+ * What `hub close` is run with for a stage id of the snapshot: the stage's own name (the id of a stage outside ~/agent-hub is
+ * `name · label` while homes are many) and the hub home to run it in (`AGENT_HUB_HOME`; null from an older CLI, which only
+ * ever listed the home the tools resolve themselves). `key` is the stage's identity: its home and name, which never depend on
+ * how many homes have stages (the id does), so an armed confirmation is kept and compared by it.
+ */
+export function closeTarget(s: Snapshot | null, stage: string): { name: string; home: string | null; key: string } {
+  const info = s?.stage_info[stage]
+  const name = info?.name ?? stage
+  const home = info?.home ?? null
+  return { name, home, key: home === null ? stage : `${home}\u0000${name}` }
+}
+
+/** The selector that asks the CLI for one agent's stage in its own home (`name@home`); the id for an older CLI. */
+export const stageSelector = (a: { stage: string; stage_name?: string; home?: string }): string =>
+  a.stage_name !== undefined && a.home !== undefined ? `${a.stage_name}@${a.home}` : a.stage
+
+/** Columns the stage id gets in a row: the label of a home makes it longer than a stage name. */
+export const stageCols = (s: Snapshot | null): number => (s?.multi_home ? 28 : 16)
+
 // ---------------------------------------------------------------- stage filter (client side)
 
-export function inStages<T extends { stage: string }>(rows: readonly T[], stages: readonly string[]): T[] {
-  return stages.length === 0 ? [...rows] : rows.filter(r => stages.includes(r.stage))
+/** A stage as the filter sees it: its own name, its home's path and label (null where the CLI does not say). */
+export type StageIdentity = { name: string; home: string | null; label: string | null }
+
+/** `NAME` (that stage in every home), `NAME@LABEL` or `NAME@/path/of/home` (in one home); `name · label` as displayed too. */
+export function parseSelector(sel: string): { name: string; qual: string | null } {
+  // a stage name has neither '@' nor ' · ': whichever comes first ends the name, and a label or a path may hold either
+  const m = /@| · /.exec(sel)
+  return m === null ? { name: sel, qual: null } : { name: sel.slice(0, m.index), qual: sel.slice(m.index + m[0].length) }
 }
+
+/** A path as the filter compares it: slashes collapsed, `.` and `..` segments resolved, no trailing slash (not the CLI's realpath). */
+export function normPath(p: string): string {
+  const out: string[] = []
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') out.pop()
+    else out.push(seg)
+  }
+  return (p.startsWith('/') ? '/' : '') + out.join('/')
+}
+
+export function stageMatches(sel: string, id: StageIdentity): boolean {
+  const { name, qual } = parseSelector(sel)
+  if (id.name !== name) return false
+  if (qual === null || id.label === qual || id.home === qual) return true
+  return qual.includes('/') && id.home !== null && normPath(id.home) === normPath(qual)
+}
+
+/** The identity of a stage id of the snapshot: its `stage_info` row, else (an older CLI, a closed stage left out) the id's own words. */
+export function identityOf(s: Snapshot | null, stage: string): StageIdentity {
+  const info = s?.stage_info[stage]
+  if (info?.name !== undefined) return { name: info.name, home: info.home ?? null, label: info.home_label ?? null }
+  const p = parseSelector(stage)
+  return { name: p.name, home: null, label: p.qual }
+}
+
+type Staged = { stage: string; stage_name?: string; home?: string; home_label?: string }
+
+/** The rows of the stages the filter names: a bare name keeps that stage of every home, `name@label` one home's. */
+export function inStages<T extends Staged>(rows: readonly T[], stages: readonly string[], s: Snapshot | null = null): T[] {
+  if (stages.length === 0) return [...rows]
+  return rows.filter(r => {
+    const id: StageIdentity = r.stage_name !== undefined ? { name: r.stage_name, home: r.home ?? null, label: r.home_label ?? null } : identityOf(s, r.stage)
+    return stages.some(sel => stageMatches(sel, id))
+  })
+}
+
+/** A stage of the snapshot with its `stage_info` row. */
+export type StageRow = { stage: string; info: StageInfo }
+
+/** The snapshot's stages (in the pane's stage filter) that have a `stage_info` row, in the CLI's order. */
+function stageRows(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return inStages(s.stages.map(stage => ({ stage })), stages, s).flatMap(({ stage }) => {
+    const info = s.stage_info[stage]
+    return info ? [{ stage, info }] : []
+  })
+}
+
+/**
+ * The stages `close` is offered for: the CLI calls them idle, none of them is closed and none has a live agent. Longest
+ * idle first (an unknown idle time last), then by name.
+ */
+export function idleStages(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return stageRows(s, stages)
+    .filter(r => r.info.idle && r.info.closed === null && r.info.live === 0)
+    .sort((a, b) => (b.info.idle_s ?? -1) - (a.info.idle_s ?? -1) || (a.stage < b.stage ? -1 : 1))
+}
+
+/** The closed stages this view shows (--all): the latest closed first. */
+export function closedStages(s: Snapshot, stages: readonly string[]): StageRow[] {
+  return stageRows(s, stages)
+    .filter(r => r.info.closed !== null)
+    .sort((a, b) => (b.info.closed?.at ?? '').localeCompare(a.info.closed?.at ?? '') || (a.stage < b.stage ? -1 : 1))
+}
+
+/** How many closed stages the default view leaves out (in the pane's stage filter). */
+export const closedHiddenCount = (s: Snapshot, stages: readonly string[]): number =>
+  inStages(s.closed_hidden.map(stage => ({ stage })), stages, s).length
 
 export function countsOf(agents: readonly Agent[]): Counts {
   const c: Counts = { live: 0, done: 0, error: 0, dead: 0 }
@@ -552,7 +769,7 @@ export function limitLine(w: LimitWindow): string {
 /** The role's agent for `/agent-top <role>`: the live one first, else the freshest that is not archived. */
 export function findByRole(agents: readonly Agent[], name: string, stages: readonly string[]): Agent | null {
   const rank = (a: Agent) => (a.archived ? 2 : 0) + (a.state === 'live' ? 0 : 1)
-  const cands = agents.filter(a => (a.role === name || a.dir_name === name) && (stages.length === 0 || stages.includes(a.stage)))
+  const cands = inStages(agents.filter(a => a.role === name || a.dir_name === name), stages)
   cands.sort((x, y) => rank(x) - rank(y) || (x.age_s ?? Infinity) - (y.age_s ?? Infinity))
   return cands[0] ?? null
 }

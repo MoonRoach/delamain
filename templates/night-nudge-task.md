@@ -2,7 +2,8 @@
 
 The watchdog (`watchdog install`, [docs/monitoring.md](../docs/monitoring.md#watchdog-a-hub-that-sleeps-is-woken)) replaces
 this task: it counts open night-queue items inside `AGENT_HUB_NIGHT` as waiting work, finds the hub in `roles.json` and wakes
-it when it can be woken (any engine; a Codex hub is notify-only in this release (its queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`)), and notifies you otherwise. This
+it when it can be woken (including a confirmed idle Codex app hub registered from its current thread), and notifies you
+otherwise; see the linked host conditions. This
 task still works as described below; if you created it, you may delete it in Claude Desktop (`~/.claude/scheduled-tasks/night-nudge`).
 New installs do not need it.
 

@@ -9,7 +9,8 @@ FAKE_TURNS=<n>: n extra assistant messages (distinct ids) before the last answer
 `--version` prints FAKE_VERSION (default 2.1.287) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
 is printed on a line before it (a version manager's shim), FAKE_VERSION_LOG is a file that gets one line per call.
 The init event carries
-`model`: FAKE_MODEL, else the --model value with an alias resolved the way a current CLI does (sonnet -> claude-sonnet-5-5).
+`model`: FAKE_MODEL, else the --model value with an alias resolved the way a current CLI does (sonnet -> claude-sonnet-5-5;
+haiku -> claude-haiku-5-5 from FAKE_VERSION 2.1.296, claude-haiku-4-5-20251001 before it).
 The prompt is read from stdin when -p is the last argument (what the plugin does), else it is the argument after -p.
 Every prompt is appended to ./prompts.log, every argv (minus the prompt) to ./argv.log and the environment the
 plugin sets for the CLI (the first PATH entry, HUB_BIN, the background-wait ceiling and the hub home) to ./env.log, so a test can see what the
@@ -40,6 +41,7 @@ with open("env.log", "a", encoding="utf-8") as fh:
     fh.write(f"PATH_FIRST={os.environ.get('PATH', '').split(os.pathsep)[0]}\n")
     fh.write(f"HUB_BIN={os.environ.get('HUB_BIN', '<unset>')}\n")
     fh.write(f"AGENT_HUB_HOME={os.environ.get('AGENT_HUB_HOME', '<unset>')}\n")
+    fh.write(f"CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS={os.environ.get('CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS', '<unset>')}\n")
     fh.write(f"CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS={os.environ.get('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', '<unset>')}\n")  # last: tests read it with tail -1
 if os.environ.get("FAKE_CLAUDE") == "hang":  # alive, never sends init (a slow MCP server, a stuck start)
     time.sleep(60)
@@ -50,8 +52,13 @@ if os.environ.get("FAKE_CLAUDE") == "die":
     sys.exit(1)
 def emit(ev):
     sys.stdout.write(json.dumps(ev, ensure_ascii=False) + "\n"); sys.stdout.flush()
-ALIASES = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "haiku": "claude-haiku-4-5-20251001",
-           "fable": "claude-fable-5-1"}
+def version():
+    try:
+        return tuple(int(x) for x in os.environ.get("FAKE_VERSION", "2.1.287").split(".")[:3])
+    except ValueError:
+        return (0, 0, 0)
+ALIASES = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "fable": "claude-fable-5-1",
+           "haiku": "claude-haiku-5-5" if version() >= (2, 1, 296) else "claude-haiku-4-5-20251001"}
 model = os.environ.get("FAKE_MODEL") or ALIASES.get(opt("--model") or "", opt("--model"))
 time.sleep(float(os.environ.get("FAKE_INIT_DELAY", "0")))  # a slow start: MCP servers connecting
 emit({"type": "system", "subtype": "init", "session_id": sid, "model": model})

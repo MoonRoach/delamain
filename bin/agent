@@ -7,7 +7,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
               [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
-              [--permission-mode MODE] [--ignore-hold]
+              [--permission-mode MODE] [--mcp inherit|none|FILE[,FILE]] [--ignore-hold]
   agent status [R] [--stage S] [--all]
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
                                                       is the message, a word starting with `-` included)
@@ -27,16 +27,25 @@ plugin's bin/ first on PATH and in $HUB_BIN (the brief footer names jlog as "$HU
 an old same-named tool ahead; every resume rebuilds the variable, so it follows a plugin update); it is recorded in `roles` (kind headless, pid).
 Model: an alias (opus, sonnet, haiku, fable) or a full id claude-…. An alias follows the CLI: a current Claude Code
 resolves it to the latest model of that family; Claude Code 2.1.287 is the minimum supported version (an older one
-resolves it to an older model), and spawn warns about it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
+resolves it to an older model), and spawn warns about it. `haiku` is Haiku 5.5 from Claude Code 2.1.296, Haiku 4.5
+before it. The id the run reports in its init event is recorded (meta resolved_model) and shown by status, the journal line
 and agent-top. $AGENT_HUB_MODEL_MAP pins aliases to ids ("sonnet=claude-sonnet-x-y,opus=…") — an opt-in, since a pin
 goes stale with the next model release.
 Effort: --effort, else the model's entry in $AGENT_HUB_EFFORT_DEFAULTS, else $AGENT_HUB_DEFAULT_EFFORT, else high;
-haiku gets no effort flag. An effort above the model's default, or a model of $AGENT_HUB_REASON_MODELS, needs
+the same for every model, haiku included (Haiku 5.5 has the setting; Haiku 4.5 takes the flag and ignores it). An
+effort above the model's default, or a model of $AGENT_HUB_REASON_MODELS, needs
 --reason "…" (warning, or refusal with AGENT_HUB_REASON_POLICY=refuse); the reason goes into the journal start line
 and meta.json (bin/spawn_policy.py). The title registered for the agent is `<role> — <the brief's first heading,
 without a leading "Brief:"> (<stage>)`, unless --title says otherwise.
 Load hold: while `bin/watchdog` holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD, off by default), spawn warns
 or, with AGENT_HUB_SPAWN_HOLD=refuse, refuses (exit 1); --ignore-hold passes. `send` is never held (bin/spawn_hold.py).
+Limit pace: spawn compares fresh remaining weekly room for this launch, suggesting an equivalent engine/model/effort
+below 20% remaining and respecting AGENT_HUB_STAGE_ENGINES. No model is swapped silently. Below 3% remaining it
+refuses (exit 1) only with fresh data on both engines; --reason passes and is journalled. Forecasts, including the
+low-confidence first six hours, are context only. Stale/unknown data never grounds refusal. Each crossing journals
+one `@hub LIMIT …` line. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
+--dry-run runs every check and prints the advice, then stops before anything is started or written.
+A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
 (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0, or $AGENT_HUB_BG_WAIT_CEILING_MS milliseconds).
@@ -89,6 +98,7 @@ import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
+import limit_pace  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -360,6 +370,81 @@ def bg_wait_ceiling(cwd=None) -> str:
     return raw
 
 
+MCP_CHOICES = ("inherit", "none")
+MCP_DEFAULT = "none"  # an executor loads no MCP server unless its task needs one; "inherit" brings them back
+
+
+def mcp_choice(given, cwd) -> object:
+    """The MCP servers of a Claude agent's runs: "inherit" (the user's config, enabled plugins and claude.ai connectors,
+    as an interactive session gets them), "none" (--strict-mcp-config: no server at all), or a list of absolute paths
+    of MCP config files (--strict-mcp-config --mcp-config FILE…: only their servers). `given` is --mcp, else
+    AGENT_HUB_SPAWN_MCP, else MCP_DEFAULT; files are comma-separated, a relative one of --mcp is relative to the working directory. A
+    repository's config.json — its .agent-hub/config.json, or a hub home inside it (repository_home) — may choose
+    inherit or none only: a file's servers are commands the CLI would start."""
+    raw, origin = (given, "flag") if given else hc.setting_origin("AGENT_HUB_SPAWN_MCP", cwd=cwd)
+    name = "--mcp" if origin == "flag" else "AGENT_HUB_SPAWN_MCP"
+    raw = (raw or MCP_DEFAULT).strip()
+    if raw in MCP_CHOICES:
+        return raw
+    cfg = None
+    if origin == "project":
+        cfg = hc.project_dir(cwd) / hc.CONFIG_DIRNAME / "config.json"
+    elif origin == "home" and repository_home():
+        cfg = hc.root() / "config.json"
+    if cfg is not None:
+        raise hc.UsageError(f"AGENT_HUB_SPAWN_MCP in {cfg}, a repository's config.json: one of {MCP_CHOICES} — an MCP "
+                            "config file goes in a hub home's config.json outside the repository, the environment or "
+                            "--mcp")
+    parts = [x.strip() for x in raw.split(",") if x.strip()]
+    if not parts:
+        raise hc.UsageError(f"{name}: one of {MCP_CHOICES}, or MCP config files")
+    for part in parts:
+        if not Path(part).expanduser().is_absolute() and origin != "flag":
+            raise hc.UsageError(f"{name}: {part}: an MCP config file must be an absolute path (or ~/…)")
+    return mcp_files([str(Path(x).expanduser().resolve()) for x in parts], name)
+
+
+def repository_home() -> bool:
+    """Whether the hub home is a repository's: AGENT_HUB_HOME "project" (<repo>/.agent-hub/local/), or a home under
+    <git top>/.agent-hub/ — what a child that got the project home as $AGENT_HUB_HOME (hc.child_env) sees, its layer
+    reading "env". A home the user named elsewhere is the user's, whatever its path contains."""
+    home = hc.home()
+    if home.layer == "project":
+        return True
+    path = home.path.resolve()
+    top = hc._git_top(path)
+    return top is not None and path.is_relative_to(top / hc.CONFIG_DIRNAME)
+
+
+def mcp_files(files: list, name: str) -> list:
+    """`files` when each is an MCP config the CLI takes (a JSON object with "mcpServers"); else a usage error. Run
+    again before a resume: the CLI would fail on a file deleted or broken since the spawn."""
+    for f in files:
+        if Path(f).is_dir():
+            raise hc.UsageError(f"{name}: {f}: is a directory, not an MCP config file")
+        try:
+            data = json.loads(Path(f).read_text(encoding="utf-8"))
+        except OSError:
+            raise hc.UsageError(f"{name}: {f}: no such file (inherit, none, or MCP config files)") from None
+        except ValueError as e:
+            raise hc.UsageError(f"{name}: {f}: not valid JSON ({e})") from None
+        if not (isinstance(data, dict) and isinstance(data.get("mcpServers"), dict)):
+            raise hc.UsageError(f'{name}: {f}: not an MCP config (a JSON object with "mcpServers")')
+    return files
+
+
+def mcp_text(mcp) -> str:
+    return mcp if isinstance(mcp, str) else "only " + ", ".join(mcp)
+
+
+def mcp_args(meta: dict) -> list:
+    """The CLI flags of an agent's MCP choice; an agent spawned before the choice existed inherits."""
+    mcp = meta.get("mcp") or "inherit"
+    if mcp == "inherit":
+        return []
+    return ["--strict-mcp-config"] + (["--mcp-config", *mcp] if isinstance(mcp, list) else [])
+
+
 def init_timeout(cwd=None) -> int:
     """Seconds to wait for a run's init event (it comes after MCP servers connect): AGENT_INIT_TIMEOUT or 120."""
     try:
@@ -413,13 +498,16 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
         argv = claude_argv(meta, resume)
     log = d / "log.jsonl"
     offset = log.stat().st_size if log.exists() else 0
-    note = 'marker=$1; shift; "$@"; c=$?; python3 "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
+    note = 'marker=$1; python=$2; shift 2; "$@"; c=$?; "$python" "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
     token = meta.get("process_token") or meta["session_id"]
-    argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token] + argv
+    argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token, sys.executable] + argv
     env = child_env(meta["stage"], meta["tag"])
     env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
+    if engine == "codex" and meta.get("sandbox") == "workspace-write" and not is_review_role(meta):
+        engines.prepare_worktree_sandbox(meta, env)
     if engine == "claude":
         env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
+        env.setdefault(hc.IDLE_COMPACT_ENV, hc.IDLE_COMPACT_NEVER)
     else:
         env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
                     "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})
@@ -464,6 +552,7 @@ def claude_argv(meta: dict, resume: bool) -> list:
         argv += ["--effort", meta["effort"]]
     argv += ["--output-format", "stream-json", "--verbose",
              "--permission-mode", meta.get("permission_mode") or DEFAULT_PERMISSION_MODE]
+    argv += mcp_args(meta)  # before --add-dir: --mcp-config takes several values too
     argv += hc.add_dir_args(meta["cwd"])  # before -n / -p: --add-dir takes several values
     if not resume:
         argv += ["-n", meta["title"]]
@@ -487,8 +576,32 @@ def journal(stage: str, fallback_tag: str, text: str) -> str:
     return hc.journal_append(stage, hc.caller_tag(stage) or fallback_tag, text)
 
 
+def pace_advice(stage: str, engine: str, model_names: list, effort: str, task_class, reason: str, dry: bool) -> str:
+    """The limit-pace advice for a launch (bin/limit_pace.py), printed before anything starts; a refusal is raised.
+    Returns a note for the journal start line when the launch goes ahead over the hard-stop case, else ""."""
+    if limit_pace.mode() == "off":
+        return ""
+    adv = limit_pace.advise(engine, " ".join(model_names), effort, stage, limit_pace.read_all(), task_class, reason,
+                            limit_pace.stage_lock(stage))
+    if adv.lines:
+        print("limit pace — before this launch:\n" + "\n".join("  " + ln for ln in adv.lines))
+    if adv.pace is not None:
+        crossed = limit_pace.note_crossing(stage, adv.pace, write=not dry)
+        if crossed and dry:
+            print(f"dry run: would journal [{limit_pace.TAG}] {crossed}")
+    if adv.refuse:
+        raise hc.Failure(adv.refuse)
+    if adv.stop:
+        why = "--reason" if reason else "AGENT_HUB_LIMIT_PACE=warn"
+        return f"over the limit-pace stop ({limit_pace.short(adv.pace)}) by {why}"
+    return ""
+
+
 def cmd_spawn(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
+    if (closed := hc.stage_closed(stage)) is not None:  # `hub close`: nothing watches it, nothing lists its agents
+        raise hc.UsageError(f"stage {stage} is closed ({closed.get('at')}: {closed.get('why')}) — reopen it with "
+                            f"`hub takeover --stage {stage} --session …` before starting agents there")
     cwd = Path(a.cwd).expanduser().resolve()
     brief = Path(a.brief).expanduser().resolve()
     if not cwd.is_dir():
@@ -506,10 +619,9 @@ def cmd_spawn(a) -> int:
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
     model_names = [n for n in dict.fromkeys([given or "CLI default", a.model or "CLI default"])]
     default_effort = spawn_policy.default_effort(model_names, allowed_efforts, cwd)
-    effective_effort = a.effort or default_effort
-    if effective_effort not in allowed_efforts:
-        raise hc.UsageError(f"effort {effective_effort!r} ({engine}): one of {allowed_efforts}")
-    effort = None if engine == "claude" and "haiku" in a.model else effective_effort
+    effort = a.effort or default_effort
+    if effort not in allowed_efforts:
+        raise hc.UsageError(f"effort {effort!r} ({engine}): one of {allowed_efforts}")
     reason = spawn_policy.clean_reason(a.reason)
     above_default = spawn_policy.check_reason(model_names, effort, default_effort, allowed_efforts, reason, cwd,
                                               model_unknown=engine == "codex" and not a.model)
@@ -520,6 +632,11 @@ def cmd_spawn(a) -> int:
     denied = subagent_rules.check_spawn(given or "CLI default", a.model or "CLI default", effort, cwd)
     if denied:
         raise hc.UsageError(denied)
+    if engine == "codex" and a.mcp and a.mcp != "inherit":
+        # `codex exec -c` cannot switch off the servers of Codex plugins; AGENT_HUB_SPAWN_MCP is for Claude agents
+        raise hc.UsageError("--mcp is only supported by the Claude engine")
+    mcp = mcp_choice(a.mcp, cwd) if engine == "claude" else None  # before pace_advice, which may journal
+    pace_note = pace_advice(stage, engine, model_names, effort, a.task_class, reason, a.dry_run)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     sandbox = None
     policy = None
@@ -533,6 +650,9 @@ def cmd_spawn(a) -> int:
                 raise hc.UsageError("--permission-mode and --sandbox-policy type disagree")
         else:
             sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
+        if sandbox == "workspace-write" and engines.is_review_role({"role": a.role, "tag": a.tag}):
+            engines.workspace_write_roots({"role": a.role, "tag": a.tag, "cwd": str(cwd),
+                                           "sandbox_policy": policy})
         engines.hook_args(cwd)
     elif a.sandbox or a.sandbox_policy:
         raise hc.UsageError("--sandbox and --sandbox-policy are only supported by the Codex engine")
@@ -565,6 +685,10 @@ def cmd_spawn(a) -> int:
     held = spawn_hold.gate(a.ignore_hold)  # the machine-load hold (bin/watchdog); a refusal is raised here
     if held:
         hc.warn(held)
+    if a.dry_run:
+        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}"
+              f"{', MCP ' + mcp_text(mcp) if mcp and mcp != MCP_DEFAULT else ''}; nothing was started or written")
+        return 0
     d = agent_dir(stage, a.role)
     if (d / "meta.json").exists():
         old = load_meta(stage, a.role)
@@ -580,6 +704,7 @@ def cmd_spawn(a) -> int:
         # a finished agent of the same name: keep its files, start a clean directory
         d.rename(d.with_name(f"{a.role}.{time.strftime('%Y%m%d-%H%M%S')}"))
     d.mkdir(parents=True)
+    hc.register_home()  # the stage now has an agents/ directory: its home is one agent-top lists (registry of homes)
     tag = a.tag or a.role
     shutil.copyfile(brief, d / "brief.md")
     (d / "inbox.md").write_text(f"# Inbox of agent {a.role}\n\n", encoding="utf-8")
@@ -590,16 +715,27 @@ def cmd_spawn(a) -> int:
             "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
     meta["engine"] = engine
+    if mcp:
+        meta["mcp"] = mcp
     if reason:
         meta["reason"] = reason
     if engine == "codex":
+        if sandbox == "read-only" and is_review_role(meta):
+            hc.warn("Codex read-only reviewer cannot write its report or journal; "
+                    "use workspace-write with --cwd in the hub home")
         meta.update({"sandbox": sandbox, "process_token": str(uuid.uuid4())})
+        if sandbox == "workspace-write" and not is_review_role(meta):
+            meta["sandbox_git_roots"] = engines.worktree_git_roots(cwd)
+            if meta["sandbox_git_roots"]:
+                hc.warn(engines.WORKTREE_SANDBOX_NOTE)
         if policy:
             meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
+    if meta.get("sandbox_git_roots"):
+        prompt += "\n" + engines.WORKTREE_SANDBOX_NOTE + "\n"
     save_meta(stage, a.role, meta)
     try:
         pid = launch(meta, prompt, resume=False)
@@ -620,7 +756,9 @@ def cmd_spawn(a) -> int:
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
-                               + (f", reason: {reason}" if reason else ""))
+                               + (f", MCP {mcp_text(mcp)}" if mcp and mcp != MCP_DEFAULT else "")
+                               + (f", reason: {reason}" if reason else "")
+                               + (f", {pace_note}" if pace_note else ""))
     print(f"started {a.role}: pid {pid}, session {meta['session_id']}\nlog {d / 'log.jsonl'}\n{line}")
     return 0
 
@@ -809,7 +947,7 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
                 exit_marker(stage, fresh).unlink(missing_ok=True)  # not written: the next observer may try
                 raise
     except OSError:
-        # A read-only sandbox (a reviewer running `agent status`): no lock file, marker or journal line can be written. The
+        # A read-only sandbox (an agent running `agent status`): no lock file, marker or journal line can be written. The
         # observation is skipped; whatever the caller prints (a status line) is unaffected.
         return None
 
@@ -897,7 +1035,8 @@ def status_line(stage: str, role: str) -> str:
                   f"agent send {role} [text] resumes with them")
     text = info["last_text"][:220] + ("…" if len(info["last_text"]) > 220 else "")
     wt = meta.get("worktree")
-    return (f"{role} [{meta['tag']}] {model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
+    engine = meta.get("engine", "claude")
+    return (f"{role} [{meta['tag']}] {engine}/{model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
             f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
             + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
 
@@ -913,7 +1052,8 @@ def cmd_status(a) -> int:
     live_roles = hc.roles_load(stage)["roles"]
     names = [n for n in names if n in live_roles] if not a.all else names
     if not names:
-        print("no headless agents" + ("" if a.all else " (--all includes retired ones)"))
+        print("no headless agents" + ("" if a.all else " (--all includes retired ones)")
+              + ("" if base.is_dir() else hc.elsewhere_hint(stage)))
         return 0
     for n in names:
         print(status_line(stage, n))
@@ -931,6 +1071,21 @@ def cmd_send(a) -> int:
         return _send_locked(stage, a, msg)
 
 
+def legacy_effort(meta: dict) -> None:
+    """A Claude agent spawned while Haiku took no effort has `effort: null` on record, and its resume would leave the effort
+    to the CLI's own setting. Give it the effort a spawn would (AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_DEFAULT_EFFORT, high),
+    refuse what AGENT_HUB_EFFORT_RULES refuses, and put it in `meta` (launch saves it)."""
+    if meta.get("effort"):
+        return
+    import subagent_rules  # noqa: E402
+    cwd, model, resolved = Path(meta["cwd"]), meta["model"], meta.get("resolved_model") or meta["model"]
+    effort = spawn_policy.default_effort(list(dict.fromkeys([model, resolved])), EFFORTS, cwd)
+    denied = subagent_rules.check_spawn(model, resolved, effort, cwd)
+    if denied:
+        raise hc.UsageError(denied)
+    meta["effort"] = effort
+
+
 def _send_locked(stage: str, a, msg: str) -> int:
     meta = load_meta(stage, a.role)
     if a.role not in hc.roles_load(stage)["roles"]:
@@ -939,6 +1094,9 @@ def _send_locked(stage: str, a, msg: str) -> int:
     if not live:
         if meta.get("engine", "claude") == "claude":
             bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
+            legacy_effort(meta)  # likewise a rule that refuses the effort it would get
+            if isinstance(meta.get("mcp"), list):  # likewise an MCP config file deleted or broken since the spawn
+                mcp_files(meta["mcp"], f"agent {a.role}'s MCP config")
         if not a.resume_anyway:
             limit, ctx = spawn_policy.resume_max_ctx(meta["cwd"]), read_log(Path(meta["dir"]) / "log.jsonl")["ctx"]
             if limit and ctx > limit:  # refused before the message is queued
@@ -1042,13 +1200,10 @@ def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
     return False
 
 
-REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE)
-
-
 def is_review_role(meta: dict) -> bool:
     """A review role by its name or tag: `review-pr34`, `desktop-review`, `reviewer2` (the plugin's own reviewers are
-    `review-<name>`), not `preview` or `reviewfix`. Such an agent often cannot journal at all (a read-only sandbox)."""
-    return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
+    `review-<name>`), not `preview` or `reviewfix`. Legacy read-only reviewers cannot journal their verdict."""
+    return engines.is_review_role(meta)
 
 
 def cmd_exit_note(a) -> int:
@@ -1129,9 +1284,12 @@ def main(argv: list) -> int:
     s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
     s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
-    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high; ignored for haiku")
+    s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
     s.add_argument("--brief", required=True)
+    s.add_argument("--mcp", metavar="inherit|none|FILE[,FILE]",
+                   help="Claude: the MCP servers of the agent — inherit (the user's config, plugins and claude.ai "
+                        "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else none")
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
                         "on a new branch from origin's default branch (--base)")
@@ -1140,7 +1298,14 @@ def main(argv: list) -> int:
     s.add_argument("--tag")
     s.add_argument("--title", help="default: <role> — <the brief's first heading> (<stage>)")
     s.add_argument("--reason", help="why the work needs an effort or a model above the default "
-                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS); journaled and kept in meta.json")
+                   "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS), or why it runs over the limit-pace stop; "
+                   "journaled and kept in meta.json")
+    s.add_argument("--task-class", choices=limit_pace.CLASSES,
+                   help="what the work needs: mechanical | bounded (from a finished design) | judgement; default: by "
+                        "the model. The limit-pace advice uses it (effort above the class default, the equivalent "
+                        "class on the other engine)")
+    s.add_argument("--dry-run", action="store_true",
+                   help="run every check and print the limit-pace advice, then stop: nothing is started or written")
     s.add_argument("--ignore-hold", action="store_true",
                    help="spawn although the watchdog holds spawns for machine load (AGENT_HUB_SPAWN_HOLD_LOAD)")
     st = sub.add_parser("status", help="alive or not, model, last event age, turns")

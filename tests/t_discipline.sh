@@ -241,7 +241,7 @@ PY
 n=$(wc -l < $R/jwait-forms.txt | tr -d ' '); [ "$n" -ge 4 ]; check $? 0 "jwait forms collected from the digest and the skill ($n)"
 i=0; while IFS= read -r f; do i=$((i+1)); for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form $i passes the guard (background=$bg)"; done; done < $R/jwait-forms.txt
 denied "until grep -q DONE journal.md; do sleep 20; done"; check $? 0 "jwait forms: positive control, a sleep loop is denied"
-# …also with a team's extra wake words (non-ASCII) from AGENT_HUB_JWAIT_MATCH in the digest's pattern
+# …also with configured non-ASCII extra wake words resolved internally by --hub-events
 echo '{"AGENT_HUB_JWAIT_MATCH": "WARTET AUF ANTWORT|RÉPONSE ATTENDUE|@hub (FRAGE|QUESTION)"}' > $R/config.json
 f=$(python3 - "$B" <<'PY'
 import datetime, importlib.machinery, importlib.util, sys
@@ -250,7 +250,7 @@ spec = importlib.util.spec_from_loader("hub_cli", loader); hub = importlib.util.
 print(hub.jwait_command("stage-a", "hub-17", datetime.datetime(2026, 1, 1, 14, 35)))
 PY
 )
-case "$f" in *"RÉPONSE ATTENDUE"*) check 0 0 "jwait form with extra words: the digest carries them";; *) check 1 0 "jwait form with extra words: the digest carries them ($f)";; esac
+case "$f" in *"--hub-events"*) check 0 0 "jwait form with extra words: the digest selects canonical hub events";; *) check 1 0 "jwait form lacks --hub-events ($f)";; esac
 for bg in 0 1; do denied "$f" $bg; check $? 1 "jwait form with extra non-ASCII words passes the guard (background=$bg)"; done
 rm $R/config.json
 
@@ -326,6 +326,15 @@ done
 echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/"}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a hook input with no prompt"
 echo '{"hook_event_name":"UserPromptSubmit","session_id":"sf","cwd":"/","prompt":["/agent-hub:hub"]}' | python3 $HOOKS/delegation.py prompt > $R/fn3.out; check "$?:$(wc -c < $R/fn3.out | tr -d ' ')" "0:0" "former name, negative: a prompt that is not a string"  # rename:keep
 fp "/agent-hub:hub take over" | python3 -c 'import json,sys; json.load(sys.stdin)'; check $? 0 "former name: the output is one JSON document"  # rename:keep
+# The owner asking for grilling: the hook names the companion skill, dial on or off (14.10: Russian free text did not load it)
+for pos in "давай сразу грилинг по открытым вопросам" "ещё не следуют грилл ми" "погриль меня по плану" "Grill me on this design" "грильни" "/mattpocock-skills:grill-me план" "do some grilling on the plan"; do
+  fp "$pos" > $R/gr.out
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["hookSpecificOutput"]; assert c["hookEventName"]=="UserPromptSubmit"; t=c["additionalContext"]; assert "mattpocock-skills:grilling" in t and "until the frontier" in t and "not a default taken on silence" in t and "hub grill --stage" in t' $R/gr.out
+  check $? 0 "grilling: [$pos] names the grilling skill and its rounds"
+done
+for neg in "купил гриль на дачу" "гриль" "Сравни электрические грили" "Добавь grilled cheese в меню" "Проверь skills/grilling/SKILL.md" "how is it going?"; do
+  fp "$neg" > $R/gr2.out; check "$(wc -c < $R/gr2.out | tr -d ' ')" 0 "grilling, negative: nothing for [$neg]"
+done
 # the skill names and the plugin's name are read from the plugin, not listed in the hook
 FAKE=$R/fakeplug; mkdir -p $FAKE/skills/alpha $FAKE/.claude-plugin; ln -s "$T/../bin" $FAKE/bin; : > $FAKE/skills/alpha/SKILL.md
 echo '{"name": "fakeplug"}' > $FAKE/.claude-plugin/plugin.json
@@ -373,6 +382,9 @@ while IFS='|' read -r want tool typ model what; do
   check "$got" "$want" "example policy: $what"
 done <<'EOF'
 allow|Agent|Explore|haiku|any type on haiku
+deny|Agent|delamain:worker-low|haiku|haiku never at low
+allow|Agent|delamain:worker-medium|haiku|haiku at medium
+allow|Agent|delamain:worker-high|haiku|haiku at high
 deny|Agent|fork|haiku|fork is always denied
 deny|Agent|general-purpose|opus|unpinned definition inherits the session effort
 deny|Agent||opus|no type = general-purpose

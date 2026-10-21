@@ -2,6 +2,8 @@
 # Tests for agent-top on fake stages (no real agent, stand or role is touched): states of agents incl. negative controls,
 # --once/--json, big-log tail reading, "writes nothing" fingerprint, narrow widths, curses UI in a pty with a stub `agent`.
 set -u
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME, ~/agent-hub or the registry of homes
+. "$(dirname "$0")/temp_dirs.sh"
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
@@ -14,7 +16,7 @@ SID_A=11111111-aaaa-4aaa-8aaa-111111111111; SID_Q=22222222-bbbb-4bbb-8bbb-222222
 # the sleeper's command line holds both session ids: "pid alive AND session id in its command line" is the liveness rule
 python3 -c 'import time; time.sleep(900)' $SID_A $SID_Q &
 SLEEPER=$!
-trap 'kill $SLEEPER 2>/dev/null' EXIT
+trap 'kill $SLEEPER 2>/dev/null; test_cleanup' EXIT
 python3 $T/agent_top_fixture.py $R $SLEEPER $SID_A $SID_Q > $R/fixture.out; check $? 0 "fixture built"
 python3 $B/ask add --stage stage-a --blocks "test" --default "nothing" --due 2020-01-01T00:00 --by test --source test "Test question?" > $R/ask.out 2>&1
 check $? 0 "fixture: overdue question registered"
@@ -241,6 +243,84 @@ fi
 fingerprint > $R/fp-after.txt
 diff -q $R/fp-before.txt $R/fp-after.txt > /dev/null; check $? 0 "agent-top --once/--json wrote nothing but its cache (sha1+mtime of every other file under the hub home)"
 [ -s $R/.state/agent-top/cache.sqlite ]; check $? 0 "positive control: the cache left out of that check is there (.state/agent-top/cache.sqlite)"
+
+# ---- rendering portability: exercise capabilities, not fixed palette literals
+python3 - "$B/agent-top" "$R/st-json.out" <<'PYTEST'
+import copy, curses, json, os, runpy, sys, time
+from unittest.mock import patch
+m = runpy.run_path(sys.argv[1])
+styles = m["make_styles"]
+fails = 0
+def chk(name, ok):
+    global fails
+    print(("PASS " if ok else "FAIL ") + name)
+    fails += not ok
+
+class Terminal:
+    error = curses.error
+    def __init__(self, colors=256, pairs=64, defaults=True, reject=False):
+        for name in dir(curses):
+            if name.startswith(("A_", "COLOR_")):
+                setattr(self, name, getattr(curses, name))
+        self.COLORS, self.COLOR_PAIRS = colors, pairs
+        self.defaults, self.reject, self.pairs, self.started = defaults, reject, {}, False
+    def has_colors(self): return self.COLORS > 0
+    def start_color(self): self.started = True
+    def use_default_colors(self):
+        if not self.defaults: raise self.error("no default colors")
+    def init_pair(self, i, fg, bg):
+        assert 0 < i < self.COLOR_PAIRS and -1 <= fg < self.COLORS and -1 <= bg < self.COLORS
+        if self.reject: raise self.error("pair rejected")
+        self.pairs[i] = (fg, bg)
+    def color_pair(self, i): return i << 8
+    def pair(self, attrs): return self.pairs[(attrs >> 8) & 255]
+
+def render(term, no_color=None):
+    env = dict(os.environ)
+    env.pop("NO_COLOR", None)
+    if no_color is not None: env["NO_COLOR"] = no_color
+    with patch.dict(styles.__globals__, curses=term), patch.dict(os.environ, env, clear=True):
+        return styles()
+
+for value in ("", "1"):
+    term = Terminal()
+    st = render(term, value)
+    chk("NO_COLOR=%r never starts color; focus and errors remain marked" % value,
+        not term.started and not term.pairs and bool(st["sel"] & curses.A_REVERSE) and bool(st["err"] & curses.A_BOLD))
+term = Terminal(colors=0)
+render(term)
+chk("colorless terminal never starts colors", not term.started)
+for colors, pairs, defaults in ((256, 64, True), (8, 64, True), (8, 64, False), (2, 3, True)):
+    term = Terminal(colors, pairs, defaults)
+    st = render(term)
+    chk("%s colors/%s pairs: only available indices used or monochrome focus retained" % (colors, pairs),
+        bool(term.pairs) if colors >= 8 else not term.pairs and bool(st["sel"] & curses.A_REVERSE))
+    if colors >= 8:
+        chk("%s colors: red errors differ from warnings and success" % colors,
+            term.pair(st["err"])[0] == curses.COLOR_RED and
+            len({term.pair(st[n])[0] for n in ("err", "warn", "live")}) == 3)
+        chk("%s colors: navigation differs from warning; selection is bold" % colors,
+            term.pair(st["tool"])[0] != term.pair(st["warn"])[0] and bool(st["sel"] & curses.A_BOLD))
+        chk("%s colors: body uses terminal defaults or safe black" % colors,
+            term.pair(st["live"])[1] == (-1 if defaults else curses.COLOR_BLACK))
+        chk("%s colors: panels use extended colors only when supported" % colors,
+            (term.pair(st["head"])[1] >= 16) == (colors >= 256))
+term = Terminal(reject=True)
+st = render(term)
+chk("rejected pairs keep a readable monochrome focus", not term.pairs and bool(st["sel"] & curses.A_REVERSE))
+
+snap = json.load(open(sys.argv[2]))
+snap["now"] = time.time()
+snap["agents"][0]["role"] = '<script>alert("role")</script>'
+snap["agents"][0]["title"] = '<b>hostile & task</b>'
+widget = m["render_widget"](snap)
+chk("widget escapes untrusted role and task markup", '<script>' not in widget and '&lt;script&gt;' in widget and '&lt;b&gt;hostile &amp; task&lt;/b&gt;' in widget)
+chk("widget is a fragment with a visible identity and host surfaces", '<html' not in widget and 'at-title">agent-top</h3>' in widget and 'DELAMAIN</span>' in widget and 'var(--surface-1' in widget)
+# A known injected tag is the negative control for the escaping check.
+chk("negative control: the unsafe role would be caught", '<script>' in snap["agents"][0]["role"])
+sys.exit(1 if fails else 0)
+PYTEST
+check $? 0 "renderer portability and escaping controls"
 
 # ---- curses UI in a pty with a stub `agent` (no real send/stop)
 cat > $R/stub-agent.sh <<'SH'

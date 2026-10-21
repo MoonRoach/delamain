@@ -4,7 +4,7 @@
 The only waiter a hub needs. Run it as ONE command with Bash `run_in_background: true`;
 the harness wakes you when it exits. Never re-arm Monitor or cron for the journal.
 
-  jwait --journal [--stage stage-a] [--file PATH ...] [--match REGEX ...] [--tag T ...]
+  jwait --journal [--stage stage-a] [--file PATH ...] [--hub-events] [--match REGEX ...] [--tag T ...]
         [--exclude-tag T ...] [--settle 20] [--until HH:MM[:SS] | --for 6h] [--note "…"] [--since HH:MM|ISO]
   jwait --until 20:23 --note "check the nightly import"   # pure alarm, no source
   jwait --until 20:23:30 --note "…"                        # to the second; so does --until 2026-10-04T20:23:30
@@ -12,7 +12,8 @@ the harness wakes you when it exits. Never re-arm Monitor or cron for the journa
 Sources: --journal (today's journal of the stage, follows midnight rollover) and/or --file PATH
 (any log; may not exist yet). Several allowed.
 Filters (a line is delivered when ANY positive filter matches; no positive filter = every new line):
-  --match REGEX   Python regex searched in the line (repeatable)
+  --hub-events    standard hub terminal/question words plus AGENT_HUB_JWAIT_MATCH
+  --match REGEX   Python regex searched in the line (repeatable; adds to --hub-events)
   --tag T         line written with tag T or a sub-tag T/…, or addressed "@T" or "@<this stage>-T"
                   (the stage-qualified signature of another stage's hub, jlog's `core-c-hub-30`) (repeatable)
 Exclusions (always win):
@@ -29,8 +30,9 @@ unseen matching line, even the first time (a script may have asked its question 
 started); a last line without a newline is delivered after it stays unchanged for max(--settle, 1) s.
 Batching: after the first match keeps collecting for --settle seconds (default 20), then prints.
 Deadline: --until HH:MM, HH:MM:SS or ISO, with or without seconds (hub time zone; a past clock time means
-tomorrow) or --for 6h; default --for 55m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
-sleeps longer pays for re-writing its whole context at every wake; wait again after the alarm). On the
+tomorrow) or --for 6h; default --for 50m ($AGENT_HUB_JWAIT_FOR; the prompt cache lives one hour, so a hub that
+sleeps longer pays for re-writing its whole context at every wake, and Claude Code 2.1.299+ compacts a 200K+ conversation idle for
+~54 minutes; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
 waiter is not woken).
@@ -212,7 +214,10 @@ class Filter:
     def __init__(self, args, own_tag, stage=None):
         self.stage = stage
         try:
-            self.patterns = [re.compile(p) for p in args.match]
+            patterns = list(args.match)
+            if getattr(args, "hub_events", False):
+                patterns.append(hc.status_pattern())
+            self.patterns = [re.compile(p) for p in patterns]
         except re.error as e:
             raise hc.UsageError(f"bad --match: {e}") from None
         self.tags = [t.strip() for t in args.tag]
@@ -350,7 +355,8 @@ def main(argv: list) -> int:
     p.add_argument("--journal", action="store_true", help="wait for lines of the stage journal")
     p.add_argument("--stage", default=None)
     p.add_argument("--file", action="append", default=[], help="wait for lines of this file (repeatable)")
-    p.add_argument("--match", action="append", default=[], help="regular expression (repeatable)")
+    p.add_argument("--hub-events", action="store_true", help="standard hub events plus configured extra wake words")
+    p.add_argument("--match", action="append", default=[], help="regular expression (repeatable; adds to --hub-events)")
     p.add_argument("--tag", action="append", default=[], help="lines tagged T or T/…, or addressed @T or @<this stage>-T")
     p.add_argument("--exclude-tag", action="append", default=[], help="do not wake on lines tagged T or T/…")
     p.add_argument("--include-own", action="store_true", help="do not exclude the caller's own tag")

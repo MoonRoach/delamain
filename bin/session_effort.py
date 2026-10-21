@@ -7,12 +7,12 @@ hc.EFFORTS. Each source was proved with a throw-away session at a known effort, 
 
   hook        `effort.level` of a hook's input (PreToolUse and the like): the turn's effort; the caller passes it in.
   env         $CLAUDE_EFFORT of the Bash tool: the CLI sets it for every command from the turn's effort, whatever it
-              inherited — except on a model without an effort setting (Haiku), where it is left as inherited (see
+              inherited — except on a model without an effort setting (Haiku 4.5), where it is left as inherited (see
               effortless_model). Not in a `claude --bg` session, whose environment is the daemon's (it also has the
               daemon's stale $HUB_BIN and $CLAUDE_CODE_HOST_SESSION_ID): there the transcript and the job answer.
               Only in the session's own process tree: another session's cannot be read.
   transcript  `effort` of the last assistant record of the main thread in ~/.claude/projects/*/<session>.jsonl: the
-              effort of the last turn; absent for a model without an effort setting.
+              effort of the last turn; absent for a model without an effort setting (Haiku 4.5).
   job         `--effort` of `respawnFlags` in ~/.claude/jobs/<id>/state.json (a `claude --bg` session; its process
               argv carries none): the daemon rewrites it on /effort.
   desktop     `effort` of the Desktop session record whose `cliSessionId` is the session. Matches the CLI's argv and
@@ -21,8 +21,11 @@ hc.EFFORTS. Each source was proved with a throw-away session at a known effort, 
   argv        `--effort` of the session's CLI process: fixed at launch, stale after an in-session change, and absent
               when the session started on the default (a Desktop session, a `--bg` one). The last resort.
 
-A session whose last turn ran on Haiku has no effort: env, job, desktop and argv are then no answer, since they hold an
-ancestor's leftover or what the session was started with.
+A session whose last turn ran on Haiku 4.5 has no effort: env, job, desktop and argv are then no answer, since they hold an
+ancestor's leftover or what the session was started with. Haiku 5.5 is not such a model: its turn has the setting, so it
+is read like any other (CLI 2.1.296, `claude -p --model claude-haiku-5-5 --effort low` with $CLAUDE_EFFORT=xhigh
+inherited: the assistant record has `effort: low`, the hook input `effort.level: low`, the Bash tool $CLAUDE_EFFORT=low;
+the same run on claude-haiku-4-5-20251001: no `effort` in the record, none in the hook input, $CLAUDE_EFFORT=xhigh).
 
 Not sources: `effortLevel` / `modelSettings.<model>.effortLevel` in settings and $CLAUDE_CODE_EFFORT_LEVEL are the
 defaults of *new* sessions (the running session already folded them in, and /effort rewrites them), and
@@ -111,9 +114,10 @@ def transcript_effort(path) -> tuple:
 
 
 def effortless_model(sid: str) -> Optional[str]:
-    """The model of the session's last turn when it has no effort setting (Haiku), else None. The CLI does not set
-    $CLAUDE_EFFORT for such a turn (probed: a Haiku session's Bash shows the value its ancestor had, or none), and a
-    flag, a state.json or a record only holds what the session was started with, so none of them is its effort."""
+    """The model of the session's last turn when it is a Haiku whose record carries no effort (Haiku 4.5, which has no
+    effort setting), else None; a Haiku 5.5 turn records its effort, so it is not one. The CLI does not set
+    $CLAUDE_EFFORT for such a turn (probed: a Haiku 4.5 session's Bash shows the value its ancestor had, or none), and
+    a flag, a state.json or a record only holds what the session was started with, so none of them is its effort."""
     path = find_transcript(sid)
     o = last_assistant(path) if path else None
     model = str(((o or {}).get("message") or {}).get("model") or "")
@@ -277,8 +281,8 @@ def survey(session_id: Optional[str] = None, hook: Optional[str] = None, first_o
         return lambda: fn(sid) if sid else (None, "no session id ($CLAUDE_CODE_SESSION_ID is not set)")
 
     def unless_effortless(read):
-        return lambda: (None, f"the last turn ran on {effortless}, which has no effort setting: what is here is not "
-                              "its effort") if effortless else read()
+        return lambda: (None, f"the last turn ran on {effortless}, which recorded no effort (no effort setting): what is "
+                              "here is not its effort") if effortless else read()
 
     readers = (("hook", hook_reading), ("env", unless_effortless(env_reading)),
                ("transcript", by_session(transcript_reading)),

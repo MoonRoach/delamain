@@ -81,6 +81,11 @@ check "$(grep -c '^\[already done\] \(night-queue\|roles\|journal\)' $R/again.ou
 # 6. handoff
 $B/hub handoff --stage stage-a --n 17 --out $R/H.md > $R/h.out 2>&1; check $? 0 "handoff exit 0"
 miss=0; for s in 0 1 2 3 4 5; do grep -q "^## $s\." $R/H.md || { echo "missing § $s"; miss=1; }; done; check $miss 0 "handoff has §§ 0–5"
+grep -q 'Finite snapshot of remaining authorized Business DoD' $R/H.md &&
+  grep -q 'separate preparation dependencies' $R/H.md && grep -q 'owner/resource | expected event' $R/H.md &&
+  grep -q 'Terminal follow-through; reconcile this snapshot against Business DoD before DONE' $R/H.md
+check $? 0 "generated handoff keeps ready work, concrete waits and Business DoD reconciliation"
+
 [ "$(wc -c < $R/H.md)" -le 12288 ]; check $? 0 "handoff ≤ 12 KB"
 grep -q "TODO" $R/H.md && grep -q "deploy-window (\*)" $R/H.md && grep -q "hub takeover --stage stage-a --session" $R/H.md; check $? 0 "handoff has facts and TODOs"
 $B/hub handoff --stage stage-a --n 17 --out $R/H.md >/dev/null 2>&1; check $? 1 "negative: handoff does not overwrite"

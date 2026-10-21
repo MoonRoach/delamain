@@ -81,25 +81,32 @@ transcript $SID low; check "$(CLAUDE_CODE_HOST_SESSION_ID=local_2222 answer)" "l
 rm -rf "$CFG/jobs"; check "$(answer)" "high env" "bg control: without a job for the session the same environment is read"
 unset CLAUDE_EFFORT
 
-# ================================================================== a model without an effort setting (Haiku): nothing is its effort
-# The CLI sets $CLAUDE_EFFORT only for a model that has the setting; on Haiku the Bash tool shows what an ancestor had.
+# ================================================================== a model without an effort setting (Haiku 4.5): nothing is its effort
+# The CLI sets $CLAUDE_EFFORT only for a model that has the setting; on Haiku 4.5 the Bash tool shows what an ancestor had.
+# Haiku 5.5 has the setting and is read like any other model (last block of this section; probed on CLI 2.1.296).
 reset; transcript $SID - claude-haiku-4-5-20251001; export CLAUDE_EFFORT=xhigh
 job $SID --effort high; desktop local_1111 $SID medium; ps_claude $CLAUDE --session-id $SID --model haiku --effort max
-check "$(answer)" none "haiku: an inherited \$CLAUDE_EFFORT, the job, the record and the argv flag are none of them its effort"
-hub_effort > $W/haiku.out 2>&1; check "$(grep -o 'the last turn ran on claude-haiku-4-5-20251001, which has no effort setting' $W/haiku.out | wc -l | tr -d ' ')" 4 "haiku: …and the refusal says why for each of the four"
+check "$(answer)" none "haiku 4.5: an inherited \$CLAUDE_EFFORT, the job, the record and the argv flag are none of them its effort"
+hub_effort > $W/haiku.out 2>&1; check "$(grep -o 'the last turn ran on claude-haiku-4-5-20251001, which recorded no effort' $W/haiku.out | wc -l | tr -d ' ')" 4 "haiku 4.5: …and the refusal says why for each of the four"
 check "$(PATH=$NO_PS:$PATH python3 - "$B" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import session_effort as se
 print(se.current_effort(hook="low"))
 PY
-)" "('low', 'hook')" "haiku: …except a hook input that carries an effort (the CLI sends one only for a model that has it)"
+)" "('low', 'hook')" "haiku 4.5: …except a hook input that carries an effort (the CLI sends one only for a model that has it)"
 reset; transcript $SID - claude-opus-5-5; export CLAUDE_EFFORT=high
-check "$(answer)" "high env" "haiku control: an Opus record with no effort field (an older CLI) does not discard the environment"
+check "$(answer)" "high env" "haiku 4.5 control: an Opus record with no effort field (an older CLI) does not discard the environment"
 reset; transcript $SID xhigh claude-opus-5-5; transcript $SID - claude-haiku-4-5-20251001; export CLAUDE_EFFORT=xhigh
-check "$(answer)" none "haiku: switched to Haiku in the session (the earlier Opus turns do not count)"
+check "$(answer)" none "haiku 4.5: switched to Haiku in the session (the earlier Opus turns do not count)"
 reset; transcript $SID - claude-haiku-4-5-20251001; transcript $SID low claude-sonnet-5-5; export CLAUDE_EFFORT=low
-check "$(answer)" "low env" "haiku: switched back to a model with the setting — the environment answers again"
+check "$(answer)" "low env" "haiku 4.5: switched back to a model with the setting — the environment answers again"
+# Haiku 5.5: the record carries the effort, the CLI sets $CLAUDE_EFFORT from it and sends it in the hook input
+reset; transcript $SID medium claude-haiku-5-5; export CLAUDE_EFFORT=medium
+check "$(answer)" "medium env" "haiku 5.5: its \$CLAUDE_EFFORT is the effort (the opposite of Haiku 4.5)"
+unset CLAUDE_EFFORT; check "$(answer)" "medium transcript" "haiku 5.5: …and so is the effort of its last record"
+reset; transcript $SID low claude-haiku-5-5; job $SID --effort high; desktop local_1111 $SID medium; ps_claude $CLAUDE --session-id $SID --model haiku --effort max
+check "$(answer)" "low transcript" "haiku 5.5 control: the same job, record and argv flag as in the Haiku 4.5 case above do not hide the record's effort"
 unset CLAUDE_EFFORT
 
 # ================================================================== the order: most current first

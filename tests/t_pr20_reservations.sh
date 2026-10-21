@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Review M1/M2 controls: synthetic launcher ownership and journal transitions, no models/app APIs.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 R1_BIN="$(cd "$(dirname "$0")/../bin" && pwd)"
 R1_TMP="$(mktemp -d)"
 trap 'rm -rf "$R1_TMP"' EXIT
@@ -68,8 +69,21 @@ if case in ('all','journal_prepare','journal_fail','alarm'):
         print('PASS Desktop failure journals request, reason and handoff')
     if case in ('all','alarm'):
         assert 'On ALARM tell the owner one line' in output and 'unconfirmed' in output and str(handoff) in output
-        assert 'confirm' in output and 'by hand' in output and 'then stop' in output
-        print('PASS Desktop ALARM names the owner decision and stops')
+        alarm=output.split('On ALARM tell the owner one line',1)[1]
+        assert 'keep the predecessor active' in alarm and 'retain the request' in alarm and 'awaiting the owner' in alarm
+        assert 'then stop' not in alarm
+        before=snapshot();predecessor=(stage/'roles.json').read_bytes()
+        for _ in range(2):
+            pending=ap.load_state('stage-a')['pending']
+            with contextlib.redirect_stdout(io.StringIO()) as repeated:
+                ap.desktop_report('stage-a',pending)
+            assert pend['request_id'] in repeated.getvalue()
+            try:ap.fallback('stage-a',1,'native request unconfirmed',2)
+            except hc.UsageError as error:assert 'desktop request cannot fall back' in str(error)
+            else:raise AssertionError('native ALARM allowed CLI fallback')
+            assert snapshot()==before and (stage/'roles.json').read_bytes()==predecessor
+            assert not (stage/'agents').exists()
+        print('PASS Desktop ALARM retains request/chain and active predecessor; repeated report cannot launch CLI fallback')
 if case in ('all','journal_limit'):
     save(None,ap.chain_limit());before=snapshot();rc,output=prepare()
     assert rc==3 and snapshot()==before

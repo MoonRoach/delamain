@@ -24,7 +24,10 @@ two directories above `skills/hub/SKILL.md`. The same files are readable on GitH
    | Automatic hub succession | Opt-in; selected CLI authenticated and trusted; engine-specific successor and access settings | [Autopilot](../reference.md#autopilot-the-hub-hands-over-by-itself), [Codex differences](../codex.md#coordination-and-platform-differences) |
    | Watchdog: wakes a sleeping hub, notifies the owner, writes `EXIT` for dead agents | Opt-in (`watchdog install`); launchd on macOS or cron elsewhere; headless and idle `claude --bg` hubs are woken, Desktop, terminal and Codex hubs only notified; never starts a successor | [Watchdog](../monitoring.md#watchdog-a-hub-that-sleeps-is-woken), [Settings](../reference.md#configuration) |
 
-   Windows is unsupported; WSL is untested. Brief turn limits are instructions, not enforced budgets.
+   The core requires macOS or Linux. Native Windows Codex is conditionally supported through the
+   [Windows workflow](../windows-workflow.md) and its WSL2 transport prerequisites, within the documented
+   validation boundary. The [WSL terminal](../windows-wsl.md) is a separate explicit Linux coordinator mode.
+   Native Windows Claude integration is not established. Brief turn limits are instructions, not enforced budgets.
    Done when every capability the user needs has its prerequisites satisfied or a named missing prerequisite.
 3. Return **install**, **skip**, or **defer setup** with a short reason. Install when existing tools leave a protocol need from step 1 unmet
    and its prerequisites are satisfied; defer when that need exists but a prerequisite is missing.
@@ -56,6 +59,7 @@ Load only the branch reference needed for the next action:
 | Inspect progress or diagnose a missing pane | [Monitoring](../monitoring.md); [Codex monitor](../codex.md#terminal-monitor-and-older-installations) |
 | End a shift | [Handoff skill](../../skills/handoff/SKILL.md) |
 | Change delegation level | [Delegation skill](../../skills/delegation/SKILL.md) |
+| Finish a task from native Windows Codex | [Windows workflow](../windows-workflow.md) |
 | Explain the workflow to a person | [Getting started](../getting-started.md) |
 
 ## Contribute to the repository

@@ -267,7 +267,7 @@ Merge 41, then 42. Take the main-merge lock first so nobody else merges meanwhil
 
 ### 11. Hand over when the context fills up
 
-![An old hub hands coordination to a fresh hub through shared records; the same five workers continue their tasks under the fresh hub.](assets/hub-handoff-pixel.png)
+![An outgoing Delamain dispatcher hands shared records to a fresh hub; the same five autonomous worker cabs keep running under the new coordinator.](assets/delamain-handoff.png)
 
 A long stage outlives one chat. When the hub's context is long, or at the end of the day, it loads the `handoff` skill:
 

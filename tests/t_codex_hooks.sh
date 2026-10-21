@@ -1,6 +1,7 @@
 #!/bin/bash
 # Invoke the real hooks with documented Codex inputs in an isolated hub home.
 set -eu
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 T="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$T/.." <<'PY'
 import importlib.util
@@ -234,6 +235,12 @@ class CodexHooks(unittest.TestCase):
         self.assertIn('exec_command', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertNotIn('run_in_background', denied['hookSpecificOutput']['permissionDecisionReason'])
         self.assertFalse(self.denied(self.hook('polling_guard.py', 'Bash', {'command': 'echo done'})))
+        self.assertTrue(self.denied(self.hook('kill_guard.py', 'Bash', {'command': 'pkill -f "[s]leep 300" -P 1'})))
+        self.assertFalse(self.denied(self.hook('kill_guard.py', 'Bash', {'command': 'kill 12345'})))
+        self.assertIn('kill_guard.py', [name for name, _ in self.manifest('Bash', {'command': 'true'})])
+        self.assertTrue(self.denied(self.hook('scan_guard.py', 'Bash', {'command': 'find ~ -name hive1.py'})))
+        self.assertFalse(self.denied(self.hook('scan_guard.py', 'Bash', {'command': 'find ~/repos -name hive1.py'})))
+        self.assertIn('scan_guard.py', [name for name, _ in self.manifest('Bash', {'command': 'true'})])
         run = subprocess.run([str(ROOT / 'bin' / 'lock'), 'take', 'main-merge', '--repo', '*', '--until', '2099-01-01T00:00',
                               '--why', 'test', '--owner', 'Other'], capture_output=True, text=True,
                              env={**self.env, 'CODEX_THREAD_ID': 'other'}, timeout=5)
@@ -242,6 +249,43 @@ class CodexHooks(unittest.TestCase):
         self.assertTrue(self.denied(denied))
         self.assertFalse(self.denied(self.hook('board_locks.py', 'Bash', {'command': 'gh pr view 42'})))
         self.assertFalse(self.denied(self.hook('board_locks.py', 'Bash', {'command': 'gh pr merge 42'}, session_id='other')))
+
+    def manifest(self, tool, ti):
+        """Run only handlers selected by the declared manifest (documented aliases)."""
+        out = []
+        aliases = {'Bash': ['Bash', 'exec_command', 'shell_command', 'shell'],
+                   'apply_patch': ['apply_patch', 'Edit', 'Write'],
+                   'spawn_agent': ['spawn_agent', 'Agent']}.get(tool, [tool])
+        for group in json.loads((ROOT / 'hooks/codex-hooks.json').read_text())['hooks']['PreToolUse']:
+            matcher = group['matcher']
+            if matcher != '*' and not any(re.search(matcher, name) for name in aliases):
+                continue
+            for handler in group['hooks']:
+                import shlex
+                argv = shlex.split(handler['command'])
+                assert Path(argv[0]).name == "run-python"
+                assert argv[1:3] == ["--min-version", "3.11"]
+                name = Path(argv[3]).name
+                out.append((name, self.hook(name, tool, ti, args=argv[4:])))
+        return out
+
+    def test_manifest_native_send_rules_and_level_zero_reactivation(self):
+        prefixes = ('', 'collaboration.', 'collaboration__', 'collaboration')
+        for prefix in prefixes:
+            for tool in ('spawn_agent', 'resume_agent', 'send_input', 'followup_task'):
+                self.config(AGENT_HUB_DELEGATION=True, AGENT_HUB_DELEGATION_DEFAULT=0)
+                outputs = self.manifest(prefix + tool, {'target': 'fixture', 'message': 'work'})
+                self.assertTrue(any(name == 'delegation.py' and self.denied(out) for name, out in outputs), prefix + tool)
+            self.assertFalse(any(self.denied(out) for _, out in self.manifest(prefix + 'send_message', {'message': 'hello'})))
+            self.config(AGENT_HUB_DELEGATION=True, AGENT_HUB_DELEGATION_DEFAULT=3,
+                        AGENT_HUB_DELEGATION_RULES=[{'when': {'tool': 'SendMessage'}, 'decision': 'deny', 'reason': 'send blocked'}])
+            for tool in ('send_input', 'send_message', 'followup_task'):
+                outputs = self.manifest(prefix + tool, {'message': 'work'})
+                self.assertTrue(any(name == 'delegation.py' and self.denied(out) for name, out in outputs), prefix + tool)
+            for tool in ('update_plan', 'followup_task_extra', 'collaborationXfollowup_task', 'collaborationspawn_agent_extra', 'mcp__server__send_message'):
+                outputs = self.manifest(tool, {})
+                self.assertFalse(any(name == 'delegation.py' for name, _ in outputs), tool)
+                self.assertFalse(any(self.denied(out) for _, out in outputs), tool)
 
     def test_codex_manifest_preserves_supported_paths(self):
         config = json.loads((ROOT / 'hooks' / 'codex-hooks.json').read_text())

@@ -2,7 +2,19 @@
 from __future__ import annotations
 
 import os
+import ntpath
 from pathlib import Path
+import subprocess
+
+
+def role_profile_path(filename, directory):
+    """Resolve native Windows declarations only for mapped Desktop hooks."""
+    if os.environ.get("AGENT_HUB_NATIVE_CODEX_PATHS") == "1":
+        if ntpath.isabs(filename) and not filename.startswith("/"):
+            return Path(subprocess.check_output(["wslpath", "-a", "-u", filename], text=True).rstrip("\n"))
+        filename = filename.replace("\\", "/")
+    profile = Path(filename).expanduser()
+    return profile if profile.is_absolute() else directory / profile
 
 
 def native_tool(name):
@@ -12,6 +24,12 @@ def native_tool(name):
     for prefix in ("collaboration.", "collaboration__"):
         if name.startswith(prefix):
             return name[len(prefix):]
+    # CLI 0.160.0 concatenates namespace and name in local hook payloads.
+    # Limit this spelling to known collaboration tools, never arbitrary prefixes.
+    if name in {"collaboration" + tool for tool in (
+            "spawn_agent", "resume_agent", "send_input", "send_message", "followup_task",
+            "wait_agent", "interrupt_agent", "list_agents")}:
+        return name[len("collaboration"):]
     return name
 
 
@@ -74,10 +92,7 @@ def agent_call(tool, args, cwd, level):
                 continue
             filename = role.get("config_file")
             if filename:
-                profile = Path(filename).expanduser()
-                if not profile.is_absolute():
-                    profile = path.parent / profile
-                mapped_profile = profile
+                mapped_profile = role_profile_path(filename, path.parent)
         if mapped_profile is not None:
             # Compatibility convention: retain explicit legacy mappings over discovery.
             # Native docs do not specify collisions between these two authoring formats.

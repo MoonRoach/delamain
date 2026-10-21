@@ -15,10 +15,13 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it
-  R4  a Claude hub whose last turn ended on an API error >= 15 min ago → wake it
+  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
-  R6  the `claude --bg` session of a hub that is retired in its stage and live nowhere (no live role of any stage, not a
+  R6  an engine's plan week crosses to "ahead of pace" or "runs out before the reset" (bin/limit_pace.py) → one
+      `[pace] @hub LIMIT …` line per stage with a hub, once per window and level; the owner is notified once per window
+      when it runs out before the reset. AGENT_HUB_LIMIT_PACE=off turns it off
+  R7  the `claude --bg` session of a hub that is retired in its stage and live nowhere (no live role of any stage, not a
       pending successor), quiet for the wake-after time → `claude stop` (never `claude rm`: the history stays resumable
       with `claude attach <id>` or `claude --bg --resume <id>`); AGENT_HUB_WATCHDOG_REAP off turns it off
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
@@ -29,7 +32,8 @@ Settings (hub home config.json or the environment; all hub-wide): AGENT_HUB_WATC
 AGENT_HUB_WATCHDOG_EVERY (5m), _WAKE_AFTER (15m), _BACKOFF_MAX (4h), _NIGHT_QUEUE (on), _API_ERROR (on),
 AGENT_HUB_NOTIFY_LOCAL (on), AGENT_HUB_NOTIFY_CMD (a JSON argv with {message}; empty = no remote channel),
 AGENT_HUB_SPAWN_HOLD_LOAD (empty = off), AGENT_HUB_SPAWN_HOLD (warn|refuse).
-What leaves the machine: the stage name, minutes, counts and the event word. Never line text, session ids, tags, paths.
+What leaves the machine: the stage name, minutes, counts and the event word (R6: the engine's name). Never line text,
+session ids, tags, paths.
 Test-only: AGENT_HUB_WATCHDOG_NOW=<ISO time> replaces the clock of one tick; AGENT_HUB_WATCHDOG_LOAD=<load>[:<cores>]
 replaces the measured load; AGENT_HUB_WATCHDOG_STOP_WAIT=<seconds> replaces the 30 s that a stopped hub may take to exit.
 Exit: 0 ok (also: another tick is running, the watchdog is off), 1 failure, 2 usage.
@@ -187,19 +191,25 @@ def load_state() -> dict:
     with a warning, so one bad value cannot make every later tick fail on it."""
     try:
         data = json.loads((wd_dir() / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {"stages": {}}
+    except (OSError, ValueError):
+        # A damaged existing file may have contained unknown delivery receipts.
+        return {"stages": {}, "uuid_receipts": None}
     if not isinstance(data, dict):
         print("watchdog: state.json is not a JSON object: state reset", file=sys.stderr)
-        return {"stages": {}}
+        return {"stages": {}, "uuid_receipts": None}
     stages = data.get("stages")
     if not isinstance(stages, dict):
         if stages is not None or "stages" in data:
             print("watchdog: state.json `stages` is not an object: stages reset", file=sys.stderr)
         stages = {}
+        if "stages" in data:
+            data["uuid_receipts"] = None
     for name in [k for k, v in stages.items() if not isinstance(v, dict)]:
         print(f"watchdog: state.json entry of stage {name} is not an object: reset", file=sys.stderr)
         stages[name] = {}
+        data["uuid_receipts"] = None
     data["stages"] = stages
     return data
 
@@ -253,6 +263,7 @@ class Tick:
         self.state = load_state()
         self.actions: list = []
         self.wake_after, self.backoff_max = wake_after(), backoff_max()
+        self.paces = None  # bin/limit_pace.read_all(), read once per tick when a stage with a hub needs it
         self.rows = None  # `claude agents --json`, read once per tick when a Claude hub needs it
         self.rows_read = False
 
@@ -394,8 +405,19 @@ def status_line(stage: str) -> str:
     """One line for the takeover digest: what the watchdog does for this hub, or '' when it is off."""
     if not enabled():
         return ""
-    return (f"watchdog is on (a tick every {minutes(every())} min): a hub that is silent while lines addressed to it "
-            f"wait {minutes(wake_after())} min is woken; keep one `jwait`, and `watchdog quiet --stage {stage} "
+    rec = hc.roles_load(stage)["roles"].get("hub") or {}
+    if hc.detached(stage, rec):
+        action = "a stopped detached hub resumes its own session"
+    elif rec.get("engine") == "codex":
+        action = ("a confirmed idle Codex app hub queues its own thread; unknown states notify only; active is left alone"
+                  if rec.get("host") == "codex-app" and rec.get("kind") != "desktop"
+                  else "this Codex host is notify-only; app provenance and confirmed idle are required to wake")
+    elif rec.get("host") == "bg":
+        action = "an idle/stopped Claude background hub resumes its own session; unknown state notifies only"
+    else:
+        action = "a confirmed Claude background hub can resume; Desktop/terminal/unknown hosts notify only"
+    return (f"watchdog is on (a tick every {minutes(every())} min): after {minutes(wake_after())} min of silence "
+            f"with waiting work or an eligible final API error, {action}; keep one `jwait`, and `watchdog quiet --stage {stage} "
             f"--reason \"…\"` pauses it")
 
 
@@ -495,7 +517,10 @@ def observe(tick: Tick, stage: str, rec: dict) -> dict:
             return o
         o.update(busy=st.get("busy"), last=st.get("last_activity"), transport=st.get("transport") or "notify",
                  why=str(st.get("why") or ""))
-        if st.get("dead_turn"):
+        if isinstance(st.get("dead_turn"), dict):
+            o["codex_error"] = st["dead_turn"]
+            o["dead"] = (st["dead_turn"]["at"], st["dead_turn"]["error"])
+        elif st.get("dead_turn"):
             o["dead"] = (st.get("last_activity") or tick.now, str(st["dead_turn"]))
         return o
     # a Claude session: terminal, background or gone
@@ -844,7 +869,8 @@ def wake_hub(tick: Tick, stage: str, rec: dict, o: dict, text: str) -> dict:
     mod = codex_module()
     if t in ("codex-queue", "codex-resume") and mod is not None:
         try:
-            res = mod.wake(stage, rec, text, tick.dry)
+            res = (mod.wake(stage, rec, text, tick.dry, expected_error=o["codex_error"], wd=sys.modules[__name__], tick=tick)
+                   if o.get("codex_error") else mod.wake(stage, rec, text, tick.dry, wd=sys.modules[__name__], tick=tick))
             return {"ok": bool(res.get("ok")), "how": str(res.get("how") or t), "detail": str(res.get("detail") or "")}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "how": t, "detail": f"watchdog_codex.wake failed: {type(e).__name__}"}
@@ -949,6 +975,29 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
             ep["result"] = f"failed: {res['detail'][:120]}"
 
 
+def rule_r6(tick: Tick, stage: str) -> None:
+    """Limit pace: one `@hub LIMIT …` line per crossing in the journal of a stage with a hub; the owner is notified once
+    per window that is projected to run out before its reset. A failure is a line of the tick, never the stage's."""
+    try:
+        import limit_pace
+        if limit_pace.mode() == "off":
+            return
+        if tick.paces is None:
+            tick.paces = limit_pace.read_all(now=tick.now.timestamp())
+        for engine in limit_pace.ENGINES:
+            p = tick.paces[engine].get("7d")
+            if p is None:
+                continue
+            text = limit_pace.note_crossing(stage, p, write=not tick.dry)
+            if text:
+                tick.say(stage, "R6", f"journal: {first_line(text)}")
+            if p.level == "exhaust" and limit_pace.note_crossing("*owner", p, write=not tick.dry, journal=False):
+                tick.notify(stage, "R6", f"delamain: {limit_pace.ENGINE_NAME[engine]} plan week projected to run out "
+                                         "before its reset; choose engine/model/effort per launch (agent spawn --dry-run)")
+    except Exception as e:  # noqa: BLE001
+        tick.say(stage, "R6", f"limit pace skipped: {type(e).__name__}: {first_line(str(e))}")
+
+
 def run_stage(tick: Tick, stage: str) -> None:
     st = tick.state["stages"].setdefault(stage, {})
     if (hc.root() / stage / "agents").is_dir():
@@ -957,6 +1006,7 @@ def run_stage(tick: Tick, stage: str) -> None:
     if not rec:
         return
     rule_r2(tick, stage, st)
+    rule_r6(tick, stage)
     marker, expired = read_marker(stage, tick.now)
     if marker and expired and not tick.dry:
         try:
@@ -984,10 +1034,12 @@ def stage_names(only=None) -> list:
         return []
     names = [p.name for p in dirs if hc.STAGE_RE.fullmatch(p.name) and ((p / "roles.json").is_file() or (p / "agents").is_dir())]
     if only:
+        if only in names and hc.stage_closed(only):
+            return []  # `hub close`: nothing of the stage is watched any more
         if only not in names:
             raise hc.Failure(f"no stage {only!r} with a registry or agents in {root}")
         return [only]
-    return names
+    return [n for n in names if not hc.stage_closed(n)]
 
 
 def rule_r5(tick: Tick) -> None:
@@ -1023,7 +1075,7 @@ def rule_r5(tick: Tick) -> None:
 
 
 class ReapAbort(Exception):
-    """R6 cannot tell what is live or pending: it stops nothing in this tick."""
+    """R7 cannot tell what is live or pending: it stops nothing in this tick."""
 
 
 def same_session(a: str, b: str) -> bool:
@@ -1135,7 +1187,7 @@ def last_activity(row: dict):
     return None
 
 
-def rule_r6(tick: Tick) -> None:
+def rule_r7(tick: Tick) -> None:
     """Stop (never remove) the background session of a retired hub that is live nowhere, once it has been quiet for the
     wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy. The
     registries are read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
@@ -1170,7 +1222,7 @@ def rule_r6(tick: Tick) -> None:
             mins = int(quiet.total_seconds() // 60)
             done.add(ident)
             if tick.dry:
-                tick.say(stage, "R6", f"would stop the background session of retired {who}, quiet {mins} min")
+                tick.say(stage, "R7", f"would stop the background session of retired {who}, quiet {mins} min")
                 continue
             cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
             if retired_hub_of(row) is None:  # re-read right before the stop: registered or pending since?
@@ -1178,20 +1230,20 @@ def rule_r6(tick: Tick) -> None:
             blocker = stop_blocker(cli, row, cwd)
             if blocker:
                 if blocker[1]:
-                    tick.say(stage, "R6", f"not stopping retired {who}: {blocker[0]}")
+                    tick.say(stage, "R7", f"not stopping retired {who}: {blocker[0]}")
                 continue
             # accepted residual window: milliseconds between this last check and the stop; it takes an old retired session
             # re-registered in exactly that window, and no lock protocol with the registry writers is worth that
             res = run([cli.path, "stop", row.get("id") or ident[:8]], 30, cwd)
             if res.returncode != 0:
-                tick.say(stage, "R6", f"stopping the background session of retired {who} failed: claude stop exit "
+                tick.say(stage, "R7", f"stopping the background session of retired {who} failed: claude stop exit "
                                       f"{res.returncode}: {first_line(res.stderr or res.stdout)}")
                 continue
             text = f"stopped the background session of retired {who}, quiet {mins} min"
-            tick.say(stage, "R6", text)
+            tick.say(stage, "R7", text)
             tick.journal(stage, text)
     except ReapAbort as e:
-        tick.say("machine", "R6", f"not stopping any retired hub's session this tick: {e}")
+        tick.say("machine", "R7", f"not stopping any retired hub's session this tick: {e}")
 
 
 def cmd_run(a) -> int:
@@ -1220,7 +1272,7 @@ def cmd_run(a) -> int:
                 tick.state["stages"][stage] = {}
                 print(f"watchdog: stage {stage}: state reset after {type(e).__name__}: {first_line(str(e))}", file=sys.stderr)
         try:
-            rule_r6(tick)
+            rule_r7(tick)
         except Exception as e:  # noqa: BLE001 — reaping must not stop the tick
             tick.say("machine", "error", f"{type(e).__name__}: {first_line(str(e))}")
         if not a.dry_run:
@@ -1290,6 +1342,8 @@ def shim_path() -> Path:
 def render_shim() -> str:
     env = {"AGENT_HUB_HOME": str(hc.root()), "PATH": os.environ.get("PATH", "")}
     for name in ("AGENT_HUB_TZ", "AGENT_HUB_NIGHT", "AGENT_HUB_STATE_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME") + KEYS:
+        if name == "CLAUDE_CONFIG_DIR" and hc.misleading_claude_config(os.environ.get(name)):
+            continue  # unset below: the CLI then reads ~/.claude.json, as in the owner's own terminal
         if os.environ.get(name):  # what the installing shell set; config.json is read by the job itself
             env[name] = os.environ[name]
     try:
@@ -1303,6 +1357,8 @@ def render_shim() -> str:
         env["CODEX_BIN"] = codex
     lines = ["#!/bin/sh", "# delamain watchdog: written by `watchdog install`; run it again after a plugin update",
              f"# bin: {hc.BIN}"] + [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
+    if "CLAUDE_CONFIG_DIR" not in env:  # nor inherited from launchd or cron (`launchctl setenv`)
+        lines.append("unset CLAUDE_CONFIG_DIR")
     lines.append(f"exec {shlex.quote(sys.executable)} {shlex.quote(str(hc.BIN / 'watchdog'))} run")
     return "\n".join(lines) + "\n"
 
@@ -1410,13 +1466,29 @@ def cmd_uninstall(a) -> int:
     return 0
 
 
-def shim_bin():
+def shim_lines() -> list:
     try:
-        for line in shim_path().read_text(encoding="utf-8").splitlines():
-            if line.startswith("# bin: "):
-                return line[7:].strip()
+        return shim_path().read_text(encoding="utf-8").splitlines()
     except OSError:
-        pass
+        return []
+
+
+def shim_bin():
+    for line in shim_lines():
+        if line.startswith("# bin: "):
+            return line[7:].strip()
+    return None
+
+
+def shim_claude_config():
+    """The CLAUDE_CONFIG_DIR an installed shim exports, None when it exports none."""
+    for line in shim_lines():
+        if line.startswith("export CLAUDE_CONFIG_DIR="):
+            try:
+                words = shlex.split(line[len("export CLAUDE_CONFIG_DIR="):])
+            except ValueError:  # a quoted value split by a newline in the path: not the default directory
+                return ""
+            return words[0] if words else ""
     return None
 
 
@@ -1436,6 +1508,11 @@ def cmd_status(a) -> int:
     recorded = shim_bin()
     if installed and recorded and Path(recorded).resolve() != hc.BIN.resolve():
         print(f"job runs the plugin at {recorded}, this tool is {hc.BIN}: install again")
+    config = shim_claude_config()
+    if installed and hc.misleading_claude_config(config):
+        print(f"job sets CLAUDE_CONFIG_DIR={config}: the claude CLI then reads {config}/.claude.json instead of "
+              "~/.claude.json (no trusted folders, no login) and every wake fails as \"Workspace not trusted\": "
+              "install again")
     tick = parse_ts(state.get("last_tick"))
     if tick:
         late = now - tick > 3 * every()
@@ -1481,6 +1558,17 @@ def main(argv: list) -> int:
     r.add_argument("--dry-run", action="store_true", help="print [plan] lines; write nothing")
     r.add_argument("--stage", default=None)
     r.add_argument("--json", action="store_true")
+    n = sub.add_parser("native-plan", help="read-only app-native candidates; never infers idle or sends")
+    n.add_argument("--stage", default=None)
+    n.add_argument("--json", action="store_true")
+    for name in ("native-claim", "native-ack"):
+        n = sub.add_parser(name, help="fenced local attempt protocol for the current app-native consumer")
+        n.add_argument("--stage", required=True)
+        n.add_argument("--session", required=True)
+        n.add_argument("--fingerprint", required=True)
+        if name == "native-ack":
+            n.add_argument("--attempt", required=True)
+            n.add_argument("--outcome", choices=("sent", "failed", "unknown", "completed-skip"), required=True)
     for name in ("install", "uninstall", "status"):
         s = sub.add_parser(name)
         s.add_argument("--scheduler", choices=("launchd", "cron"), default=None, help="default: launchd on macOS, cron elsewhere")
@@ -1492,6 +1580,9 @@ def main(argv: list) -> int:
     q.add_argument("--for", dest="for_", default=None, help="a duration: 8h")
     q.add_argument("--clear", action="store_true")
     a = p.parse_args(argv)
+    if a.cmd.startswith("native-"):
+        import watchdog_native
+        return watchdog_native.command(sys.modules[__name__], a)
     return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status,
             "notify-test": cmd_notify_test, "quiet": cmd_quiet}[a.cmd](a)
 

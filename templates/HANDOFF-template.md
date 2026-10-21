@@ -23,8 +23,11 @@ Report progress against it with technical evidence separately.
 |---|---|---|
 
 ## 2. Queue — by dependency, with a stop condition
-<!-- Item = action | "done" check | stop: when and what then | who (model). Blocked items carry the question id
-     (Q-A-00N); unblocked ones first. -->
+<!-- Finite snapshot of remaining authorized Business DoD, with source/scope and explicit owner boundaries.
+     Next ready work first; separate preparation dependencies from publication/merge/stage/production gates.
+     Item = action | "done" check | brief stop condition | who (model).
+     Wait = exact item | blocker | owner/resource | expected event (question id when applicable). -->
+Codex successor: apply the bundled hub skill's Terminal follow-through (`<plugin-root>/skills/hub/references/codex-hub.md#terminal-follow-through`); reconcile this snapshot against Business DoD before DONE.
 1.
 
 ## 3. Night queue (optional module — delete this section if the stage has none)

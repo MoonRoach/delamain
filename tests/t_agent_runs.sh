@@ -48,7 +48,7 @@ grep -q '3 turns (total 8)' $P/widget.html; check $? 0 "agent-top widget: 3 turn
 FAKE_TURNS=0 $B/agent spawn --role single --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1; wait_dead single
 $B/agent-top --once --stage stage-a --width 120 > $P/top2.out 2>&1
 grep -E '^[^ ]+ single ' $P/top2.out | grep -Eq ' 1 '; check $? 0 "negative: an agent of one run keeps a plain TURN cell"
-grep -E '^[^ ]+ single ' $P/top2.out | grep -q '/'; check $? 1 "…without a slash"
+grep -E '^[^ ]+ single ' $P/top2.out | grep -Eq ' [0-9]+/[0-9]+ '; check $? 1 "…without a run/total pair (the MODEL cell of a haiku agent carries its effort, `model/hi`, so a bare slash is no signal)"
 
 # ---- 5. --worktree in a repository with no commits
 # (a glyph in the first column of agent-top is matched with [^ ]+, not ".": the tests do not depend on the locale)

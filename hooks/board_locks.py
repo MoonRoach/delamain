@@ -31,6 +31,14 @@ repository). Unknown repo matches every lock (conservative).
 """
 from __future__ import annotations
 
+if __name__ == "__main__":  # fail-safe first, before anything that can fail: see hooks/failsafe.py
+    try:
+        import failsafe
+
+        failsafe.install()
+    except Exception:  # noqa: BLE001 — without it the hook is as it was
+        pass
+
 import json
 import os
 import re
@@ -39,8 +47,9 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
+from polling_guard import strip_heredocs
+
 ESCAPE_HATCH = re.compile(r"#\s*lock-ok\b")
-_HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?.*?^\s*\1\s*$", re.DOTALL | re.MULTILINE)
 _PRINTING = ("echo", "printf", "cat")
 _PREFIX_WORDS = ("command", "env", "sudo", "time", "nohup", "exec")
 _PUNCT = set(";&|()<>")
@@ -53,7 +62,7 @@ def plugin_bin() -> str:
 
 def segments(command: str) -> list[list[str]]:
     """Simple commands of a shell line as token lists; quoted text stays inside its token."""
-    command = _HEREDOC.sub(" ", command)
+    command = strip_heredocs(command, preserve_shell=False)
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
         lex.whitespace_split = True

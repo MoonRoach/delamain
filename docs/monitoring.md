@@ -28,6 +28,15 @@ Journal (last 5 lines):
 14:00 [hub] @hub-3-builder after the suite, push and open the PR
 ```
 
+`agent-top` shows what runs on this machine, whichever hub home the stage's files live in: the stages of `~/agent-hub`, of
+the home the working directory resolves to (a project's `.agent-hub/local/`) and of every other home in the registry of
+homes (`${XDG_CONFIG_HOME:-~/.config}/delamain/homes.json`, filled when a stage is registered; see
+[Where the hub's files live](reference.md#where-the-hubs-files-live)). While stages come from more than one home, one outside
+`~/agent-hub` reads `stage · repo-name` (two stages of one name in two homes are two entries; select one with `--stage name@repo-name`, `/agent-top --stage name@repo-name`);
+with one home the picture is
+what it always was. Only the display spans homes: `tell`, `agent` and `hub` act on the resolved home, and `c` / `m` / `x` in
+the console and the pane's `close` run them in the selected stage's own home.
+
 Interactively, `agent-top` adds a live feed per agent (thoughts ✎, commands ▸, results ◂), its brief and inbox, the
 journal with a filter, and `m` / `x` to message or stop an agent after a y/N prompt.
 
@@ -50,8 +59,8 @@ Desktop Code tab:
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.
 - **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
-  result. Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
-  writes one file, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
+  result (the Summary's `close` runs `bin/hub close` for the stage's own name, in its home, as `AGENT_HUB_HOME`). Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
+  writes one file per home it reads, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
   log offsets of the last run, so the next one reads only what the logs gained. `AGENT_TOP_CACHE=0` turns it off.
 - **When data is slow.** Each answer is drawn when it comes. A card whose call failed or took over 60 s says
   `feed unavailable: <reason> · retrying` in its feed area, and the next refresh asks again.
@@ -73,9 +82,10 @@ can be woken.
 | R1 | An agent whose process is gone without a result. | The existing line `EXIT <role>: killed (no result)`, written once. |
 | R2 | An open owner question past its due time that has a default. | One journal line `[watchdog] @hub OVERDUE Q-… (due …) default: …` per question and due date; a new due date re-arms it. |
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs. | Wakes the hub. |
-| R4 | A Claude hub whose last turn ended on an API error 15 min ago or more, and which is not busy. | Wakes the hub, whether or not anything waits. |
+| R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
-| R6 | The machine: the `claude --bg` session of a hub that is retired in its stage (`roles retire hub`, or replaced by a successor) and live nowhere, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`. | `claude stop <id>`; see the reaping of retired hubs below. |
+| R6 | Each engine's plan week ([limit pace](reference.md#limit-pace)), for a stage with a hub. | One journal line `[pace] @hub LIMIT …` per forecast crossing, stage, window and level; the owner is notified once per window projected to run out. Forecast context only: each launch compares fresh remaining weekly quota. |
+| R7 | The machine: the `claude --bg` session of a hub that is retired in its stage (`roles retire hub`, or replaced by a successor) and live nowhere, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`. | `claude stop <id>`; see the reaping of retired hubs below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -93,7 +103,27 @@ The watchdog's record lines (a wake, a failed wake, the mismatch above) carry no
 | `claude --bg` hub that is no longer listed | The same resume, when the hub was started in the background (`host: bg` in its `roles.json` record, else the pending record of `hub succeed` that started it) and the daemon still holds the session's saved options. |
 | `claude --bg` hub that is busy | Nothing: it is not silent. |
 | Desktop, terminal, a Claude session not started in the background, a Claude hub whose busy state cannot be read | A notification only. |
-| Codex hub | A notification only in this release (the queue path in `bin/watchdog_codex.py` stays off until a hub record says `host: codex-app`). |
+| Codex app hub with recorded `host: codex-app`, confirmed idle and rollout activity evidence | `codex queue --thread <registered UUID> --message "<text>"`: starts a turn in the same thread, after another idle check. |
+| Codex terminal, unconfirmed/legacy host, unavailable CLI runtime or `notLoaded`/`systemError` state | The standalone tick notifies only. `notLoaded` belongs to one server and does not exclude another writer. An active thread is left alone. |
+| Confirmed Codex app hub with a separately installed app-native heartbeat | The native consumer checks idle/actionable work in the actual app, claims the current UUID/fingerprint, sends through the supported native tool and records its receipt. CLI runtime absence is not native idle evidence. |
+
+`hub start` and `hub takeover` record `host: codex-app` only when the registered UUID is the current
+`CODEX_THREAD_ID`, both app markers (`CODEX_INTERNAL_ORIGINATOR_OVERRIDE=Codex Desktop` and
+`CODEX_APP_TOOLS_PIPE_PATH`) are present, and the session is not a detached `AGENT_ROLE` worker. A rollout's
+`source` never establishes the current host. Retaking the same thread from an unconfirmed host clears that provenance.
+Existing app hubs must run `hub takeover --session self` from the app once to record it. Reading runtime status uses
+the supported `codex app-server proxy` and read-only `thread/read`; it does not start a daemon or load a thread.
+Missing CLI/queue support, failed queue or timeout has no resume fallback. The queue boundary was checked on CLI 0.160.0.
+The CLI's shared daemon must reach the actual app runtime: Desktop attribution alone does not establish that
+transport. Desktop may use a separate app-server; if the shared-daemon proxy is unavailable or does not know the
+thread, this path stays notify-only. Fake transport controls do not prove live Desktop wake.
+
+Codex R4 accepts only persisted `task_complete.error.codex_error_info = server_overloaded`: an explicit final
+transient API failure, with a matching `task_started.turn_id` and `started_at`, from after this thread's creation.
+The bounded tail must be complete. A later user message, started/completed turn or interruption cancels the candidate.
+Before queueing, the watchdog rechecks idle and that the same failed turn remains last. It excludes quota, rate-limit,
+authentication, `other`/unknown errors, bare completion and user-aborted turns. CLI 0.160.0's runtime
+`ErrorNotification.willRetry` is not persisted; runtime error notifications alone are not terminal evidence.
 
 The wake text names the number of lines and the time they have waited since, tells the hub to run its digest `jwait` with
 `--since` that time, handle what it shows and keep one waiter, and names `watchdog quiet`. After a stop and resume it adds
@@ -102,9 +132,33 @@ that the background commands of the hub's last turn were stopped. It carries no 
 knows only that form; `[delamain watchdog]` is read the same), which the context-budget hook (both engines) recognises
 as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain the way a prompt typed by the owner does.
 
+### Codex app-native bridge
+
+When Desktop's runtime is separate from the CLI daemon, an existing app-native heartbeat can consume
+`watchdog native-plan --json`. This read-only command returns a pure list of `{stage, session, fingerprint, reason,
+waiting_since, count, message}` for explicit `codex-app` registrations with real aged unconsumed work or narrow R4.
+It honours quiet, pending takeover and live waiter gates, and never asserts idle or returns journal payload text.
+The heartbeat must use native `read_thread`, establish current idle and genuinely unfinished business work, then
+claim before calling native `send_message_to_thread` on exactly that UUID.
+
+`native-claim --stage S --session UUID --fingerprint F` rechecks eligibility and reserves a receipt. `native-ack`
+adds `--attempt TOKEN --outcome sent|failed|unknown|completed-skip` and rechecks identity/quiet/pending before writing
+an outcome. Native backoff is separate from standalone notification cooldown; actual standalone delivery attempts
+still suppress overlapping dispatch. Claims are serialized and protected across stages sharing a UUID. Unacknowledged
+or unknown delivery holds the UUID until verified new own-turn activity, even across new work or re-registration;
+expired backoff and file touches do not release it. `completed-skip` suppresses only stale completed
+work, without closing a whole stage; a new work fingerprint re-arms.
+
+The [heartbeat prompt](../templates/codex-watchdog-heartbeat.md) defines the native read/check/send/ack procedure,
+including timestamp ordering, stale completed work, races and unknown outcomes. The current app coordinator updates
+the **same existing automation** with supported `automation_update` after installation. This consumer may be
+model-assisted and spend model limits; the CLI planner/attempt protocol makes no model or native API call. Its native
+read/check/send interval is bounded, not an atomic transaction across the app API and local files. Live Desktop wake
+requires that consumer to be installed and validated; fixture protocol controls alone do not prove it.
+
 ### Safety
 
-- **Never a successor.** The watchdog runs `agent send`, `claude stop` and `claude --bg --resume` of the hub's own
+- **Never a successor.** The watchdog runs `agent send`, same-thread `codex queue`, `claude stop` and `claude --bg --resume` of the hub's own
   session id. It never runs `hub succeed`, `agent spawn` or a `claude --bg` without `--resume`. Right before a resume it
   reads `claude agents --json` again; if the hub is listed busy it does not wake it, and if the CLI starts a copy of the
   session anyway, it stops the copy, counts the wake as failed and notifies; it does not resume a second time in the
@@ -125,6 +179,10 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
   When that record is older than `AGENT_HUB_SUCCESSOR_TIMEOUT` plus the wake time, the owner is notified once
   (`handoff stuck`) and nothing is started.
 - **A replaced hub starts clean:** the state is keyed by the hub's session id.
+- **A finished stage retires its hub.** After the finite work and external waits are complete, run
+  `roles retire hub --stage S --note "stage complete"` from that stage. The watchdog reads only the active hub
+  record and skips a retired one, even if old journal lines remain unconsumed. A `DONE` or `MERGED` line alone does
+  not close a multi-item stage; use retirement or a deliberate `watchdog quiet` pause.
 - **One tick at a time:** a non-blocking lock on `<state dir>/watchdog/lock`; a second tick prints "another tick is
   running" and exits 0.
 - **Dry run.** `watchdog run --dry-run [--stage S] [--json]` evaluates every rule and prints `[plan] …` lines, with
@@ -134,7 +192,7 @@ as Delamain's own prompt: it does not reset the autopilot's auto-handoff chain t
 ### Retired hubs are stopped (R6)
 
 A hub that hands over to a successor or retires itself because its stage is finished leaves its `claude --bg` session
-running: it stays in `claude agents`, holds memory and may sit on a leftover background command. R6 stops such a session
+running: it stays in `claude agents`, holds memory and may sit on a leftover background command. R7 stops such a session
 once per tick, with `claude stop <id>`; it never runs `claude rm`, so the history is kept and `claude attach <id>` or
 `claude --bg --resume <id>` still reach it. A row of `claude agents --json` is stopped only when all of these hold:
 
@@ -163,10 +221,21 @@ load, the cores, the threshold and `--ignore-hold`, which passes. Resumes (`agen
 work that already exists. The job must be installed for the hold to be written; `watchdog run --dry-run` shows what a
 tick would do.
 
+### Limit-pace context (R6)
+
+R6 reports forecast changes; it does not schedule work. For each launch, follow
+[limit pace](reference.md#limit-pace): compare fresh remaining weekly percentages and advise an equivalent model
+class and effort for that launch. Forecasts from the first 6 hours of the week are low-confidence display only:
+they produce neither a journal alarm nor an owner notification, and consume no crossing state;
+five-hour windows are contextual only. Neither supplies a reason to delay work until reset. Engine locks remain in
+force: ask whether to allow the other engine for this launch, with running the locked engine as the default.
+The spawn refusal uses the verified weekly quota rules in the reference, not the forecast crossing.
+
 ### What leaves the machine
 
 A notification carries the stage name, minutes, counts and an event word, for example `delamain: payments — hub silent 47
-min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`. Never line text,
+min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`, and R6's
+`delamain: Codex plan week projected to run out before its reset` (the engine's name, no stage). Never line text,
 question text, session ids, tags or paths. Channels: the local one (macOS `osascript`, elsewhere `notify-send` when
 present; `AGENT_HUB_NOTIFY_LOCAL`, on by default) and a remote one you configure, `AGENT_HUB_NOTIFY_CMD`, a JSON argv
 in the hub home's `config.json` in which `{message}` is replaced and which runs without a shell:

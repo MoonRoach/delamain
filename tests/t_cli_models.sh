@@ -35,6 +35,15 @@ check "$(cat $W/which.log)" "path" "negative: an unreadable version keeps PATH"
 rm -f $W/which.log
 (unset CLAUDE_BIN; HOME=$FH PATH=$P/pathbin:$PATH FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-pin CLAUDE_BIN=$P/pathbin/claude $B/agent spawn --role pin --cwd $W --model haiku --brief $W/b.md) > $P/pin.out 2>&1; wait_dead pin
 check "$(cat $W/which.log)" "path" "negative: an explicit CLAUDE_BIN is never replaced by a newer CLI"
+# Desktop since 2.1.29x keeps a build-hash level: claude-code/<version>/<hash>/claude.app. Seen in the field: the lookup
+# missed it and fell back to an old Homebrew claude that rejected the model with a 400.
+mkdir -p "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS"
+printf '#!/bin/sh\n[ "$1" = "--version" ] || echo nested > "$PWD/which.log"\nexec python3 %s "$@"\n' $T/fake_claude.py > "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS/claude"
+chmod +x "$BD/2.1.320/9d6405864fdc/claude.app/Contents/MacOS/claude"
+spawn_with nest 2.1.310; check $? 0 "a bundle under a build-hash directory, newer than PATH"
+check "$(cat $W/which.log)" "nested" "the bundle under <version>/<hash>/claude.app is found and started"
+grep -q "CLI .*2.1.320/9d6405864fdc/claude.app.*2.1.320" $P/nest.out; check $? 0 "…with the version from the directory above the hash"
+rm -rf "$BD/2.1.320"
 export CLAUDE_BIN=$T/fake_claude.py
 
 # ---- the version is read from the "<version> (Claude Code)" line, not from the first number a shim prints
@@ -87,10 +96,15 @@ check "$(meta food 'm["resolved_model"]')" "claude-sonnet-5-5" "meta records the
 check "$(meta food 'm["model"]')" "sonnet" "…next to the alias that was asked for"
 python3 -c 'import json,sys; n=json.load(open(sys.argv[1]))["roles"]["food"]["note"]; assert n=="agent-spawn claude-sonnet-5-5", n' $R/stage-a/roles.json; check $? 0 "the roles note carries the resolved id too"
 grep -q 'started headless agent food (claude-sonnet-5-5/high, asked for sonnet)' $(journal stage-a); check $? 0 "the start line shows the resolved id"
-$B/agent status food > $P/st.out; grep -q '^food \[food\] claude-sonnet-5-5 (asked for sonnet): ' $P/st.out; check $? 0 "agent status shows the resolved id"
+$B/agent status food > $P/st.out; grep -q '^food \[food\] claude/claude-sonnet-5-5 (asked for sonnet): ' $P/st.out; check $? 0 "agent status shows the resolved id"
 $B/agent spawn --role full --cwd $W --model claude-opus-5-5 --brief $W/b.md > /dev/null 2>&1; wait_dead full
 grep -q 'started headless agent full (claude-opus-5-5/high)' $(journal stage-a); check $? 0 "negative: a full id needs no 'asked for'"
 $B/agent status full | grep -q 'asked for'; check $? 1 "…nor does status"
+# ---- status shows the engine of the agent, for both engines
+$B/agent status full | grep -q '^full \[full\] claude/claude-opus-5-5: '; check $? 0 "agent status shows the claude engine"
+CODEX_BIN=$T/fake_codex.py $B/agent spawn --engine codex --role cdx --cwd $W --brief $W/b.md > /dev/null 2>&1; wait_dead cdx
+$B/agent status cdx | grep -q '^cdx \[cdx\] codex/'; check $? 0 "agent status shows the codex engine"
+$B/agent status cdx | grep -q '^cdx \[cdx\] claude/'; check $? 1 "negative: …and not claude for a codex worker"
 AGENT_HUB_MODEL_MAP="sonnet=claude-sonnet-4-1" $B/agent spawn --role pinned --cwd $W --model sonnet --brief $W/b.md > /dev/null 2>&1; wait_dead pinned
 check "$(meta pinned 'm["model"]')" "claude-sonnet-4-1" "AGENT_HUB_MODEL_MAP still pins an alias (opt-in)"
 AGENT_TOP_AGENT_BIN=$B/agent $B/agent-top --once --stage stage-a --width 120 > $P/top.out 2>&1
@@ -124,6 +138,75 @@ FAKE_VERSION=2.1.274 AGENT_HUB_STATE_DIR=$P/st-startold $B/hub start --stage web
 AGENT_HUB_STATE_DIR=$P/st-startnew $B/hub start --stage web --session $H1 --dry-run > $P/start-new.out 2>&1
 grep -q 'older than' $P/start-new.out; check $? 1 "negative: hub start with CLI 2.1.287 does not warn"
 
+# ---- idle compaction (CLI 2.1.290+, on by default): a Claude hub's start/takeover warns unless the settings that decide
+# it (managed > project local > project > user) turn it off; the background successor gets it off on its command line
+# (t_autopilot.sh)
+CD=$P/claude-config; PJ=$P/proj; mkdir -p $CD $PJ/.claude
+unset AGENT_HUB_NO_IDLE_COMPACTION_CHECK  # lib.sh sets it for every other script
+# The machine's own managed settings win over everything a test writes: with one that sets the key, the block is skipped.
+MANAGED=$(python3 - $B <<'PY'
+import json, sys; sys.path.insert(0, sys.argv[1]); import hubcore as hc
+for f in hc.MANAGED_SETTINGS:
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if isinstance(d, dict) and "idleCompaction" in d:
+        print(f)
+PY
+)
+if [ -n "$MANAGED" ]; then echo "SKIP idle compaction: $MANAGED sets idleCompaction on this machine"; else
+idle_start(){ # idle_start NAME [ENGINE]: hub start from the project $PJ
+  (cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_ENGINE=${2:-claude} AGENT_HUB_STATE_DIR=$P/st-$1 \
+    $B/hub start --stage web --session $H1 --dry-run) > $P/$1.out 2>&1
+}
+idle_start idle-none; check $? 0 "idle compaction: hub start with no settings file setting it"
+grep -q "^ATTENTION: Claude Code 2.1.290+ compacts a conversation over 200K tokens left idle .*no settings file sets \"idleCompaction\": .*set \"idleCompaction\": false in $CD/settings.json" $P/idle-none.out; check $? 0 "…warns, naming the user settings file and the key"
+echo '{"model": "opus", "idleCompaction": false}' > $CD/settings.json; idle_start idle-off
+check "$?:$(grep -c 'idleCompaction' $P/idle-off.out)" 0:0 "negative: \"idleCompaction\": false in the user settings silences it"
+echo '{"idleCompaction": true}' > $PJ/.claude/settings.local.json; idle_start idle-local
+grep -q "$PJ/.claude/settings.local.json sets \"idleCompaction\": true" $P/idle-local.out; check $? 0 "…but the project's settings.local.json turning it on wins, and is named"
+echo '{"idleCompaction": false}' > $PJ/.claude/settings.json; rm $CD/settings.json $PJ/.claude/settings.local.json; idle_start idle-proj
+check "$?:$(grep -c 'idleCompaction' $P/idle-proj.out)" 0:0 "negative: the project's settings.json turning it off is enough"
+rm $PJ/.claude/settings.json; echo '{not json' > $CD/settings.json; idle_start idle-bad
+grep -q 'no settings file sets' $P/idle-bad.out; check $? 0 "an unreadable settings file counts as not setting it"
+idle_start idle-codex codex
+check "$?:$(grep -c 'idleCompaction' $P/idle-codex.out)" 0:0 "negative: a Codex hub is not warned about"
+rm $CD/settings.json
+python3 - $B $P <<'PY' > $P/idle-managed.out
+import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import hubcore as hc
+d = Path(sys.argv[2]) / "managed"; d.mkdir(); (d / "m.json").write_text('{"idleCompaction": true}')
+p = Path(sys.argv[2]) / "mp"; (p / ".claude").mkdir(parents=True); (p / ".claude" / "settings.json").write_text('{"idleCompaction": false}')
+hc.MANAGED_SETTINGS = (d / "m.json",)
+print(hc.idle_compaction_source(p) == (True, d / "m.json") and f"{d / 'm.json'} sets" in (hc.idle_compaction_warning(p) or ""))
+PY
+check "$(cat $P/idle-managed.out)" True "managed settings win over the project's"
+(cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 AGENT_HUB_STATE_DIR=$P/st-idle-skip $B/hub start --stage web --session $H1 --dry-run) > $P/idle-skip.out 2>&1
+check "$?:$(grep -c 'idleCompaction' $P/idle-skip.out)" 0:0 "negative: AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips the check"
+# a linked worktree reads the local settings of its main checkout
+GM=$P/gmain; git init -q $GM && git -C $GM -c user.email=t@t -c user.name=t commit -q --allow-empty -m init \
+  && git -C $GM worktree add -q $P/gwt -b wt && mkdir -p $GM/.claude && echo '{"idleCompaction": true}' > $GM/.claude/settings.local.json
+echo '{"idleCompaction": false}' > $CD/settings.json
+(cd $P/gwt && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_STATE_DIR=$P/st-idle-wt $B/hub start --stage web --session $H1 --dry-run) > $P/idle-wt.out 2>&1
+grep -q "$GM/.claude/settings.local.json sets \"idleCompaction\": true" $P/idle-wt.out; check $? 0 "from a linked worktree, the main checkout's settings.local.json is read (and wins over the user's)"
+rm $CD/settings.json
+fi
+
+# a hub in Claude Desktop: Desktop's own CLI may not read idleCompaction, which nothing here can check, so the start says the
+# handoff threshold must come first, whatever the settings files say (the skip variable and a terminal hub negative)
+export CLAUDE_SESSIONS_DIR=$P/dsess; mkdir -p $CLAUDE_SESSIONS_DIR/a/b
+DL=local_d637d7e1-4d6c-4366-b32f-bc735e7c56d6
+printf '{"sessionId":"%s","cliSessionId":"%s","title":"Hub web #1"}' $DL $H1 > $CLAUDE_SESSIONS_DIR/a/b/$DL.json
+echo '{"idleCompaction": false}' > $CD/settings.json
+desk_start(){ (cd $PJ && CLAUDE_CONFIG_DIR=$CD AGENT_HUB_STATE_DIR=$P/st-$1 env "${@:3}" $B/hub start --stage web --session $2 --dry-run) > $P/$1.out 2>&1; }
+desk_start desk-on $DL; check $? 0 "desktop hub: start works"
+grep -q "^ATTENTION: this hub runs in Claude Desktop, with Desktop's own Claude Code .*not verified.*the context budget warns at 300k tokens, above the 200K.*AGENT_HUB_CONTEXT_WARN" $P/desk-on.out; check $? 0 "…warns that the handoff threshold must come first, naming the threshold and the knob, although the user's settings turn idle compaction off"
+desk_start desk-low $DL AGENT_HUB_CONTEXT_WARN=150000
+grep -q "the context budget warns at 150k tokens, below the 200K" $P/desk-low.out && ! grep -q "set AGENT_HUB_CONTEXT_WARN" $P/desk-low.out; check $? 0 "…and says the threshold is already below it when it is"
+desk_start desk-term 22222222-2222-4222-8222-222222222222; check "$?:$(grep -c 'runs in Claude Desktop' $P/desk-term.out)" 0:0 "negative: a terminal hub gets no Desktop line"
+desk_start desk-skip $DL AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1; check "$?:$(grep -c 'runs in Claude Desktop' $P/desk-skip.out)" 0:0 "negative: AGENT_HUB_NO_IDLE_COMPACTION_CHECK=1 skips it"
+unset CLAUDE_SESSIONS_DIR; rm -f $CD/settings.json
+
 # ---- fable is an alias like the others
 $B/agent spawn --role fab --cwd $W --model fable --brief $W/b.md > $P/fab.out 2>&1; check $? 0 "spawn --model fable is accepted"
 wait_dead fab
@@ -135,6 +218,23 @@ $B/agent spawn --role fab2 --cwd $W --model fable --effort medium --brief $W/b.m
 grep -q 'fable runs only at effort high or xhigh' $P/fab2.out; check $? 0 "…naming the rule"
 $B/agent spawn --role fab3 --cwd $W --model fable --effort xhigh --brief $W/b.md > /dev/null 2>&1; check $? 0 "positive control: fable at xhigh is allowed"
 wait_dead fab3; rm $W/.agent-hub/config.json
+# ---- haiku takes an effort like the others; the alias is Haiku 5.5 from CLI 2.1.296, Haiku 4.5 before it
+# (the stand-in resolves the alias by FAKE_VERSION, as the real CLI does). Both generations get the flag.
+for pair in "hk295 2.1.295 claude-haiku-4-5-20251001" "hk296 2.1.296 claude-haiku-5-5"; do
+  set -- $pair
+  FAKE_VERSION=$2 AGENT_HUB_STATE_DIR=$P/st-$1 $B/agent spawn --role $1 --cwd $W --model haiku --effort medium --brief $W/b.md > $P/$1.out 2>&1; check $? 0 "spawn --model haiku --effort medium on CLI $2"
+  wait_dead $1
+  tail -1 $W/argv.log | grep -q -- '--model haiku --effort medium'; check $? 0 "…the CLI got --effort medium"
+  check "$(meta $1 'm["resolved_model"]')/$(meta $1 'm["effort"]')" "$3/medium" "…the alias resolved to $3, the effort is on record"
+  grep -qF "started headless agent $1 ($3/medium, asked for haiku)" $(journal stage-a); check $? 0 "…and the start line shows both"
+done
+# the effort rules see the effort of haiku (a repository may require "never below medium")
+echo '{"AGENT_HUB_EFFORT_RULES": {"haiku": "medium|high"}}' > $W/.agent-hub/config.json
+$B/agent spawn --role hkr1 --cwd $W --model haiku --effort low --brief $W/b.md > $P/hkr1.out 2>&1; check $? 2 "the effort rules see the effort of haiku: haiku at low is denied"
+grep -q 'haiku runs only at effort medium or high' $P/hkr1.out; check $? 0 "…naming the rule"
+$B/agent spawn --role hkr2 --cwd $W --model haiku --brief $W/b.md > /dev/null 2>&1; check $? 0 "positive control: haiku without --effort lands on the default (high), which the rule allows"
+tail -1 $W/argv.log | grep -q -- '--model haiku --effort high'; check $? 0 "…and the CLI got --effort high"
+wait_dead hkr2; rm $W/.agent-hub/config.json
 AGENT_HUB_REVIEW_MODEL=fable $B/hub reviewer > $P/rev.out 2> $P/rev.err; check $? 0 "hub reviewer takes fable as AGENT_HUB_REVIEW_MODEL"
 grep -q 'agent fable/high' $P/rev.out && ! grep -q 'using opus' $P/rev.err; check $? 0 "…and keeps it (no fallback to opus)"
 grep -q -- '--model fable' $P/rev.out; check $? 0 "…and the start line names it"

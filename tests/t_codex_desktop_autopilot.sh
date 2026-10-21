@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Desktop contracts at actual hub command seams; no native app calls or model requests.
 set -euo pipefail
+. "$(dirname "$0")/isolate.sh"   # no test touches the real HOME or registry of homes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT
@@ -62,6 +63,144 @@ def takeover(handoff, req, ok=True, **kwargs):
         assert r.returncode==0, (r.returncode,r.stdout,r.stderr)
     return r
 
+# Drive the original incident argv and its default-auto alternative through hub's parser and succeed.
+# Only the final detached launcher is replaced; discovery, selection, reservation and reporting stay real.
+launcher=tmp/'surface-seam.py'
+launcher.write_text('''import json, os, pathlib, runpy, sys
+root=pathlib.Path(sys.argv[1]); sys.path.insert(0,str(root/'bin'))
+import autopilot as ap
+trace=pathlib.Path(os.environ['AGENT_HUB_HOME'])/'surface-trace.json'
+trace.write_text(json.dumps({'argv':sys.argv[2:]}))
+def launch(self, why):
+    data=json.loads(trace.read_text()); data['launch_argv']=self.dry_spawn_argv()
+    trace.write_text(json.dumps(data))
+    return {'role':f'hub-{self.succ}', 'brief':str(self.handoff)}
+ap.CodexSuccessor.start_headless=launch
+main=runpy.run_path(str(root/'bin/hub'))['main']
+raise SystemExit(ap.hc.run_main(main,sys.argv[2:]))
+''')
+sentinel=tmp/'must-not-launch'
+sentinel.write_text('#!/bin/sh\nexit 99\n'); sentinel.chmod(0o755)
+opt_in='AGENT_HUB_DESKTOP_CLI_HANDOFF'
+def surface_case(name, flags, *, permitted=False, native=False, owner=None, project=False, env_opt=False, host='app'):
+    home,stage,handoff=setup('surface-'+name)
+    if owner is not None: (home/'config.json').write_text(json.dumps({opt_in:owner}))
+    config=repo/'.agent-hub/config.json'; config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({opt_in:True}) if project else '{}')
+    case_env=dict(env)
+    if env_opt: case_env[opt_in]='true'
+    if host=='terminal':
+        for key in engines.CODEX_APP_ENV: case_env.pop(key,None)
+    elif host=='detached': case_env['AGENT_ROLE']='hub-1'
+    argv=['succeed','--stage','stage-a','--handoff',str(handoff),'--force','--engine','codex',
+          '--permission-mode','bypassPermissions','--cwd',str(repo),*flags]
+    r=subprocess.run([sys.executable,str(launcher),str(root),*argv],env=case_env,cwd=repo,capture_output=True,text=True)
+    trace=json.loads((home/'surface-trace.json').read_text())
+    assert trace['argv']==argv, 'surface discovery lost the original caller argv'
+    if native:
+        assert r.returncode==0 and 'launch_argv' not in trace, (name,r.returncode,r.stdout,r.stderr)
+        assert state(stage)['pending']['surface']=='desktop' and state(stage)['chain']==1
+        req=state(stage)['pending']['request_id']; before=(stage/'auto-handoff.json').read_bytes()
+        r=subprocess.run([sys.executable,str(launcher),str(root),*argv,'--again'],env=case_env,cwd=repo,capture_output=True,text=True)
+        assert r.returncode==0 and state(stage)['pending']['request_id']==req
+        assert (stage/'auto-handoff.json').read_bytes()==before and 'launch_argv' not in json.loads((home/'surface-trace.json').read_text())
+    elif permitted:
+        assert r.returncode==0 and 'launch_argv' in trace, (name,r.returncode,r.stdout,r.stderr)
+        assert '--engine' in trace['launch_argv'] and 'codex' in trace['launch_argv']
+        assert state(stage)['pending']['kind']=='headless' and state(stage)['chain']==1
+    else:
+        assert r.returncode!=0 and 'launch_argv' not in trace, ('Desktop CLI override reached launcher',name,r.returncode,trace)
+        assert opt_in in r.stderr and 'owner' in r.stderr, r.stderr
+        assert not (stage/'auto-handoff.json').exists(), 'refusal changed reservation/chain'
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+    config.unlink()
+    return home,stage,handoff
+
+surface_case('default-auto',[],native=True)
+surface_case('explicit-auto',['--surface','auto'],native=True)
+surface_case('explicit-desktop',['--surface','desktop'],native=True)
+surface_case('owner-auto-remains-native',[],owner=True,native=True)
+for name,flags in (('cli',['--surface','cli']),('headless',['--headless']),
+                   ('auto-headless',['--surface','auto','--headless']),
+                   ('engine-change',['--engine','claude','--surface','cli'])):
+    surface_case(name,flags)
+surface_case('repo-cannot-authorize',['--surface','cli'],project=True)
+surface_case('env-cannot-authorize',['--surface','cli'],env_opt=True)
+surface_case('home-false-wins',['--surface','cli'],owner=False,env_opt=True,project=True)
+for name,flags in (('owner-cli',['--surface','cli']),('owner-headless',['--headless'])):
+    surface_case(name,flags,owner=True,permitted=True)
+for host in ('terminal','detached'):
+    for surface in ('auto','cli'):
+        surface_case(host+'-'+surface,['--surface',surface],host=host,permitted=True)
+    surface_case(host+'-headless',['--headless'],host=host,permitted=True)
+home,stage,handoff=surface_case('revoked-owner',['--surface','cli'],owner=True,permitted=True)
+(home/'config.json').write_text(json.dumps({opt_in:False}))
+before=(stage/'auto-handoff.json').read_bytes()
+for flag in ('--replace','--fallback'):
+    r=hub('succeed','--stage','stage-a','--force','--handoff',handoff,flag,ok=False)
+    assert opt_in in r.stderr and (stage/'auto-handoff.json').read_bytes()==before
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+print('PASS actual succeed seam captures original argv; Desktop CLI/headless require home owner opt-in; repository/env cannot grant it; terminal/detached remain CLI')
+
+# Authority is evaluated by the app agent, not fabricated from --force/config by the CLI.
+# Exercise the actual emitted preparation and create prompt with inherited, absent and revoked sources.
+for authority_case, authority in (
+    ('inherited', 'Explicit human instruction fixture-owner-chat, D-FIXTURE-001: one automatic same-stage context successor until revoked.'),
+    ('absent', 'No human native creation instruction is recorded.'),
+    ('revoked', 'D-FIXTURE-002 revokes D-FIXTURE-001; retain the predecessor and ask once.'),
+):
+    home,stage,handoff=setup('authority-'+authority_case)
+    rules=home/'hub-rules.md'; rules.write_text(authority+'\n')
+    handoff.write_text(handoff.read_text()+'\n## Authority\nSource: '+str(rules)+'; '+authority+'\n')
+    prep=prepare(handoff)
+    req=state(stage)['pending']['request_id']
+    emitted=json.loads(request(req).stdout)
+    prompt=emitted['create_thread']['prompt']
+    # Actual source pointers must survive both dispatch instructions and successor prompt.
+    assert str(rules) in prep.stdout, 'native preparation hides the standing human authority source'
+    assert str(rules) in prompt and str(handoff) in prompt, 'takeover loses authority source pointers'
+    for text in (prep.stdout,prompt):
+        assert 'standing' in text.lower() and 'scope' in text.lower() and 'revok' in text.lower(), text
+    assert 'without' in prep.stdout and 'per-transfer' in prep.stdout, 'inherited grant still needs a fresh transfer approval'
+    assert 'ask once' in prep.stdout and 'unrelated' in prep.stdout, 'missing/revoked/new scope has no owner-request boundary'
+    assert authority not in prompt, 'CLI copied source contents instead of passing pointers for app evaluation'
+    assert not emitted['already_dispatched'] and state(stage)['chain']==1
+    assert roles(stage)['session']==old and not (stage/'agents').exists()
+    assert json.loads(request(req).stdout)['already_dispatched'], 'authority wording allowed duplicate dispatch'
+print('PASS emitted native prep/prompt carry authority sources without inferring a grant; inherited/absent/revoked fixtures preserve one request and predecessor')
+
+# A worktree-local revocation overrides a different main-checkout rule.
+home,stage,handoff=setup('authority-worktree')
+main_rules=repo/'.agent-hub/hub-rules.md'; main_rules.parent.mkdir(exist_ok=True)
+main_rules.write_text('Main-checkout grant remains active.\n')
+worktree_rules=actual/'.agent-hub/hub-rules.md'; worktree_rules.parent.mkdir(exist_ok=True)
+worktree_rules.write_text('Worktree owner revokes the home grant.\n')
+(home/'hub-rules.md').write_text('Home owner grants automatic context handoff.\n')
+prep=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',cwd=actual)
+assert str(worktree_rules) in prep.stdout and str(main_rules) not in prep.stdout, 'native prep misses predecessor worktree revocation layer'
+req=state(stage)['pending']['request_id']; saved=state(stage)
+replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=repo)
+assert str(worktree_rules) in replay.stdout and str(main_rules) not in replay.stdout, 'replay resolves authority from caller instead of predecessor'
+assert state(stage)==saved and roles(stage)['session']==old
+payload=json.loads(request(req).stdout)
+assert str(worktree_rules) in payload['create_thread']['prompt'] and str(main_rules) not in payload['create_thread']['prompt']
+assert json.loads(request(req).stdout)['already_dispatched'] and state(stage)['chain']==1
+# Legacy reservations lack provenance: never present main/current cwd as the predecessor's rule source.
+home,stage,handoff=setup('authority-legacy')
+prepare(handoff); legacy=state(stage); req=legacy['pending']['request_id']
+legacy['pending'].pop('predecessor_cwd',None)
+(stage/'auto-handoff.json').write_text(json.dumps(legacy))
+saved=state(stage)
+replay=hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--again',cwd=actual)
+assert 'predecessor cwd' in replay.stdout and 'unknown' in replay.stdout and 'retain' in replay.stdout
+assert str(main_rules) not in replay.stdout and str(worktree_rules) not in replay.stdout
+assert state(stage)==saved and roles(stage)['session']==old
+payload=json.loads(request(req).stdout)
+assert 'predecessor cwd' in payload['create_thread']['prompt'] and 'unknown' in payload['create_thread']['prompt']
+assert json.loads(request(req).stdout)['already_dispatched'] and state(stage)['chain']==1
+worktree_rules.unlink(); worktree_rules.parent.rmdir(); main_rules.unlink()
+print('PASS worktree authority layer survives replay from main; legacy unknown provenance preserves request/predecessor and dispatch guard')
+
 home,stage,handoff=setup('desktop')
 filled=handoff.read_text(); handoff.write_text(filled.replace('Take over','TODO take over'))
 r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',ok=False)
@@ -99,6 +238,13 @@ assert args['target']=={'type':'project','projectId':'saved-project','environmen
 assert args['model']=='gpt-6.1-sol' and args['thinking']=='high'
 assert args['title']=='Hub stage-a #2 — Complete the fixture queue'
 assert '--desktop-request '+req in args['prompt'] and 'finite' in args['prompt'] and '--for 9m' not in args['prompt']
+prompt = args['prompt']
+for phrase in ('Terminal follow-through', 'remaining approved Business DoD', 'resource ownership',
+               'next independent authorized ready work', 'expected event',
+               "executor's artifact/call-budget STOP ends its brief", 'explicit owner stop', 'source/scope'):
+    assert phrase in prompt, (phrase, prompt)
+assert 'When nothing remains' not in prompt
+
 assert '[agent-hub auto-handoff 1/' in args['prompt'] and '[delamain auto-handoff' not in args['prompt']  # rename:keep  (the former name for one release: an older hub's hook reads only it)
 assert 'sandbox' not in args and 'approval' not in args
 assert json.loads(request(req).stdout)['already_dispatched']
@@ -132,9 +278,146 @@ assert p['observed']['model']=='observed-model' and p['observed']['effort']=='me
 assert p['requested']['model']=='gpt-6.1-sol' and p['requested']['sandbox_policy']['type']=='danger-full-access'
 assert p['observed']['sandbox_policy']['type']=='danger-full-access' and p['taken_over'] and state(stage)['chain']==1
 assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
-bind(req,'--thread-id',real); takeover(handoff,req,cwd=repo)
+bind(req,'--thread-id',real); takeover(handoff,req,cwd=pathlib.Path(p['cwd']))
 assert state(stage)['chain']==1
 print('PASS restricted home access leaves predecessor active; actual takeover reconciles identity/cwd and records observed settings separately')
+
+# Exact same-shift host refresh must retain the native request and registration boundary.
+saved=state(stage); registered=roles(stage)
+for _ in range(2):
+    hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=saved['pending']['cwd'])
+    refreshed=state(stage)
+    assert refreshed==saved, ('same-shift refresh corrupted native request', saved['pending']['id'],
+                             refreshed['pending'].get('id'), refreshed['pending'].get('kind'))
+    assert roles(stage)==registered, ('same-shift registration changed', registered, roles(stage))
+    assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+hub('start','--stage','stage-a','--session','self',cwd=saved['pending']['cwd'])
+assert state(stage)==saved and roles(stage)==registered
+print('PASS exact same UUID takeover/start refresh retains native request, chain, roles and takeover boundary')
+
+# Replay the frozen pre-fix on_takeover at the real hub seam, with the legacy state schema.
+# Keep this fixture self-contained: CI shallow checkouts need no historical commit or model call.
+LEGACY_TAKEOVER = r'''def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locked: bool = False) -> None:
+    """Called by `hub takeover` once it is done: the pending automatic successor (its takeover carries
+    --auto-handoff, which only `hub succeed` writes) keeps the chain; so does a takeover of the shift that successor
+    already took over (a replacement of it, by hand or by `hub succeed --replace`): the record stays and only its
+    session id is rewritten. Any other takeover resets the chain — a takeover by hand means the owner is involved,
+    even when it gets the number of a successor that has not taken over yet."""
+    with contextlib.nullcontext() if locked else state_lock(stage):
+        data = load_state(stage)
+        pend = data.get("pending") or {}
+        if pend.get("n") == n and (auto or pend.get("taken_over")):
+            changed = False
+            if not pend.get("taken_over"):
+                pend["taken_over"] = hc.now().isoformat(timespec="seconds")
+                changed = True
+            if not auto and session and (pend.get("id") != session[:8] or pend.get("kind") != "manual"):
+                # a session started by hand holds the shift now: the launch the record described (a background
+                # session, a headless role) is gone, and `--replace` must not act on it
+                pend["id"], pend["kind"], changed = session[:8], "manual", True
+                for key in ("role", "link", "worktree", "bg_id", "why"):
+                    pend.pop(key, None)
+            if changed:
+                save_state(stage, data)
+            return
+        if not data["chain"] and not pend:
+            return
+        was = data["chain"]
+        data["chain"], data["pending"] = 0, None
+        save_state(stage, data)
+    if was:
+        hc.journal_append(stage, f"hub-{n}", f"auto-handoff chain reset ({was} → 0): a takeover by hand")
+
+'''
+def legacy_hub(*args, cwd=repo, freeze='2026-01-01T12:00:00+00:00'):
+    code="import runpy,sys; sys.path.insert(0,sys.argv[1]); import hubcore as hc; import autopilot as ap; "
+    code+=f"hc.now=lambda: hc.dt.datetime.fromisoformat({freeze!r}); "
+    code+=f"exec({LEGACY_TAKEOVER!r},ap.__dict__); "
+    # Saving through the real seam emits the old schema; only the newly added proof fields are omitted.
+    code+="exec(\"original_save=ap.save_state\\ndef legacy_save(stage,data):\\n    p=data.get('pending') or {}\\n    p.pop('actual_thread_id',None); p.pop('registration',None)\\n    original_save(stage,data)\\nap.save_state=legacy_save\"); "
+    code+="ap.desktop_identity_proof=lambda stage,request,session,**kw: (ap.load_state(stage),ap.load_state(stage)['pending'],hc.roles_load(stage)['roles']['hub']); "
+    code+="sys.argv=sys.argv[2:]; g=runpy.run_path(sys.argv[0],run_name='legacy'); "
+    code+="g['main'].__globals__['native_self_refresh']=lambda a,stage,session,request: ap.on_takeover(stage,ap.load_state(stage)['pending']['n'],session=session,locked=True) or 0; "
+    code+="sys.exit(g['main'](sys.argv[1:]))"
+    r=subprocess.run([sys.executable,'-c',code,str(root/'bin'),str(root/'bin/hub'),*map(str,args)],
+                     cwd=cwd,env=env,capture_output=True,text=True)
+    assert r.returncode==0,(r.returncode,r.stdout,r.stderr)
+    return r
+home,stage,handoff=setup('legacy-recovery')
+legacy_hub('succeed','--stage','stage-a','--handoff',handoff,'--force','--desktop-worktree')
+req=state(stage)['pending']['request_id']
+legacy_hub('desktop-request','--stage','stage-a','--request',req,'--project-id','saved-project','--project-path',repo)
+legacy_hub('desktop-bind','--stage','stage-a','--request',req,'--thread-id',real)
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+legacy_hub('takeover','--stage','stage-a','--session','self','--auto-handoff','--handoff',handoff,
+           '--desktop-request',req,cwd=actual)
+original=state(stage); registered=roles(stage)
+assert 'registration' not in original['pending'] and 'actual_thread_id' not in original['pending']
+legacy_hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,freeze=registered['set_at'])
+corrupted=state(stage); refreshed=roles(stage)
+assert corrupted['pending']['id']==real[:8] and corrupted['pending']['kind']=='manual'
+assert refreshed==registered, ('legacy role boundary unexpectedly changed',registered,refreshed)
+r=hub('desktop-status','--stage','stage-a','--request',req,'--verified',ok=False)
+assert 'later hub' in r.stdout+r.stderr, (r.stdout,r.stderr)
+
+def recover(ok=True, token=None, cwd=actual):
+    before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+    r=hub('desktop-recover','--stage','stage-a','--request',token or req,cwd=cwd,ok=ok)
+    if not ok:
+        assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+    return r
+# Every negative checks byte-exact state and registration before/after the command.
+recover(ok=False,token='stale-token')
+recover(ok=False,cwd=repo)
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+recover(ok=False)
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+same_prefix='22222222-9999-4999-8999-999999999999'
+rollout(same_prefix,{'type':'danger-full-access'},model='observed-model',effort='medium')
+for updates in ({'session':same_prefix,'cli_session_id':same_prefix}, {'tag':'hub-9'},
+                {'set_at':'2001-01-01T00:00:00+00:00'}, {'host':'term'}, {'engine':'claude'}):
+    (stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(refreshed,**updates)}}))
+    env['CODEX_THREAD_ID']=updates.get('session',real)
+    recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':refreshed}}))
+env['CODEX_THREAD_ID']=real
+# Missing original journal proof cannot be replaced by same-prefix discovery.
+journal=next((stage/'coordinator/work').glob('journal-*.md')); saved_journal=journal.read_bytes()
+journal.write_text('\n'.join(line for line in saved_journal.decode().splitlines() if 'desktop request '+req+' prepared' not in line)+'\n')
+recover(ok=False)
+journal.write_text('')
+recover(ok=False)
+journal.write_bytes(saved_journal+b'\n- 00:00 [hub-2] start: "Other" (22222222-9999-4999-8999-999999999999, sid 22222222) replaced; locks: none; roles updated\n')
+recover(ok=False)
+journal.write_bytes(saved_journal)
+markers={key:env.pop(key) for key in engines.CODEX_APP_ENV if key in env}
+recover(ok=False)
+env.update(markers)
+recover()
+repaired=state(stage); restored=roles(stage)
+for key in ('request_id','n','at','taken_over','k','client_thread_id','requested','observed','project_id','cwd'):
+    assert repaired['pending'].get(key)==original['pending'].get(key),key
+assert repaired['chain']==original['chain'] and repaired['pending']['id']==real and repaired['pending']['kind']=='desktop'
+assert restored['session']==real and restored['tag']==registered['tag'] and restored['set_at']==registered['set_at']
+assert json.loads(hub('desktop-status','--stage','stage-a','--request',req,'--verified').stdout)['verified']
+recover(); assert state(stage)==repaired and roles(stage)==restored
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual)
+assert state(stage)==repaired and roles(stage)==restored
+print('PASS frozen legacy takeover corruption recovers once from exact full registration proof; stale/prefix/shift/policy/cwd/host conflicts reject without mutation')
+
+# Retained native binding is authoritative even if the current record is changed to a prefix collision.
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':dict(restored,session=same_prefix,cli_session_id=same_prefix)}}))
+env['CODEX_THREAD_ID']=same_prefix
+recover(ok=False)
+(stage/'roles.json').write_text(json.dumps({'roles':{'hub':restored}}))
+env['CODEX_THREAD_ID']=real
+rollout(real,{'type':'workspace-write','writable_roots':[str(actual)]},model='observed-model',effort='medium')
+before=((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())
+hub('takeover','--stage','stage-a','--session','self','--handoff',handoff,cwd=actual,ok=False)
+assert ((stage/'auto-handoff.json').read_bytes(),(stage/'roles.json').read_bytes())==before
+rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium')
+print('PASS original binding rejects UUID collision and refresh policy mismatch before state/role mutation')
 
 home,stage,handoff=setup('takeover-first'); prepare(handoff,'--desktop-worktree'); req=state(stage)['pending']['request_id']; request(req)
 env['CODEX_THREAD_ID']=real; takeover(handoff,req,cwd=actual)
@@ -164,6 +447,7 @@ print('PASS concurrent prepares and bind/takeover reserve/migrate once under the
 
 # Force the TOCTOU seam: CLI sees no pending request, then desktop reserves another number before CLI locks.
 home,stage,handoff=setup('cli-desktop-race')
+(home/'config.json').write_text(json.dumps({opt_in:True}))  # Test the later reservation fence after valid owner opt-in.
 cli_handoff=stage/'HANDOFF-hub-cli.md'
 cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
 original_env=dict(os.environ); os.environ.clear(); os.environ.update(env)
@@ -207,6 +491,7 @@ print('PASS CLI empty precheck then different-number Desktop insertion retains e
 # A completed desktop takeover or a later manual owner also wins after CLI's earlier caller/precheck.
 for owner_change in ('desktop-taken-over','manual-later-hub'):
     home,stage,handoff=setup(owner_change)
+    (home/'config.json').write_text(json.dumps({opt_in:True}))
     cli_handoff=stage/'HANDOFF-hub-cli.md'
     cli_handoff.write_text('# Handoff "Hub stage-a #1" → "Hub stage-a #7" — stage-a\n')
     original_env=dict(os.environ);os.environ.clear();os.environ.update(env)
@@ -253,11 +538,22 @@ rollout(real,{'type':'danger-full-access'},model='observed-model',effort='medium
 print('PASS explicit writable stage root permits actual workspace policy without claiming requested Full Access')
 
 home,stage,handoff=setup('retry'); prepare(handoff); req=state(stage)['pending']['request_id']; request(req)
+(home/'config.json').write_text(json.dumps({opt_in:True}))  # Opt-in cannot convert an already reserved native request.
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','unknown result')
 prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='uncertain'
+before=(stage/'auto-handoff.json').read_bytes()
+for flag in ('--fallback','--surface cli','--headless'):
+    r=hub('succeed','--stage','stage-a','--handoff',handoff,'--force',*shlex.split(flag),ok=False)
+    assert (stage/'auto-handoff.json').read_bytes()==before and roles(stage)['session']==old
+assert not (stage/'agents').exists()
 assert json.loads(request(req).stdout)['already_dispatched']
 hub('desktop-fail','--stage','stage-a','--request',req,'--why','create API rejected before creating','--no-thread-created')
 prepare(handoff,'--again'); assert state(stage)['pending']['phase']=='prepared'
+assert roles(stage)['session']==old and not (stage/'agents').exists()
+before=(stage/'auto-handoff.json').read_bytes()
+for flags in (['--fallback'],['--surface','cli']):
+    hub('succeed','--stage','stage-a','--handoff',handoff,'--force',*flags,ok=False)
+    assert (stage/'auto-handoff.json').read_bytes()==before and roles(stage)['session']==old
 assert state(stage)['pending']['request_id']==req and state(stage)['chain']==1
 assert not json.loads(request(req).stdout)['already_dispatched']
 print('PASS uncertain launch never duplicates; confirmed no-create failure retries same reservation and chain')

@@ -6,13 +6,17 @@
     "definition that pins effort (the plugin's delamain:worker-* or your own) and with an explicit model;",
     "xhigh and max are not pinned for them, except Sonnet, which runs only at high or xhigh, never lower;",
     "a fork (which ignores `model`) is denied; headless `agent spawn` only refuses Sonnet below high;",
-    "level 0 of the dial denies the Agent and Workflow tools (the built-in delegation rule)."
+    "level 0 of the dial denies the Agent and Workflow tools (the built-in delegation rule).",
+    "Haiku has an effort setting (Haiku 5.5), and a Haiku subagent without a pinned effort inherits the session's:",
+    "so Haiku runs at high (the default of `agent spawn`), medium is allowed, low is denied."
   ],
   "AGENT_HUB_DELEGATION": "on",
   "AGENT_HUB_DELEGATION_DEFAULT": 3,
   "AGENT_HUB_EFFORT_RULES": [
     {"when": {"subagent_type": "fork"}, "decision": "deny",
      "reason": "A fork ignores `model` and runs at the parent's model and effort: use subagent_type delamain:worker-medium / delamain:worker-high with an explicit model, or model \"haiku\" for mechanical work."},
+    {"when": {"model": "*haiku*", "effort": "low"}, "decision": "deny",
+     "reason": "Haiku runs at high, medium at the least (asked for {effort}): subagent_type delamain:worker-medium / delamain:worker-high with model \"haiku\", or `agent spawn --effort high`."},
     {"when": {"model": "*haiku*"}, "decision": "allow"},
     {"when": {"tool": "agent-spawn", "model": "*sonnet*", "effort": ["low", "medium"]}, "decision": "deny",
      "reason": "Sonnet runs only at high or xhigh (asked for {effort})."},

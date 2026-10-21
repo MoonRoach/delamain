@@ -58,6 +58,7 @@ Load only the branch reference needed for the next action:
 | Configure a setting, migrate home, inspect lifecycle or limits | [Reference](../reference.md) (matching heading); CLI `--help` for exact syntax |
 | Inspect progress or diagnose a missing pane | [Monitoring](../monitoring.md); [Codex monitor](../codex.md#terminal-monitor-and-older-installations) |
 | End a shift | [Handoff skill](../../skills/handoff/SKILL.md) |
+| Report a stage's progress to the owner or the team as an infographic page | [Progress report skill](../../skills/progress-report/SKILL.md) |
 | Change delegation level | [Delegation skill](../../skills/delegation/SKILL.md) |
 | Finish a task from native Windows Codex | [Windows workflow](../windows-workflow.md) |
 | Explain the workflow to a person | [Getting started](../getting-started.md) |

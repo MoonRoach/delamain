@@ -72,7 +72,8 @@ journal line is lost, while the worker's exit code is still propagated.
   `~/.local/bin/hub` linked to a script that execs the newest installed `bin/`), put the line `# delamain: dispatcher`
   among the first ten lines of the script (right after the shebang; symlinks are followed): the warning skips it.
   A shim written before the rename may keep its `# agent-hub: dispatcher` line: it is still recognised.
-- **Four skills.** `hub` (the workflow), `handoff`, `setup` (`delamain:setup`) and `delegation`; four pinned-effort
+- **Six skills.** `hub` (the workflow), `handoff`, `setup` (`delamain:setup`), `delegation`, `status` and
+  `progress-report` (a one-page infographic status of a stage for the owner and the team); four pinned-effort
   Claude worker subagents. `/agent-top` is not a skill: in Claude Code the mod answers it (see [Monitoring agents](monitoring.md#agent-top-inside-claude-code-a-live-pane)).
   Codex worker TOML resources are copied by setup; they are not automatically registered by the plugin manifest.
 - **Hooks**, each with its own reach (the [agent-discipline](reference.md#agent-discipline) hooks — context budget, polling guard,

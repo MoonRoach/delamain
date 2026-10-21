@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **New skill `progress-report`: a one-page infographic status of a stage, phase or project.** Asked for “a status
+  with an infographic”, a hub builds a page from the bundled template: the headline count (*17 of 30 done*), one
+  segmented bar over six statuses (done, review, active, planned, needs decision, dropped), a card per track with its
+  tasks, the road to the end with the owner's open decisions, and notes on gaps in the plan. The agent fills only a JSON
+  block; every count and percentage is computed from the task list, so the headline, bar and counters cannot disagree.
+  The skill says where statuses come from (prod tag, merges, MRs and CI, journal, handoffs, question register), that an
+  unverified task is never counted as done, and publishes the page as a private Artifact where the host can, else saves
+  it under the stage's `coordinator/`.
+
 - **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
   per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never
   appeared in the shared `agent-top`, which listed the resolved home only, though its agents run on the same machine. A

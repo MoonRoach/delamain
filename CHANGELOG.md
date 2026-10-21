@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Context-budget hook repairs.** Owner transfer directives are read incrementally, with a retryable
+  incomplete final JSONL record instead of a false transfer blocker. Cached stage membership avoids repeated
+  registry scans; changes to registrations still invalidate it. Stale state and lock files are pruned under
+  a directory guard while durable handoff obligations, negative owner authority and held locks are retained.
+  Fresh hubs awaiting their first usage record no longer receive a missing-usage checkpoint warning, and
+  `grilling_hold` has one definition. WARN/BLOCK controls cover both engines, and the successor-location
+  assertion again checks the complete expected instruction.
+
 - **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
   from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
   the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary

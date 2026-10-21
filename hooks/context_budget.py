@@ -12,8 +12,8 @@ fresh usage arrives. When a Codex rollout includes its model_context_window, def
 
 Which transcript: the main thread reads `transcript_path` and skips sidechain records; inside a subagent (the hook
 input carries `agent_id`) the subagent's own transcript (`agent_transcript_path`, else
-<dir(transcript_path)>/<session_id>/subagents/agent-<agent_id>.jsonl). Missing usage in a registered hub's owner
-prompt emits a truthful unknown-state/checkpoint instruction, never a fabricated under-budget or takeover result.
+<dir(transcript_path)>/<session_id>/subagents/agent-<agent_id>.jsonl). Lost established usage emits a truthful
+unknown-state/checkpoint instruction. A fresh hub waiting for its first usage record is not a missing-usage alarm.
 
 Events:
   UserPromptSubmit, PostToolUse  additionalContext once on crossing AGENT_HUB_CONTEXT_WARN and again every
@@ -24,9 +24,10 @@ Events:
                                  marker `handoff-ok`): handing the work over must stay possible
 
 Autopilot (AGENT_HUB_AUTO_HANDOFF=on, bin/autopilot.py), in the main thread of a session registered as a stage's hub
-(roles `hub`): the warning becomes the instruction to acknowledge the owner first and hand over now — `hub
-handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.level`) and permission mode filled in, `jwait`; from the first warning the durable handoff gate
-reason says "hand over now" and Bash, Write, Edit and NotebookEdit are gated too: Bash passes only when every command of
+(roles `hub`): WARN advises acknowledging the owner and preparing a handoff at the next quiet point — `hub
+handoff`, `hub succeed` with the hub's model, effort (the hook input's `effort.level`) and permission mode filled in,
+`jwait`. The due obligation survives usage decreases and repeats on owner prompts. Only at BLOCK are
+Bash, Write, Edit and NotebookEdit gated too: Bash passes only when every command of
 the line is a handoff command or a narrowly allowed settings/authority/path/HANDOFF read (no substitution, no subshell), a file tool only on a
 HANDOFF-*.md file; the other gated tools pass on the usual escape. A UserPromptSubmit in that session whose prompt lacks the marker
 "[agent-hub auto-handoff k/N]" (written under the name used before the rename; "[delamain auto-handoff k/N]" counts too)
@@ -60,12 +61,14 @@ if __name__ == "__main__":  # fail-safe first, before anything that can fail: se
         pass
 
 import json
+import fcntl
 import hashlib
 import os
 import re
 import shlex
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -73,6 +76,7 @@ from codex_compat import patch_paths, policy_tool
 
 CHUNK = 1 << 20
 MAX_SCAN = 64 << 20  # give up (silently) after reading this much from the tail
+PRUNE_AFTER_DAYS = 30
 DEFAULTS = {"warn": 300_000, "step": 50_000, "block": 500_000}
 DEFAULT_TOOLS = ["Agent", "Task", "SendMessage"]
 DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
@@ -140,9 +144,31 @@ def explicit_transfer_blocker(data, path, state, owner_spoke):
 
     if path is not None:
         try:
+            info = path.stat()
+            identity = [str(path.resolve()), info.st_dev, info.st_ino]
+            previous = state.get("directive_cursor") or {}
+            start = previous.get("offset", 0) if previous.get("identity") == identity else 0
+            if (not isinstance(start, int) or start > info.st_size
+                    or (info.st_size == start and previous.get("mtime") != info.st_mtime_ns)):
+                start = 0
+            complete = bool(start and state.get("transfer_scan_complete"))
+            history_unknown = bool(start and previous.get("unknown"))
+            boundary = start
             found = False
-            for line, offset in transcript_lines(path, offsets=True):
-                record = json.loads(line)
+            for line, offset in transcript_lines(path, offsets=True, start=start):
+                # An appending writer may leave its final JSON record incomplete. Retry it next time;
+                # it is not evidence that a human has revoked authority.
+                terminated = offset + len(line) < info.st_size
+                if terminated:
+                    boundary = max(boundary, offset + len(line) + 1)
+                if b'"user_message"' not in line and b'"user"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    if terminated:
+                        unknown = True
+                    continue
                 payload = record.get("payload") or {}
                 text = None
                 if record.get("type") == "event_msg" and payload.get("type") == "user_message":
@@ -153,14 +179,20 @@ def explicit_transfer_blocker(data, path, state, owner_spoke):
                 if observe(text, source):
                     found = True
                     break  # latest decisive human source, not the latest neutral query
-            if path.stat().st_size <= MAX_SCAN:
-                state["transfer_scan_complete"] = True
-            elif not found and not state.get("transfer_scan_complete"):
+            state["transfer_scan_complete"] = complete or info.st_size - start <= MAX_SCAN or found
+            if not state["transfer_scan_complete"]:
                 unknown = True
+            if not found:
+                unknown = unknown or history_unknown
+            state["directive_cursor"] = dict(identity=identity, offset=boundary, mtime=info.st_mtime_ns,
+                                             unknown=unknown)
         except (OSError, ValueError, TypeError, AttributeError):
             unknown = True
     if data.get("hook_event_name") == "UserPromptSubmit":
-        observe(data.get("prompt"))  # the current owner input may not yet have reached the rollout
+        if observe(data.get("prompt")):  # the current owner input may not yet have reached the rollout
+            unknown = False
+            if "directive_cursor" in state:
+                state["directive_cursor"]["unknown"] = False
     state["transfer_directives_seen"] = seen[-16:]
     return bool(state.get("transfer_stop") or unknown
                 or ASSISTANT_BLOCKER.search(str(data.get("last_assistant_message") or "")))
@@ -482,22 +514,22 @@ def classify(line: bytes, skip_sidechain: bool):
     return ("usage", n) if n > 0 else None
 
 
-def transcript_lines(path: Path, offsets=False):
+def transcript_lines(path: Path, offsets=False, start=0):
     """Bounded reverse iterator; a long rollout never gets loaded into memory whole."""
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
         pos = f.tell()
         tail = b""
         scanned = 0
-        while pos > 0 and scanned < MAX_SCAN:
-            step = min(CHUNK, pos)
+        while pos > start and scanned < MAX_SCAN:
+            step = min(CHUNK, pos - start, MAX_SCAN - scanned)
             pos -= step
             f.seek(pos)
             buf = f.read(step) + tail
             scanned += step
             lines = buf.split(b"\n")
-            tail = lines[0] if pos > 0 else b""
-            body = lines[1:] if pos > 0 else lines
+            tail = lines[0] if pos > start else b""
+            body = lines[1:] if pos > start else lines
             offset = pos + len(buf) + 1
             for line in reversed(body):
                 offset -= len(line) + 1
@@ -593,15 +625,75 @@ def save_state(state_dir: Path, key: str, state: dict) -> bool:
         return False
 
 
-def grilling_hold(gr, grill: dict, ceiling_k: str, auto: bool) -> str:
-    """What a hub grilling the owner is told instead of the handoff steps."""
-    stage = grill["stage"]
-    return (f"A grilling with the owner is in progress in this hub (since {str(grill.get('since'))[11:16] or '?'}, "
-            f"{grill.get('source')}): do not hand over until it ends — the owner finishes the conversation with this "
-            f"session{', and `hub succeed` / `hub handoff` refuse meanwhile' if auto else ''}. When the topic's frontier is empty or the "
-            f"owner stops the grilling, run `{gr.shell_tool('hub')} grilling end --stage {stage}`; the next budget note "
-            f"then gives the handoff steps. If it has already ended, run that now. At {ceiling_k}, the context ceiling, "
-            "you write the handoff, carrying the grilling, and ask the owner whether to hand over.")
+def registered_stage(ap, hc, sid, state):
+    """Cache membership, including misses; validate filesystem signatures before reusing it.
+
+    Positive membership needs only its own roles.json. Negative membership checks cached stat signatures,
+    not a glob and JSON parse of every stage on every tool. Atomic registration changes either the root
+    or one of those signatures; in-place role edits also invalidate the cache.
+    """
+    root = hc.root()
+    def signature(path):
+        try:
+            stat = path.stat()
+            return [stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
+        except OSError:
+            return None
+    cache = state.get("hub_registry") or {}
+    stage = cache.get("stage") or state.get("stage")
+    if stage and hc.STAGE_RE.fullmatch(stage):
+        try:
+            roles = json.loads((root / stage / "roles.json").read_text(encoding="utf-8"))
+            hub = (roles.get("roles") or {}).get("hub") or {}
+            if sid in (hub.get("session"), hub.get("cli_session_id")):
+                return stage
+        except (OSError, ValueError, AttributeError):
+            pass
+    stamp = signature(root)
+    entries = cache.get("entries")
+    if (cache.get("root") == str(root) and cache.get("stamp") == stamp and entries is not None
+            and all(signature(root / name / "roles.json") == saved for name, saved in entries)):
+        return None
+    paths = sorted(p / "roles.json" for p in root.iterdir()
+                   if p.is_dir() and hc.STAGE_RE.fullmatch(p.name))
+    stage = None
+    for path in paths:
+        try:
+            hub = (json.loads(path.read_text(encoding="utf-8")).get("roles") or {}).get("hub") or {}
+            if sid in (hub.get("session"), hub.get("cli_session_id")) and hc.STAGE_RE.fullmatch(path.parent.name):
+                stage = path.parent.name
+                break
+        except (OSError, ValueError, AttributeError):
+            continue
+    state["hub_registry"] = dict(root=str(root), stamp=stamp, stage=stage,
+                                 entries=[[p.parent.name, signature(p)] for p in paths])
+    return stage
+
+
+def prune_state(hc, state_dir):
+    """Called under the directory guard: no hook can open a lock inode while it is being retired."""
+    cutoff = time.time() - PRUNE_AFTER_DAYS * 86400
+    keys = {p.stem for pattern in ("*.json", "*.lock") for p in state_dir.glob(pattern)
+            if not p.name.startswith(".")}
+    for key in keys:
+        lock_path, record = state_dir / f"{key}.lock", state_dir / f"{key}.json"
+        try:
+            if any(p.exists() and p.stat().st_mtime >= cutoff for p in (lock_path, record)):
+                continue
+            with open(lock_path, "a") as mutex:
+                try:
+                    fcntl.flock(mutex, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                if record.exists():
+                    state = json.loads(record.read_text(encoding="utf-8"))
+                    # Negative owner authority and unfinished transfer obligations never expire with age.
+                    if not isinstance(state, dict) or state.get("handoff_due") or state.get("transfer_stop"):
+                        continue
+                    record.unlink()
+                lock_path.unlink()
+        except (OSError, ValueError):
+            continue
 
 
 def grilling_hold(gr, grill: dict, ceiling_k: str, auto: bool) -> str:
@@ -635,8 +727,20 @@ def main() -> None:
     state_dir = (Path(raw_state).expanduser() if raw_state else hc.root() / ".state") / "context-budget"
     # Serialize read/modify/reserve with atomic replacement. Never hold the stage mutex across a hook.
     try:
-        with hc.Flock(state_dir / f"{key}.lock"):
+        # Opening AND acquiring the per-session inode happens under the same guard as pruning. A
+        # nonblocking pruning lock alone would miss another process that opened it but is still waiting.
+        with hc.Flock(state_dir / ".prune.lock"):
+            marker = state_dir / ".pruned"
+            if not marker.exists() or time.time() - marker.stat().st_mtime > 86400:
+                prune_state(hc, state_dir)
+                marker.touch()
+            mutex = hc.Flock(state_dir / f"{key}.lock")
+            mutex.__enter__()
+            os.utime(mutex.path, None)
+        try:
             handle(data, hc, state_dir, key)
+        finally:
+            mutex.__exit__(None, None, None)
     except OSError as error:
         diagnostic(hc, data, None, "failure", reason="state_io", error_type=type(error).__name__)
         if event != "Stop":
@@ -653,10 +757,16 @@ def handle(data, hc, state_dir, key, writable=True):
             observe_grilling(gr, ap, event, data, str(data.get("session_id") or ""))
         except Exception:  # noqa: BLE001 — marking is best effort
             pass
-    if auto and event == "UserPromptSubmit" and ap.owner_spoke(data.get("prompt")):
-        stage = ap.hub_stage_of(str(data.get("session_id") or ""))
-        if stage:
-            ap.reset_chain(stage, "the owner spoke in the hub's session")
+    state = load_state(state_dir, key)
+    sid = str(data.get("session_id") or "")
+    hub_stage = None
+    if auto and event == "UserPromptSubmit":
+        hub_stage = registered_stage(ap, hc, sid, state)
+        if writable:
+            writable = save_state(state_dir, key, state)
+        if hub_stage and ap.owner_spoke(data.get("prompt")):
+            # Owner input resets the automatic chain even when budget warnings are disabled.
+            ap.reset_chain(hub_stage, "the owner spoke in the hub's session")
     if (hc.setting("AGENT_HUB_CONTEXT_BUDGET") or "on").strip().lower() in ("off", "0", "false", "no"):
         if event == "Stop":
             print("{}")
@@ -666,25 +776,32 @@ def handle(data, hc, state_dir, key, writable=True):
         tools = [t.strip() for t in tools.split(",") if t.strip()]
     raw_tool = data.get("tool_name")
     tool = policy_tool(raw_tool)
-    sid = str(data.get("session_id") or "")
-    hub_stage = ap.hub_stage_of(sid) if auto else None
+    if event == "PreToolUse" and tool not in (tools or []) and raw_tool not in (tools or []):
+        if not (auto and tool in AUTOPILOT_TOOLS):
+            return
+    if auto and event != "UserPromptSubmit":
+        hub_stage = registered_stage(ap, hc, sid, state)
+        if writable:
+            writable = save_state(state_dir, key, state)
     hook_codex = bool(hub_stage and codex_hook_identity(data, ap, hc))
     if event == "Stop" and not hook_codex:
         print("{}")
         return
     if event == "PreToolUse" and tool not in (tools or []) and raw_tool not in (tools or []):
-        # gated only for a stage hub with autopilot on: the cheap registry lookup before any transcript read
-        if not (auto and tool in AUTOPILOT_TOOLS):
-            return
         if not hub_stage:
             return
+    path, skip_side, _ = resolve_transcript(data)
+    observation_error = False
     try:
-        path, skip_side, _ = resolve_transcript(data)
         tokens = context_tokens(path, skip_side) if path is not None and path.is_file() else None
     except OSError:
         # A stat/open/read race or unreadable rollout is an unknown usage observation.
         tokens = None
-    state = load_state(state_dir, key)
+        observation_error = True
+    if tokens is not None:
+        state["usage_seen"] = True
+        if writable:
+            writable = save_state(state_dir, key, state)
     transfer_blocked = False
     if hub_stage and event in ("UserPromptSubmit", "Stop"):
         transfer_blocked = explicit_transfer_blocker(data, path, state, ap.owner_spoke)
@@ -692,7 +809,7 @@ def handle(data, hc, state_dir, key, writable=True):
             writable = save_state(state_dir, key, state)
     due = bool(hub_stage and state.get("handoff_due") and state.get("stage") == hub_stage)
     if tokens is None and not due:
-        if hub_stage and event == "UserPromptSubmit":
+        if hub_stage and event == "UserPromptSubmit" and (state.get("usage_seen") or observation_error):
             emit(event, additionalContext=(
                 f"Context budget for stage {hub_stage}: current usage is unavailable. Acknowledge the latest human "
                 "message first. Save that pending input and a checkpoint; explain the missing usage observation. "
@@ -737,7 +854,8 @@ def handle(data, hc, state_dir, key, writable=True):
     policy = [configured_budget(hc, name, hub_stage) for name in BUDGET_KEYS]
     if due and state.get("budget_policy") != policy:
         # Effective model-window/usage changes do not clear due. An explicit policy edit/removal does.
-        state = {"bucket": -1, **{name: state[name] for name in DIRECTIVE_KEYS if name in state}}
+        state = {"bucket": -1, **{name: state[name] for name in
+                 (*DIRECTIVE_KEYS, "directive_cursor", "hub_registry", "usage_seen") if name in state}}
         due = False
         if writable:
             writable = save_state(state_dir, key, state)
@@ -814,8 +932,13 @@ def handle(data, hc, state_dir, key, writable=True):
 
     def plan() -> str:
         # Settings enrichment must never erase the owner's response opportunity.
-        prefix = (f"Autopilot is on. Hand over now for stage {hub_stage}. Acknowledge the latest human message "
-                  "first, then finish only an already-active atomic operation. Start no new implementation. "
+        hard = at_ceiling or (tokens is not None and tokens >= block)
+        timing = ("Hand over now" if hard else "Prepare to hand over at the next quiet point")
+        work = ("then finish only an already-active atomic operation. Start no new implementation. " if hard else
+                "finish the current operation and prepare the checkpoint at the next quiet point. "
+                "This warning is advisory; ordinary tools remain available below the block threshold. ")
+        prefix = (f"Autopilot is on. {timing} for stage {hub_stage}. Acknowledge the latest human message "
+                  "first, " + work +
                   "Preserve the latest owner input verbatim or by a durable reference in the checkpoint and handoff. "
                   "An implementation pause carries to the successor. A newer authorized same-stage read-only owner "
                   "discussion can transfer under an existing transfer grant without resuming implementation; an "
@@ -834,7 +957,7 @@ def handle(data, hc, state_dir, key, writable=True):
             desktop = engine == "codex" and ap.engines.codex_desktop()
             if engine != "codex":
                 # Keep the shared Claude Remote Control/fallback paragraph authoritative.
-                shared = ap.instruction(hub_stage, model, mode, cwd, due or tokens >= block,
+                shared = ap.instruction(hub_stage, model, mode, cwd, hard,
                                         fmt(block), effort)
                 return (prefix + f"The canonical operation is `hub succeed --stage {hub_stage}`; use the installed "
                         "command below. " + shared.replace("your own effort could not be read here",
@@ -939,7 +1062,7 @@ def handle(data, hc, state_dir, key, writable=True):
         return
 
     if event == "PreToolUse":
-        if not due and (tokens is None or tokens < block) and not at_ceiling:
+        if (tokens is None or tokens < block) and not at_ceiling:
             return
         if hub_stage:
             tin = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}

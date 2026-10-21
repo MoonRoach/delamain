@@ -329,7 +329,7 @@ class CodexHooks(unittest.TestCase):
 
     def test_first_warn_latches_across_reset_missing_decreased_usage_and_work(self):
         stage, transcript = self.budget_hub(350000)
-        self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'git status'},
+        self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'git status'},
                                             transcript_path=str(transcript))))
         self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'hub handoff --stage stage-a'},
                                              transcript_path=str(transcript))))
@@ -338,9 +338,9 @@ class CodexHooks(unittest.TestCase):
             transcript.write_text(record + '\n')
             reply = self.hook('context_budget.py', event='UserPromptSubmit', prompt='new human detail',
                               transcript_path=str(transcript))
-            self.assertIn('Hand over now', reply['hookSpecificOutput']['additionalContext'])
+            self.assertIn('next quiet point', reply['hookSpecificOutput']['additionalContext'])
             self.assertNotIn('decision', reply)
-            self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'git status'},
+            self.assertFalse(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'git status'},
                                                 transcript_path=str(transcript))))
         state = json.loads((stage.parent / '.state/context-budget/codex-own.json').read_text())
         self.assertEqual(state['due_since_tokens'], 350000)
@@ -529,12 +529,142 @@ class CodexHooks(unittest.TestCase):
             handle.write('{torn private directive\n')
         self.assertEqual(self.stop(transcript), {})
 
+    def test_warn_advises_both_engines_and_only_block_denies_work(self):
+        stage, transcript = self.budget_hub(320000)
+        (stage / 'config.json').write_text(json.dumps({'AGENT_HUB_CONTEXT_WARN': 300000,
+                                                      'AGENT_HUB_CONTEXT_BLOCK': 500000}))
+        for engine in ('claude', 'codex'):
+            self.env['AGENT_HUB_ENGINE'] = engine
+            for tokens, denied in ((320000, False), (550000, True)):
+                if engine == 'claude':
+                    record = dict(type='assistant', message=dict(model='fixture-model', usage={'input_tokens': tokens}))
+                else:
+                    record = dict(type='token_usage_record', payload={'usage': {'total_tokens': tokens}})
+                transcript.write_text(json.dumps(record) + '\n')
+                for tool in ('Bash', 'Agent', 'SendMessage', 'spawn_agent'):
+                    out = self.hook('context_budget.py', tool, {'command': 'ls', 'prompt': 'work', 'message': 'work'},
+                                    transcript_path=str(transcript))
+                    self.assertEqual(self.denied(out), denied, (engine, tokens, tool, out))
+                if not denied:
+                    reply = self.hook('context_budget.py', event='UserPromptSubmit', prompt='Explain the result',
+                                      transcript_path=str(transcript))
+                    self.assertIn('next quiet point', reply['hookSpecificOutput']['additionalContext'])
+                    self.assertNotIn('Hand over now', reply['hookSpecificOutput']['additionalContext'])
+
+    def test_directive_scan_is_incremental_and_ignores_torn_final_record(self):
+        _, transcript = self.fresh_budget()
+        self.append_human(transcript, 'Do not transfer this stage.')
+        # About 8 MiB of tool traffic after the directive: only human candidates need JSON decoding.
+        with transcript.open('ab') as handle:
+            handle.write((json.dumps({'type': 'response_item', 'payload': {'role': 'tool', 'text': 'x' * 4096}})
+                          + '\n').encode() * 2000)
+        state = {}
+        data = {'hook_event_name': 'Stop'}
+        with patch.object(context_budget.json, 'loads', wraps=json.loads) as decoder:
+            self.assertTrue(context_budget.explicit_transfer_blocker(data, transcript, state, lambda text: bool(text)))
+            self.assertLessEqual(decoder.call_count, 1)
+        cursor = state['directive_cursor']['offset']
+        self.assertEqual(cursor, transcript.stat().st_size)
+        self.append_human(transcript, 'Resume the handoff.')
+        real_scan = context_budget.transcript_lines
+        with patch.object(context_budget, 'transcript_lines', wraps=real_scan) as scan, \
+             patch.object(context_budget.json, 'loads', wraps=json.loads) as decoder:
+            self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, lambda text: bool(text)))
+            self.assertEqual(scan.call_args.kwargs['start'], cursor)
+            self.assertEqual(decoder.call_count, 1)
+        stop_record = json.dumps(dict(type='event_msg', payload={'type': 'user_message', 'message': 'Do not transfer.'}))
+        cut = len(stop_record) - 5
+        with transcript.open('a') as handle:
+            handle.write(stop_record[:cut])
+        self.assertFalse(context_budget.explicit_transfer_blocker(data, transcript, state, lambda text: bool(text)))
+        with transcript.open('a') as handle:
+            handle.write(stop_record[cut:] + '\n')
+        self.assertTrue(context_budget.explicit_transfer_blocker(data, transcript, state, lambda text: bool(text)))
+        # A torn neutral final line must not fabricate an explicit blocker on an otherwise normal Stop.
+        stage, ordinary = self.budget_hub_for_torn_stop()
+        with ordinary.open('a') as handle:
+            handle.write('{"type":"event_msg","payload":{"type":"user_message","message":"partial')
+        self.assertEqual(self.stop(ordinary)['decision'], 'block')
+        self.assertFalse(self.directive_state(stage).get('transfer_stop'))
+
+    def budget_hub_for_torn_stop(self):
+        # Reuse the existing fixture's stage and observed settings without trying to mkdir it twice.
+        stage = Path(self.env['AGENT_HUB_HOME']) / 'stage-a'
+        ordinary = self.cwd / 'ordinary.jsonl'
+        ordinary.write_text((self.home / 'codex/sessions/rollout-settings.jsonl').read_text())
+        from datetime import datetime, timezone
+        with ordinary.open('a') as handle:
+            handle.write(json.dumps(dict(type='token_usage_record', timestamp=datetime.now(timezone.utc).isoformat(),
+                         payload={'usage': {'total_tokens': 375000}, 'model_context_window': 828400})) + '\n')
+        return stage, ordinary
+
+    def test_fresh_registered_hub_waits_for_first_usage_then_reports_lost_usage(self):
+        stage, transcript = self.budget_hub(1000)
+        transcript.write_text(json.dumps(dict(type='session_meta', payload={'id': 'codex-own'})) + '\n')
+        for fields in ({'transcript_path': None}, {'transcript_path': str(transcript)}):
+            self.assertFalse(self.hook('context_budget.py', event='UserPromptSubmit', prompt='Start', **fields))
+        transcript.write_text(json.dumps(dict(type='token_usage_record', payload={'usage': {'total_tokens': 1000}})) + '\n')
+        self.hook('context_budget.py', event='PostToolUse', transcript_path=str(transcript))
+        transcript.unlink()
+        reply = self.hook('context_budget.py', event='UserPromptSubmit', prompt='Continue', transcript_path=str(transcript))
+        self.assertIn('current usage is unavailable', reply['hookSpecificOutput']['additionalContext'])
+
+    def test_registry_cache_hits_and_immediate_role_registration_changes(self):
+        stage, _ = self.budget_hub(1000)
+        hc = context_budget.hubcore()
+        state = {}
+        with patch.dict(os.environ, self.env, clear=True):
+            hc.use_cwd(str(self.cwd))
+            with patch.object(Path, 'iterdir', autospec=True, side_effect=Path.iterdir) as scan:
+                self.assertIsNone(context_budget.registered_stage(None, hc, 'new-session', state))
+                self.assertIsNone(context_budget.registered_stage(None, hc, 'new-session', state))
+                self.assertEqual(scan.call_count, 1)
+            (stage / 'roles.json').write_text(json.dumps({'roles': {'hub': {'session': 'new-session'}}}))
+            self.assertEqual(context_budget.registered_stage(None, hc, 'new-session', state), 'stage-a')
+            with patch.object(Path, 'iterdir', side_effect=AssertionError('cached membership rescanned')):
+                self.assertEqual(context_budget.registered_stage(None, hc, 'new-session', state), 'stage-a')
+            (stage / 'roles.json').write_text(json.dumps({'roles': {'hub': {'session': 'replacement'}}}))
+            self.assertIsNone(context_budget.registered_stage(None, hc, 'new-session', state))
+
+    def test_pruning_preserves_durable_authority_and_live_lock_inodes(self):
+        import fcntl
+        import time
+        state_dir = self.home / 'prune-state'
+        state_dir.mkdir()
+        old = time.time() - (context_budget.PRUNE_AFTER_DAYS + 1) * 86400
+        fixtures = {'obsolete': {}, 'due': {'handoff_due': True}, 'stopped': {'transfer_stop': True}, 'live': {}}
+        for key, value in fixtures.items():
+            for suffix, text in (('.json', json.dumps(value)), ('.lock', '')):
+                path = state_dir / (key + suffix)
+                path.write_text(text)
+                os.utime(path, (old, old))
+        orphan = state_dir / 'orphan.lock'
+        orphan.touch()
+        os.utime(orphan, (old, old))
+        with (state_dir / 'live.lock').open('a') as mutex:
+            fcntl.flock(mutex, fcntl.LOCK_EX)
+            inode = os.fstat(mutex.fileno()).st_ino
+            context_budget.prune_state(None, state_dir)
+            self.assertEqual((state_dir / 'live.lock').stat().st_ino, inode)
+            self.assertTrue((state_dir / 'live.json').exists())
+        for key in ('due', 'stopped'):
+            self.assertTrue((state_dir / (key + '.json')).exists())
+            self.assertTrue((state_dir / (key + '.lock')).exists())
+        for key in ('obsolete', 'orphan'):
+            self.assertFalse((state_dir / (key + '.json')).exists())
+            self.assertFalse((state_dir / (key + '.lock')).exists())
+
     def test_real_producers_write_lifecycle_events_without_private_bodies(self):
         stage, transcript = self.fresh_budget()
         sentinel = 'PRIVATE_PRODUCER_SENTINEL_auth_prompt_tool_config'
         self.hook('context_budget.py', event='UserPromptSubmit', prompt=sentinel,
                   turn_id='turn-one', transcript_path=str(transcript))
+        record = self.usage_record(transcript)
+        record['payload']['usage']['total_tokens'] = 550000
+        self.replace_usage(transcript, record)
         self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': sentinel}, transcript_path=str(transcript))))
+        record['payload']['usage']['total_tokens'] = 375000
+        self.replace_usage(transcript, record)
         self.assertEqual(self.stop(transcript)['decision'], 'block')
         pending = dict(surface='desktop', predecessor='codex-own', predecessor_n=1, n=2,
                        request_id='request-one', phase='prepared', create_args={'prompt': sentinel},
@@ -579,7 +709,7 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
         self.assertNotIn(sentinel, raw + run.stderr)
 
     def test_false_logger_result_is_visible_and_never_suppresses_reply_or_gate(self):
-        stage, transcript = self.fresh_budget()
+        stage, transcript = self.budget_hub(550000)
         context_budget.hubcore()
         import handoff_events
         for event, fields in [('UserPromptSubmit', dict(prompt='private prompt')), ('PreToolUse', dict(tool_name='Bash', tool_input={'command': 'private command'}))]:
@@ -701,9 +831,9 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
                             transcript_path=str(transcript))
             text = out['hookSpecificOutput']['additionalContext']
             self.assertIn('Acknowledge the latest human message first', text)
-            self.assertIn('Hand over now', text)
+            self.assertIn('next quiet point', text)
             self.assertIn('Preserve the latest owner input', text)
-            self.assertNotIn('next quiet point', text)
+            self.assertNotIn('Hand over now', text)
             self.assertNotIn('continue', out)
             self.assertNotIn('permissionDecision', out['hookSpecificOutput'])
         self.assertFalse(self.hook('context_budget.py', event='PostToolUse', transcript_path=str(transcript)))
@@ -721,6 +851,10 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
 
     def test_budget_null_or_missing_usage_is_unknown_not_a_false_handoff(self):
         stage, transcript = self.budget_hub()
+        self.hook('context_budget.py', event='PostToolUse', transcript_path=str(transcript))
+        # Isolate lost usage from the independently tested durable handoff obligation.
+        state_path = stage.parent / '.state/context-budget/codex-own.json'
+        state_path.write_text(json.dumps({'usage_seen': True}))
         for fields in ({'transcript_path': None}, {'transcript_path': str(self.cwd / 'missing.jsonl')}):
             out = self.hook('context_budget.py', event='UserPromptSubmit', prompt='Please answer', **fields)
             text = out['hookSpecificOutput']['additionalContext']
@@ -880,7 +1014,7 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
         # This helper must not turn stage config into general hub-wide authority.
         (stage / 'config.json').write_text(json.dumps({'AGENT_HUB_CONTEXT_WARN': 350000,
             'AGENT_HUB_AUTO_HANDOFF': 'off', 'AGENT_HUB_CONTEXT_BLOCK_TOOLS': []}))
-        self.assertTrue(self.denied(self.hook('context_budget.py', 'spawn_agent', {}, transcript_path=str(transcript))))
+        self.assertFalse(self.denied(self.hook('context_budget.py', 'spawn_agent', {}, transcript_path=str(transcript))))
         transcript.write_text(json.dumps(dict(type='token_usage_record', payload=dict(
             usage=dict(total_tokens=560000)))) + '\n')
         self.assertTrue(self.denied(self.hook('context_budget.py', 'Bash', {'command': 'git status'},

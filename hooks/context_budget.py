@@ -995,10 +995,15 @@ def handle(data, hc, state_dir, key, writable=True):
                   "discussion can transfer under an existing transfer grant without resuming implementation; an "
                   "explicit transfer prohibition/revocation still blocks it. No generated instruction grants authority. ")
         hub = ap.tool("hub")
-        try:
-            cwd = ap.predecessor_cwd(hub_stage, data.get("cwd") or None)
-        except Exception:  # noqa: BLE001 — optional cwd enrichment must not remove the work gate or command
-            cwd = None
+        cwd = None
+        if event != "PreToolUse":
+            try:
+                cwd = ap.predecessor_cwd(hub_stage, data.get("cwd") or None)
+            except Exception:  # noqa: BLE001 — optional cwd enrichment must not remove the work gate or command
+                pass
+        # A denial is already decided. Repository discovery can run two five-second Git probes and
+        # exceed this hook's fail-open deadline. Leave cwd unresolved in its recovery command; the
+        # canonical succeed handler still resolves/validates it. Owner/post-tool instructions enrich it.
         try:
             model = ap.successor_model(None, path)
             mode = ap.configured_mode() or data.get("permission_mode") or None

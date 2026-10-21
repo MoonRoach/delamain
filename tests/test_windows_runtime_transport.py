@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import socket
 import subprocess
@@ -29,6 +30,7 @@ class ContextReadProvenanceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="context-read-origin-")
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
+        self.plugin = ROOT
         self.hub = self.home / "hub"
         stage = self.hub / "stage-a"
         stage.mkdir(parents=True)
@@ -55,13 +57,14 @@ class ContextReadProvenanceTests(unittest.TestCase):
         if spoof:
             event["_desktop_context_native_reads"] = ["path", "get-content"]
         payload = {"mode": "hook", "hook": "context_budget", "event": event,
-                   "command_replacements": list(replacements), "pluginroot": str(ROOT),
+                   "command_replacements": list(replacements), "pluginroot": str(self.plugin),
                    "cwd": str(self.home), "config": self.config, "env": self.env}
         encoded = base64.b64encode(json.dumps(payload).encode()).decode()
         run = subprocess.run([sys.executable, str(ROOT / "windows/desktop_runtime.py"), encoded],
                              capture_output=True, text=True, cwd=self.home, env=self.env, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertNotIn("fail-open", run.stderr)
+        self.assertNotIn("fail-open", run.stderr, run.stderr)
+        self.assertNotIn("gave up", run.stderr, run.stderr)
         return json.loads(run.stdout) if run.stdout.strip() else {}
 
     def replacement(self, command, **fields):
@@ -85,6 +88,24 @@ class ContextReadProvenanceTests(unittest.TestCase):
     def test_bare_posix_path_and_spoofed_input_are_denied(self):
         self.assertDenied(self.hook("path --linux /tmp/HANDOFF-a.md", spoof=True))
         self.assertDenied(self.hook(str(self.shadow / "path") + " --linux /tmp/HANDOFF-a.md", spoof=True))
+
+    def test_slow_optional_repository_probe_cannot_erase_block(self):
+        # The runtime prepends the plugin's bin/, so isolate a plugin copy rather than depending on
+        # the host's Git or mutating the checkout. A real repository probe would outlive this hook.
+        self.plugin = self.home / "plugin"
+        for directory in ("bin", "hooks"):
+            shutil.copytree(ROOT / directory, self.plugin / directory,
+                            ignore=shutil.ignore_patterns("__pycache__"))
+        probe = self.home / "git-probe"
+        git = self.plugin / "bin/git"
+        git.write_text("#!/bin/sh\nprintf probe > " + shlex.quote(str(probe)) + "\nsleep 4\nexit 128\n")
+        git.chmod(0o755)
+        self.env["AGENT_HUB_HOOK_DEADLINE_S"] = "3"
+        self.assertDenied(self.hook("path --linux /tmp/HANDOFF-a.md", spoof=True))
+        source = "& 'X/desktop.ps1' shell 'path --linux /tmp/HANDOFF-a.md'"
+        item = self.replacement(source, kind="shell", script="path --linux /tmp/HANDOFF-a.md")
+        self.assertDenied(self.hook(source, [item], spoof=True))
+        self.assertFalse(probe.exists(), "optional Git discovery must not delay an already-decided BLOCK denial")
 
     def test_direct_native_handoff_read_passes_but_mutation_does_not(self):
         self.assertEqual(self.hook("Get-Content -LiteralPath 'C:\\h\\HANDOFF-a.md'"), {})

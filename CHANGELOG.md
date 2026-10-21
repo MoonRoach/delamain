@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Context denial does not wait for optional Git metadata.** A hard-barrier `PreToolUse` denial omits
+  optional predecessor-cwd enrichment, so slow Git cannot consume the hook deadline before the denial is
+  emitted. The actual successor command still resolves and validates the recorded repository and settings.
+  A slow-Git regression covers this path, and the transport tests report child-hook timeout diagnostics.
+
 - **Context-budget hook repairs.** Owner transfer directives are read incrementally, with a retryable
   incomplete final JSONL record instead of a false transfer blocker. Cached stage membership avoids repeated
   registry scans; changes to registrations still invalidate it. Stale state and lock files are pruned under

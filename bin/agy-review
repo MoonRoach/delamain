@@ -9,7 +9,8 @@
 run     starts one review in the background and prints `run: <dir>` and `model: <id>`. The run dir
         <hub home>/agy-runs/<name>-<YYYYmmdd-HHMMSS> holds brief.md (the brief plus a read-only footer), out-N.json
         (agy's JSON, one per attempt), final.md (the review), usage.json (summed usage, duration, attempts, conversation
-        id, denied actions), stderr.log, meta, pid, and `rc`, written last and ending in a newline (so `jwait --file
+        id, denied actions), stderr.log, meta, pid (published by the worker once its signal handlers are in; `run` waits
+        for it and prints `pid: <n>`), and `rc`, written last and ending in a newline (so `jwait --file
         <run>/rc` sees it at once): 0 a review was produced, 2 agy finished without an answer after the resumes, any
         other value is agy's own exit code (128+N when it was killed by signal N). With a stage (--stage, else
         $HUB_STAGE) one journal line is written at the start and one at the end (`REVIEWED <run>/final.md — rc 0`, or
@@ -26,7 +27,8 @@ check   for a reviewer entry's `check`: exit 0 when agy is on PATH and Argon's w
 
 The review runs under its own HOME, <hub home>/agy-review-home, whose settings.json this tool rewrites on every run: only
 commands that cannot start another program are allowed (the sandbox leaves the network open, so the list is what stops
-awk, find, sed, rg, sort, xargs, pagers…), writes, network and interpreters are denied, and agy runs with --sandbox. Your own
+awk, find, sed, rg, sort, xargs, pagers…), writes, network and interpreters are denied, agy runs with --sandbox, a fixed
+PATH (no directory of the checkout) and git pinned to no implicit bare repositories. Your own
 ~/.gemini/antigravity-cli/settings.json is never read or written; the sign-in files are linked from ~/.gemini and
 ~/Library (macOS keychain). Verified on macOS with agy 1.4.0; Linux is untested. AGENT_HUB_AGY_BIN names another agy.
 Settings (environment or the hub home's config.json): AGENT_HUB_AGY_BIN, AGENT_HUB_AGY_REVIEW_MODEL,
@@ -77,12 +79,19 @@ ANTIGRAVITY_LINKS = ("installation_id", "jetski_state.pbtxt", "bin", "builtin")
 # (`awk 'BEGIN{system("curl …")}'`, `find -exec`, `sed` with `e`/`w`, `rg --pre CMD`, `git grep -O CMD`, `sort
 # --compress-program=CMD`, `xargs`, a pager or an editor) could send files out. READ_COMMANDS therefore holds only
 # commands that cannot start one; searching is `grep -rn`, reading a range is `cat`/`head`/`tail` or agy's file-view tool.
+# Nor may an allowed command change what the next one is: `printf -v PATH …` (bash/zsh) assigns a variable, and the
+# following `cat` would run an executable the repository carries. So `printf`, and the shell builtins that set, export,
+# alias or trap anything, are denied, and the environment given to agy has a fixed PATH without any directory of the
+# checkout (agy_env). Git is kept from reading handlers out of repository content too: a tracked directory can have a
+# bare-repository layout whose own `config` sets `diff.external` or `core.fsmonitor`, and `cd dir.git && git diff
+# --no-index --ext-diff …` would run it. Prefix rules cannot see option order, so the fix is `safe.bareRepository =
+# explicit` in the review HOME's .gitconfig and, in case HOME is ignored, in the environment (agy_env).
 # Residual risk: `git diff/log/show` run an external diff or textconv driver that the checkout's own .git/config names
 # (a repository's content cannot set that: .git/config is not versioned).
 READ_COMMANDS = (
     "git diff", "git log", "git show", "git blame", "git status", "git ls-files", "git ls-tree", "git rev-parse",
     "git merge-base", "git cat-file", "git describe", "git branch --list", "grep", "ls", "cat", "head", "tail", "wc",
-    "cd", "pwd", "echo", "printf", "uniq", "cut", "tr", "nl", "diff", "jq", "file", "stat", "du", "tree", "true")
+    "cd", "pwd", "echo", "uniq", "cut", "tr", "nl", "diff", "jq", "file", "stat", "du", "tree", "true")
 DENY_COMMANDS = (
     "git push", "git commit", "git checkout", "git switch", "git reset", "git restore", "git stash", "git fetch",
     "git pull", "git merge", "git rebase", "git cherry-pick", "git revert", "git am", "git apply", "git clean",
@@ -90,12 +99,17 @@ DENY_COMMANDS = (
     "git grep", "git -c", "git --exec-path", "git difftool", "git mergetool", "git submodule", "git archive",
     "git bundle", "git daemon", "git send-email", "git remote", "git ls-remote", "git request-pull",
     "awk", "gawk", "find", "sed", "sed -i", "rg", "sort", "less", "more", "man", "vi", "vim", "nano", "emacs",
+    "printf", "export", "set", "unset", "alias", "typeset", "declare", "local", "read", "hash", "builtin", "command",
+    "trap", "ulimit", "umask", "PATH=", "GIT_", "LD_", "DYLD_",   # …and a leading assignment (whether agy checks it is unverified)
     "rm", "mv", "cp", "mkdir", "rmdir", "touch", "tee", "ln", "chmod", "chown", "dd", "truncate", "install",
     "perl", "python", "python3", "uv", "pip", "pip3", "node", "npm", "npx", "pnpm", "yarn", "ruby",
     "bash", "sh", "zsh", "source", ".", "eval", "exec", "env", "xargs", "sudo", "make", "pytest", "tox", "docker",
     "kubectl", "psql", "sqlite3", "mysql", "redis-cli", "curl", "wget", "ssh", "scp", "rsync", "nc", "gh", "glab",
     "open", "osascript", "kill", "pkill", "killall", "bin/", "./", "dbt", "alembic", "terraform", "yc", "aws")
 DENY_TOOLS = ("write_file(*)", "read_url(*)", "mcp(*)")   # the file tool, the web and MCP servers: never in a review
+GITCONFIG = "[safe]\n\tbareRepository = explicit\n"       # the review HOME's ~/.gitconfig: no bare repository is found implicitly
+GIT_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.bareRepository", "GIT_CONFIG_VALUE_0": "explicit",
+           "GIT_CONFIG_NOSYSTEM": "1"}                  # the same, as command-scope config that holds even if HOME is ignored
 
 NUDGE = ("Your last tool call was refused because that command is not permitted in this read-only review, and the "
          "run stopped. Continue the review with the allowed read-only commands only (one command per call, no "
@@ -105,9 +119,9 @@ FOOTER = """
 Do not create, edit or delete any file, not even a scratch or review file; do not commit, push or run tests.
 Shell: one read-only command per call, from `git diff/log/show/blame/status/ls-files/ls-tree/rev-parse/cat-file`, `grep`
 (`grep -rn` searches), `ls`, `cat`, `head`, `tail` (or the file-view tool) for reading a range, `wc`, `cut`, `tr`, `nl`,
-`uniq`, `diff`, `jq`, `file`, `stat`, `du`, `tree`. `awk`, `find`, `sed`, `rg`, `sort`, `git grep`, `xargs`, pagers and
-editors are refused, as is anything that writes, runs a program or uses the network; an unknown command can end the run
-without your answer. Return the review as your final answer.
+`uniq`, `diff`, `jq`, `file`, `stat`, `du`, `tree`. `awk`, `find`, `sed`, `rg`, `sort`, `git grep`, `xargs`, `printf`,
+variable assignments and shell builtins that set anything, pagers and editors are refused, as is anything that writes,
+runs a program or uses the network; an unknown command can end the run without your answer. Return the review as your final answer.
 """
 
 
@@ -369,6 +383,34 @@ def cmd_check(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- the environment agy runs in
+
+def safe_path(blocked: list) -> str:
+    """PATH for agy and its shell: the current PATH's absolute directories, minus any that lies inside one of `blocked`
+    (the checkout and the --add-dir directories; symlinks are resolved before comparing), in order, without repeats.
+    Relative and empty entries are dropped: they mean "the current directory", which is the checkout."""
+    roots = [os.path.realpath(d) for d in blocked]
+    kept: list = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry or not os.path.isabs(entry) or entry in kept:
+            continue
+        real = os.path.realpath(entry)
+        if any(os.path.commonpath([real, root]) == root for root in roots):
+            continue
+        kept.append(entry)
+    return os.pathsep.join(kept) or "/usr/bin:/bin"
+
+
+def agy_env(home: str, path: str) -> dict:
+    """The environment of an agy review: the caller's, with HOME the review home, the fixed PATH, and git's configuration
+    pinned: no inherited GIT_* variable (GIT_EXTERNAL_DIFF, GIT_DIR, …) survives, no system gitconfig is read, and a bare
+    repository is never found implicitly (GITCONFIG says so in the review HOME as well)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_ENV)
+    env.update(HOME=home, PATH=path)
+    return env
+
+
 # ---------------------------------------------------------------- the review home
 
 def _link(target: Path, link: Path) -> None:
@@ -406,6 +448,7 @@ def prepare_home(checkout: Path, extra: list) -> Path:
     if (owner / "Library").is_dir():  # the macOS keychain; no such directory elsewhere (Linux is untested)
         _link(owner / "Library", home / "Library")
     hc.atomic_write(cli / "settings.json", json.dumps(review_settings(checkout, extra), indent=2) + "\n")
+    hc.atomic_write(home / ".gitconfig", GITCONFIG)  # rewritten like settings.json, never a link to the owner's
     return home
 
 
@@ -433,6 +476,23 @@ def journal(stage, tag, text: str) -> None:
         hc.journal_append(stage, tag, text)
     except (OSError, hc.UsageError, hc.Failure) as e:
         say(f"journal line not written: {e}")
+
+
+PID_WAIT_S = 5.0   # how long `run` waits for the worker to publish its pid
+
+
+def wait_for_pid(run: Path, proc) -> str:
+    """"up" once the worker has published its pid (it has installed its signal handlers by then), "exited" when it ended
+    without ever doing so, "late" when PID_WAIT_S passed (a slow start; the worker may yet begin)."""
+    end = time.monotonic() + PID_WAIT_S
+    while True:
+        if (run / "pid").exists():
+            return "up"
+        if proc.poll() is not None:
+            return "up" if (run / "pid").exists() else "exited"
+        if time.monotonic() >= end:
+            return "late"
+        time.sleep(0.05)
 
 
 def cmd_run(args) -> int:
@@ -474,7 +534,8 @@ def cmd_run(args) -> int:
     (run / "brief.md").write_text(text.rstrip("\n") + "\n" + FOOTER, encoding="utf-8")
     tag = (hc.signing_tag(stage) if stage else None)
     meta = {"name": name, "model": model, "cwd": str(checkout), "add_dirs": [str(d) for d in extra], "home": str(home),
-            "agy": binary, "stage": stage, "tag": f"{tag}-agy" if tag else "agy-review", "hub_home": str(hc.root()),
+            "agy": binary, "path": safe_path([str(checkout)] + [str(d) for d in extra]),
+            "stage": stage, "tag": f"{tag}-agy" if tag else "agy-review", "hub_home": str(hc.root()),
             "started": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     (run / "meta").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
     print(f"run: {run}")
@@ -482,8 +543,7 @@ def cmd_run(args) -> int:
     if args.dry_run:
         print("DRY-RUN: nothing started")
         return 0
-    # the start line comes before the worker exists, so no REVIEWED can precede it; the worker writes its own pid first
-    # thing (below), so `pid` is there before `rc` can be
+    # the start line comes before the worker exists, so no REVIEWED can precede it
     journal(stage, meta["tag"], f"agy-review {name} started: model {model}, run {run} — wait for {run}/rc")
     try:
         with open(run / "stderr.log", "a", encoding="utf-8") as err:
@@ -493,7 +553,15 @@ def cmd_run(args) -> int:
     except OSError as e:
         journal(stage, meta["tag"], f"EXIT agy-review {name}: the worker could not be started ({e})")
         raise hc.Failure(f"could not start the worker: {e}") from None
-    hc.atomic_write(run / "pid", f"{proc.pid}\n")  # the same value the worker wrote
+    # the worker installs its signal handlers, then publishes `pid`: from here on a SIGTERM to that pid ends in an rc
+    state = wait_for_pid(run, proc)
+    if state == "exited":
+        finish(run, meta, 1, "", {}, f"the worker exited ({proc.returncode}) before it began")
+        raise hc.Failure(f"the worker exited ({proc.returncode}) before it began; see {run}/stderr.log")
+    if state == "late":
+        say(f"the worker has not published its pid within {PID_WAIT_S:g} s; it may still start (watch {run}/rc)")
+    else:
+        print(f"pid: {(run / 'pid').read_text(encoding='utf-8').strip()}")
     return 0
 
 
@@ -551,7 +619,7 @@ def attempts(run: Path, meta: dict) -> tuple:
     base = [meta["agy"], "--sandbox", "--model", meta["model"], "--print-timeout", PRINT_TIMEOUT, "--output-format", "json"]
     for d in meta["add_dirs"]:
         base += ["--add-dir", d]
-    env = dict(os.environ, HOME=meta["home"])
+    env = agy_env(meta["home"], meta["path"])
     prompt = (run / "brief.md").read_text(encoding="utf-8")
     usage: dict = {}
     duration, conversation, rc, response, failed, denied, made = 0.0, None, 0, "", False, [], 0
@@ -599,19 +667,8 @@ def _terminate(signum, frame) -> None:  # SIGTERM / SIGINT: only a flag; _wait s
     STATE["stop"] = True
 
 
-def worker(run: Path) -> int:
-    signal.signal(signal.SIGTERM, _terminate)
-    signal.signal(signal.SIGINT, _terminate)
-    hc.atomic_write(run / "pid", f"{os.getpid()}\n")  # before anything else: `pid` exists whenever `rc` does
-    meta = json.loads((run / "meta").read_text(encoding="utf-8"))
-    rc, response, record = 1, "", {}
-    try:
-        rc, response, record = attempts(run, meta)
-    except Exception as e:  # noqa: BLE001 — whatever happens, the run ends with files and an rc
-        with open(run / "stderr.log", "a", encoding="utf-8") as err:
-            err.write(f"agy-review: worker failed: {type(e).__name__}: {e}\n")
-        rc = 1
-    # every file first, rc last: whoever waits for rc finds the rest in place
+def finish(run: Path, meta: dict, rc: int, response: str, record: dict, why: str = "") -> None:
+    """End a run: every file first, the journal line, then `rc` last, so whoever waits for rc finds the rest in place."""
     try:
         hc.atomic_write(run / "final.md", response)
         hc.atomic_write(run / "usage.json", json.dumps(record, indent=1) + "\n")
@@ -622,9 +679,26 @@ def worker(run: Path) -> int:
     if rc == 0:
         journal(meta["stage"], meta["tag"], f"REVIEWED {run}/final.md — rc 0")
     else:
-        why = "agy ended without an answer" if rc == 2 else "agy failed"
-        journal(meta["stage"], meta["tag"], f"EXIT agy-review {meta['name']}: no review, rc {rc} ({why}) — see {run}/stderr.log")
+        why = why or ("agy ended without an answer" if rc == 2 else
+                      "stopped by a signal" if rc >= 128 else "agy failed")
+        journal(meta["stage"], meta["tag"],
+                f"EXIT agy-review {meta['name']}: no review, rc {rc} ({why}) — see {run}/stderr.log")
     hc.atomic_write(run / "rc", f"{rc}\n")
+
+
+def worker(run: Path) -> int:
+    signal.signal(signal.SIGTERM, _terminate)
+    signal.signal(signal.SIGINT, _terminate)
+    hc.atomic_write(run / "pid", f"{os.getpid()}\n")  # after the handlers: a SIGTERM to this pid is a stop, not a death
+    meta = json.loads((run / "meta").read_text(encoding="utf-8"))
+    rc, response, record = 1, "", {}
+    try:
+        rc, response, record = attempts(run, meta)
+    except Exception as e:  # noqa: BLE001 — whatever happens, the run ends with files and an rc
+        with open(run / "stderr.log", "a", encoding="utf-8") as err:
+            err.write(f"agy-review: worker failed: {type(e).__name__}: {e}\n")
+        rc = 1
+    finish(run, meta, rc, response, record)
     return 0
 
 

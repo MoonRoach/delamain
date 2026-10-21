@@ -12,7 +12,10 @@
   program are allowed, writes, the web, MCP, shells, interpreters, network clients and every program launcher (`awk`,
   `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pagers) are denied, and `agy` runs with `--sandbox`, which leaves the
   network open (never `--dangerously-skip-permissions`); the owner's own `~/.gemini/antigravity-cli/settings.json` is not
-  touched. A stop (SIGTERM) ends agy's whole process group, with SIGKILL after ten seconds, and still writes the `rc`.
+  touched. `printf` and the shell builtins that assign, export or alias are denied too, agy gets a fixed `PATH` without
+  the checkout's directories, and git has implicit bare repositories off (`safe.bareRepository = explicit`). A stop
+  (SIGTERM) ends agy's whole process group, with SIGKILL after ten seconds, and still writes the `rc`; `run` returns
+  once the worker has installed its handlers and published its pid.
   A headless run that ends without an answer is resumed, at most twice. `agy-review limits` reads the quota from agy's
   `/usage` panel through a pty, and `agy-review check` is the availability test for a reviewer entry (agy installed,
   Argon's weekly quota not known to be below 20 %). New hub-wide settings `AGENT_HUB_AGY_BIN`,

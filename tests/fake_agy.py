@@ -2,7 +2,7 @@
 """Antigravity CLI (agy) stand-in for tests/t_agy_review.sh: no model, no network.
 
 Headless (`-p`): appends one record per call to $FAKE_AGY_DIR/calls.jsonl (argv, HOME, cwd and the settings.json the call
-sees under that HOME) and answers with entry N of the list in $FAKE_AGY_DIR/scenario.json (the last entry once the list is
+sees under that HOME, and its PATH, HOME and GIT_* variables) and answers with entry N of the list in $FAKE_AGY_DIR/scenario.json (the last entry once the list is
 used up): {"json": {...agy's JSON...}, "exit": 0, "sleep": 0, "raw": "text printed instead of the JSON",
 "ignore_term": true (ignores SIGTERM)}.
 Interactive (no `-p`): appends to interactive.log and draws what the real CLI draws for /usage, read from
@@ -51,7 +51,9 @@ if step.get("ignore_term"):   # an agy that does not stop for SIGTERM; set befor
 settings = Path(os.environ.get("HOME", "")) / ".gemini" / "antigravity-cli" / "settings.json"
 with open(calls, "a") as log:
     log.write(json.dumps({"argv": args, "pid": os.getpid(), "ppid": os.getppid(), "home": os.environ.get("HOME"),
-                          "cwd": os.getcwd(), "settings": settings.read_text() if settings.is_file() else None}) + "\n")
+                          "cwd": os.getcwd(), "settings": settings.read_text() if settings.is_file() else None,
+                          "env": {k: v for k, v in os.environ.items() if k in ("PATH", "HOME") or k.startswith("GIT_")}})
+              + "\n")
 time.sleep(step.get("sleep", 0))
 if "raw" in step:
     print(step["raw"])

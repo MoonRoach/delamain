@@ -271,7 +271,8 @@ List it in the hub home's `config.json` (an entry with a `check` is never taken 
   for 10 minutes in `<hub home>/agy-limits.json`, takes about 2 s, and is capped well inside the 10 s check timeout.
 
 `agy-review run --cwd <checkout> --brief <file> [--model M] [--name N] [--add-dir D]... [--min-left PCT] [--stage S]`
-starts the review detached and prints `run: <dir>` (`<hub home>/agy-runs/<name>-<time>`) and `model: <id>`. The directory
+starts the review detached and prints `run: <dir>` (`<hub home>/agy-runs/<name>-<time>`), `model: <id>` and, once the
+worker has installed its signal handlers and published its pid, `pid: <n>` (a SIGTERM to it stops agy and still ends in an `rc`). The directory
 holds `brief.md` (the brief plus a read-only footer), `out-N.json` (agy's answer per attempt), `final.md` (the review),
 `usage.json` (summed tokens, duration, attempts, conversation id, denied actions), `stderr.log`, `meta`, `pid` and `rc`,
 written last. `rc`: `0` the review is in `final.md`; `2` agy finished without an answer even after two resumes; any other
@@ -295,7 +296,11 @@ launch a program: `awk`, `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pager
 `submodule`, `remote` and the like. A deny rule beats an allow rule, and a denied call is refused to the model while the
 run goes on. `agy` runs with `--sandbox`, which stops shell writes (also inside the checkout) but **not the network**, so
 it is this list, not the sandbox, that keeps a prompt injection in the reviewed repository from starting a program that
-sends files out. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
+sends files out. For the same reason `printf` and the builtins that assign, export or alias anything are denied (`printf
+-v PATH …` would swap the program the next `cat` runs), agy gets a fixed `PATH` of absolute directories outside the
+checkout and the extra dirs, and git has implicit bare repositories off (`safe.bareRepository = explicit`, in the review
+HOME's `.gitconfig` and in the environment), so a tracked directory with a bare-repository layout cannot name a diff
+handler. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
 `.git/config` names, and repository content cannot set that. The reviewer searches with `grep -rn` and reads ranges with
 `cat`/`head`/`tail` or agy's file-view tool. The tool never
 passes `--dangerously-skip-permissions`: with it the file tool writes outside the checkout even under `--sandbox`. The

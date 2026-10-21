@@ -86,6 +86,11 @@ check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["deny"] for x
 check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["deny"] for x in ("command(awk)", "command(gawk)", "command(find)", "command(sed)", "command(rg)", "command(git grep)", "command(sort)", "command(xargs)"))')" True "awk, gawk, find, sed, rg, git grep, sort and xargs are in deny"
 check "$(call 0 '[(a, x) for a in json.loads(c["settings"])["permissions"]["allow"] for x in ("awk", "gawk", "find", "sed", "rg", "git grep", "sort", "xargs", "less", "vim") if a.startswith("command(") and x.startswith(a[8:-1])]')" "[]" "…and no allow entry is a prefix of any of them"
 check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["allow"] for x in ("command(grep)", "command(cat)", "command(head)", "command(tail)", "command(git diff)", "command(git log)", "command(git show)", "command(git blame)", "command(ls)", "command(wc)"))')" True "…while grep, cat, head, tail, ls, wc and the reading git forms are allowed"
+# `printf -v PATH …` (bash/zsh) assigns a variable and the next allowed segment would run a repository executable: no command
+# that assigns, exports, aliases or traps may be available, and none is allowed by a prefix
+ENVCMDS='"printf", "export", "set", "unset", "alias", "typeset", "declare", "local", "read", "hash", "builtin", "command", "trap", "ulimit", "umask"'
+check "$(call 0 'all("command(" + x + ")" in json.loads(c["settings"])["permissions"]["deny"] for x in ('"$ENVCMDS"'))')" True "printf and the environment builtins (export set unset alias typeset declare local read hash builtin command trap ulimit umask) are denied"
+check "$(call 0 '[(a, x) for a in json.loads(c["settings"])["permissions"]["allow"] for x in ('"$ENVCMDS"') if a.startswith("command(") and (x == a[8:-1] or x.startswith(a[8:-1] + " "))]')" "[]" "…and no allow entry covers any of them (as a whole word: allowed \`tr\` is not \`trap\`, which is denied anyway)"
 grep -q 'awk`, `find`, `sed`, `rg`, `sort`, `git grep`, `xargs`' $RUN/brief.md && grep -q 'grep -rn' $RUN/brief.md; check $? 0 "the footer of brief.md names grep -rn for searching and says awk, find, sed, rg, sort, git grep are refused"
 
 # ======== the owner's own agy settings and sign-in
@@ -190,6 +195,55 @@ $B/agy-review run --cwd $CO --brief $P/brief.md --name jw > $P/jw.out 2>&1; JW=$
 bounded 40 $B/jwait --file $JW/rc --for 30s --settle 1 --caller agy-test > $P/jw.wait 2>&1; check $? 0 "jwait --file <run>/rc returns when the review ends"
 grep -q '^0$\|[[:space:]]0$' $P/jw.wait; check $? 0 "…and shows the rc"
 
+# ======== the environment agy runs in: a fixed PATH, git pinned
+mkdir -p $CO/bin $EX/tools $P/relpath-dir; ln -sfn $CO $P/colink
+PYDIR=$(dirname "$(command -v python3)")
+scn "[{\"json\": $OK}]"
+PATH="relpath-dir:.::$CO/bin:$EX/tools:$P/colink/bin:$PATH" GIT_EXTERNAL_DIFF=/bin/true GIT_DIR=/nonexistent runit --add-dir $EX
+check "$(cat $RUN/rc)" 0 "a run with a PATH holding ., an empty and a relative entry, and directories of the checkout and the extra dir"
+cat > $P/pathcheck.py <<'PY'
+import json, os, sys
+env = json.loads(open(sys.argv[1]).readline())["env"]; meta = json.load(open(sys.argv[2]))
+co, ex, pydir = (os.path.realpath(x) for x in sys.argv[3:6])
+entries = env["PATH"].split(os.pathsep)
+inside = [e for e in entries if any(os.path.commonpath([os.path.realpath(e), r]) == r for r in (co, ex))]
+relative = [e for e in entries if not os.path.isabs(e)]
+print("clean" if not inside and not relative and "" not in entries else f"BAD inside={inside} relative={relative}")
+print("python-kept" if pydir in entries or os.path.realpath(pydir) in [os.path.realpath(e) for e in entries] else "PYTHON-LOST")
+print("meta-same" if meta["path"] == env["PATH"] else f"META-DIFFERS {meta['path']!r} {env['PATH']!r}")
+PY
+python3 -I $P/pathcheck.py $FA/calls.jsonl $RUN/meta $COREAL $EXREAL $PYDIR > $P/path.out
+check "$(sed -n 1p $P/path.out)" clean "the PATH agy got has no relative or empty entry and none inside the checkout or the extra dir (symlinks resolved)"
+check "$(sed -n 2p $P/path.out)" python-kept "…the other absolute entries are kept (positive control)"
+check "$(sed -n 3p $P/path.out)" meta-same "…and meta records that PATH"
+check "$(call 0 '[c["env"].get(k) for k in ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_NOSYSTEM")]')" "['1', 'safe.bareRepository', 'explicit', '1']" "the environment carries safe.bareRepository=explicit as command-scope config, and no system gitconfig"
+check "$(call 0 '[k for k in c["env"] if k.startswith("GIT_") and not k.startswith("GIT_CONFIG_")]')" "[]" "…and inherited GIT_EXTERNAL_DIFF and GIT_DIR are dropped"
+grep -q 'bareRepository = explicit' $RH/.gitconfig && [ ! -L $RH/.gitconfig ]; check $? 0 "the review HOME has a .gitconfig of its own with bareRepository = explicit"
+printf '[core]\n\tfsmonitor = /bin/true\n' > $RH/.gitconfig; dry
+grep -q 'bareRepository = explicit' $RH/.gitconfig && ! grep -q fsmonitor $RH/.gitconfig; check $? 0 "…rewritten on every run"
+rm $RH/.gitconfig; ln -s $OWNER/.gemini/antigravity-cli/settings.json $RH/.gitconfig; dry
+[ ! -L $RH/.gitconfig ] && cmp -s $OWNER/.gemini/antigravity-cli/settings.json $P/sentinel.copy; check $? 0 "…and a link in its place is replaced, not written through"
+# functional: a tracked directory with a bare-repository layout whose config names a diff.external handler. An allowed `cd`
+# into it and `git diff --no-index --ext-diff` would run the handler; the pinned git must not. (git needs 2.38 for the setting.)
+GITV=$(git --version 2>/dev/null | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+if [ -n "$GITV" ] && [ "${GITV% *}" -eq 2 ] && [ "${GITV#* }" -ge 38 ] || [ "${GITV% *}" -gt 2 ] 2>/dev/null; then
+  GT=$P/gt; mkdir -p $GT/empty-home; (cd $GT && git init -q --bare fixture.git); echo readme > $GT/README.md
+  printf '#!/bin/sh\ntouch %s/ext-diff-ran\nexit 0\n' $P > $GT/ext.sh; chmod +x $GT/ext.sh
+  git config -f $GT/fixture.git/config diff.external $GT/ext.sh
+  GP=$(call 0 'c["env"]["PATH"]')
+  gitattack(){ rm -f $P/ext-diff-ran; (cd $GT/fixture.git && env -i PATH="$GP" "$@" git diff --no-index --ext-diff /dev/null ../README.md > /dev/null 2>&1); [ -e $P/ext-diff-ran ] && echo handler-ran || echo handler-not-run; }
+  if [ "$(gitattack HOME=$GT/empty-home)" = handler-ran ]; then
+    check handler-ran handler-ran "control: with no setting the handler of a bare-layout directory is run by an allowed git command"
+    check "$(gitattack HOME=$RH)" handler-not-run "the review HOME's .gitconfig alone stops it"
+    check "$(gitattack HOME=$GT/empty-home GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit GIT_CONFIG_NOSYSTEM=1)" handler-not-run "the GIT_CONFIG_* variables alone stop it too (HOME ignored)"
+    check "$(gitattack $(call 0 '" ".join(k + "=" + v for k, v in c["env"].items() if k != "PATH")'))" handler-not-run "the environment agy actually got stops it"
+  else
+    echo "SKIP functional git check: this git does not run the handler of a bare-layout directory without the setting"
+  fi
+else
+  echo "SKIP functional git check: git 2.38 or newer is not available (found: ${GITV:-none})"
+fi
+
 # ======== ordering: `pid` and the start line are there before `rc` and REVIEWED can be
 # the worker writes its own pid first thing: run it by hand on a prepared (dry-run) directory, where the parent never wrote one
 scn "[{\"json\": $OK}]"; dry; D=$(sed -n 's/^run: //p' $P/dry.out); [ ! -e $D/pid ]
@@ -211,6 +265,26 @@ check "$(cat $LK_RUN/rc)-$([ -f $LK_RUN/pid ] && echo pid)" "0-pid" "released: t
 J3=$(journal s3)
 check "$(grep -n 'started' $J3 | head -1 | cut -d: -f1)-$(grep -n 'REVIEWED' $J3 | head -1 | cut -d: -f1)" "1-2" "…the start line precedes REVIEWED in the journal"
 rm -f $P/locked
+# the parent does not publish the pid: the worker does, after its signal handlers are in. So a SIGTERM sent the moment `pid`
+# shows up is a stop (rc 143, journal line), not the death of a worker that was still starting
+rm -rf $R/s4 $R/agy-runs; scn "[{\"sleep\": 20, \"json\": $OK}]"
+$B/agy-review run --cwd $CO --brief $P/brief.md --name early --stage s4 > $P/early.out 2>&1 &
+EARLY_PID=$!
+for i in $(seq 1 3000); do EP=$(cat $R/agy-runs/early-*/pid 2>/dev/null); [ -n "$EP" ] && break; sleep 0.005; done
+kill -TERM $EP; EARLY_RUN=$(ls -d $R/agy-runs/early-* | head -1)
+waitrc $EARLY_RUN 300; check "$(cat $EARLY_RUN/rc 2>/dev/null)" 143 "SIGTERM as soon as pid appears: the run still ends with an rc (143)"
+[ -f $EARLY_RUN/final.md ] && [ -f $EARLY_RUN/usage.json ]; check $? 0 "…with final.md and usage.json"
+wait $EARLY_PID; grep -q "EXIT agy-review early: no review, rc 143 (stopped by a signal) — see $EARLY_RUN/stderr.log" $(journal s4); check $? 0 "…and a journal end line"
+grep -q "^pid: $EP$" $P/early.out; check $? 0 "run prints the pid it waited for"
+sleep 0.3; kill -0 $(call 0 'c["pid"]' 2>/dev/null || echo 999999) 2>/dev/null; check $? 1 "…and no agy is left running"
+# a worker that dies before it publishes its pid: run reports it, writes the rc and the journal line itself
+rm -rf $P/bin-broken; cp -r $B $P/bin-broken
+printf '\nimport sys as _s\nif len(_s.argv) > 1 and _s.argv[1] == "_worker":\n    raise SystemExit(7)\n' >> $P/bin-broken/hubcore.py
+rm -rf $R/agy-runs; $P/bin-broken/agy-review run --cwd $CO --brief $P/brief.md --name broken --stage s5 > $P/br.out 2> $P/br.err; check $? 1 "a worker that exits before it publishes its pid: run exits 1"
+BR_RUN=$(ls -d $R/agy-runs/broken-* | head -1)
+check "$(cat $BR_RUN/rc 2>/dev/null)" 1 "…and has written the rc itself"
+grep -q 'exited (7) before it began' $P/br.err && grep -q "EXIT agy-review broken: no review, rc 1 (the worker exited (7) before it began)" $(journal s5); check $? 0 "…said so, and journaled it"
+rm -rf $P/bin-broken
 
 # ======== refusals (exit 3) and usage errors (exit 2)
 rm -f $R/agy-limits.json

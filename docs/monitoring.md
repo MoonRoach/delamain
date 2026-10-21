@@ -85,7 +85,7 @@ can be woken.
 | R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
 | R6 | Each engine's plan week ([limit pace](reference.md#limit-pace)), for a stage with a hub. | One journal line `[pace] @hub LIMIT …` per forecast crossing, stage, window and level; the owner is notified once per window projected to run out. Forecast context only: each launch compares fresh remaining weekly quota. |
-| R7 | The machine: the `claude --bg` session of a hub that is retired in this home (`roles retire hub`, or replaced by a successor) and live nowhere on the machine, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min) and idle. | `claude stop <id>`; a busy or blocked one is reported once a day; see the reaping of retired hubs below. |
+| R7 | The machine: the `claude --bg` session of a hub that is retired in this home (`roles retire hub`, or replaced by a successor) and live nowhere on the machine, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min) and idle. | `claude stop <id>`; a busy, blocked or child-holding one is reported once a day; see the reaping of retired hubs below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -212,9 +212,11 @@ A row of `claude agents --json` is stopped only when all of these hold:
 4. it is not the `id` (or `bg_id`) of a pending auto-handoff record of any stage of any known home (a successor that has
    not registered yet), and not named by a running `hub takeover` / `hub start` (below);
 5. it is **idle**: `status` is `idle` and `state` is `done`. `busy`, `working`, `blocked`, `waiting`, a missing value or
-   any other one protects it, and so does a shell (`sh`, `bash`, `zsh`, …) among the direct children of its process: a Bash
-   tool call or a background task in flight. Other children are MCP servers, which every session has and which start
-   minutes after it. Such a session is not stopped: once a day, while it is quiet, one line in the job output, `log.md`
+   any other one protects it, and so does **any live descendant of its process**, whatever it runs and however deep (a
+   shell, a Python or Node child, a `sleep`): R7 cannot tell a working child from an MCP server, so every child counts.
+   A process table that cannot be read completely (`ps` fails, or any row of its answer cannot be parsed) or does not
+   list the session's pid is unknown and protects it as well. On a machine whose sessions carry MCP servers this means R7
+   mostly reports instead of stopping. Such a session is not stopped: once a day, while it is quiet, one line in the job output, `log.md`
    and the stage journal says `retired hub <id8> (<stage>) is <status/state> for <age>; stop it by hand: claude stop <id8>`
    (no notification);
 6. it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`, but at least 15 minutes (a foreground tool call of a live session
@@ -226,17 +228,24 @@ A row of `claude agents --json` is stopped only when all of these hold:
    alone: no transcript found (it may be kept under another `CLAUDE_CONFIG_DIR`), a directory that cannot be read, a scan
    cut short (more than 50000 entries), a process that is not in `ps`. A time in the future counts as activity;
 7. `AGENT_HUB_WATCHDOG_REAP` is on (the default; `off` disables R7). The own home's `config.json` is read strictly and
-   afresh before the tick and before each stop (a corrupt one stops R7 for the tick); the environment wins when set. The
-   setting is per home: a session that is also a retired hub in a home where it is `off` is left alone.
+   afresh before the tick and before each stop; a file that cannot be read, or whose JSON is not an object (`null`, a
+   list, a number), stops R7 for the tick, **also when the environment says on**; only a missing file means "nothing
+   there". The environment wins when set and not empty. A value that is not understood (not `1/true/yes/on` or
+   `0/false/no/off`; a list, an object), in the environment or the file, means off. The setting is per home: a session that is also a retired hub in a home where it is `off` is left alone.
 
 Everything is read afresh for each row and once more right before the stop, which is addressed by the 8-character id: a
 new `claude agents --json` must list exactly one row with that id, still `background` with the same full session id and the
-same process, idle and done with no shell child, no newer write, and no protected id may share its first 8 characters. If
-any known home cannot be listed, a stage's `roles.json` or `auto-handoff.json` cannot be read or has an unexpected shape, a
-home's `config.json` cannot be read, the registry of homes is unreadable or a recent takeover marker is unreadable, R7 stops
-nothing in that tick and says why in one line (`machine: not stopping any retired hub's session this tick: …`). The window
-that remains is the milliseconds between the last check and `claude stop`; it takes an old retired session re-registered in
-exactly that window, and no lock protocol with the registry writers is worth that.
+same process, idle and done with no descendant process in a fresh process table, no newer write, and no protected id may
+share its first 8 characters. The order of that last look is: the registries and the activity scan first, then the new
+listing, the new process table, the activity once more, and **last of all** `AGENT_HUB_WATCHDOG_REAP` (environment and the
+strictly read `config.json`). If any known home cannot be listed, a stage's `roles.json` or `auto-handoff.json`, a home's
+`config.json` or the registry of homes is unreadable, has the JSON `null` or another unexpected shape (only a missing file
+means "nothing there"), or a recent takeover marker is unreadable, R7 stops nothing in that tick and says why in one line
+(`machine: not stopping any retired hub's session this tick: …`). The window that remains is what lies behind the read of the
+setting: a function return and the spawn of `claude stop` (milliseconds), plus the few tens of milliseconds since the
+listing, the process table and the activity look (`claude agents --json` is the slow call and comes first). It takes a session
+that turns busy, gets a child, is resumed or is re-registered in exactly that time, and no lock protocol with the writers of
+the registries and the sessions is worth that.
 
 **With `hub takeover`.** A takeover stops the previous hub itself when it is not busy (`claude stop`, history kept) and
 names it in an ATTENTION line when it is busy, a Desktop or terminal session, or the stop failed. R7 covers what the
@@ -256,9 +265,9 @@ role recorded in one still protects its session.
 
 Not covered, deliberately: a session whose home is in no registry of homes (a project home is registered when a stage is
 registered in it; delete `homes.json` and it is invisible until its next `roles set`); a retired hub that is idle and done,
-has no shell child and has not written anything for 15 minutes yet is working (a long MCP call under a stale status): it is
-stopped, and `claude --bg --resume <id>` brings it back. A busy or blocked retired hub is never stopped by R7: the report line
-is the whole of it.
+has no descendant process and has not written anything for 15 minutes yet is working (a long MCP call under a stale status,
+with no child): it is stopped, and `claude --bg --resume <id>` brings it back. A busy, blocked or child-holding retired hub is
+never stopped by R7: the report line is the whole of it.
 
 ### The load hold (R5)
 

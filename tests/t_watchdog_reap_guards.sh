@@ -348,6 +348,7 @@ rows "$X"; reset_log; FAKE_PS_EXTRA=" " WD run > "$R/tick.out" 2>&1; stopped "co
 # ================================================================== json
 # JSON `null` (or another wrong type) is not a missing file: only a missing one says "nothing there"
 X=$(sid e0000090); retire_hub a "$X" hub-120; quiet_for "$X" 30
+RB set --stage jz hub "$(sid e00000f0)" --kind cli --tag hub-1 > /dev/null   # home B is known to the registry of homes
 nulltest(){   # LABEL FILE [CONTENT]: the file is there and says null (or CONTENT): nothing is stopped; removed: stopped
   mkdir -p "$(dirname "$2")"; printf '%s' "${3:-null}" > "$2"
   rows "$X"; tick "$1"; stopped "$1: JSON ${3:-null} is not an absent file: nothing is stopped" ""; aborted "$1" "$2"

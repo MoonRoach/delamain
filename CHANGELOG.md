@@ -5,15 +5,15 @@
 - **The watchdog stops the background sessions of retired hubs (R7).** A hub that handed over or retired itself kept
   its `claude --bg` session alive, holding memory (ten such sessions were found on one machine, one of them still `busy`
   on a leftover `jwait`). Each tick now runs `claude stop` on an idle background session (status `idle`, state `done`, no
-  shell among its process's children) whose id is a retired hub of an open stage of the watchdog's own home and that is
+  live descendant of its process of any kind) whose id is a retired hub of an open stage of the watchdog's own home and that is
   needed nowhere: not a live role of any stage of any known hub home (the registry of homes, every registered path
   checked with `stat()`), not a pending auto-handoff successor, not named by a running `hub takeover` / `hub start` (which
   now keeps a short-lived `<stage>/.takeover-<pid>.json`), and quiet for the wake-after time, at least 15 minutes. Quiet is
   counted from the newest of the transcript, every write under the session's own directory (a running sub-agent) and the
   actual start of its process; a session whose transcript is not found, whose directory cannot be scanned completely or
-  whose time lies in the future is not stopped. A quiet retired hub that is busy, blocked or otherwise not idle is only
-  reported, once a day, with the `claude stop` line for the owner. Anything unreadable in any home, or the own
-  `config.json`, stops nothing in that tick; `AGENT_HUB_WATCHDOG_REAP=off` is respected per home. The rule is R7 because R6
+  whose time lies in the future is not stopped. A quiet retired hub that is busy, blocked, not idle or holds a child process is only
+  reported, once a day, with the `claude stop` line for the owner. Anything unreadable or unexpected in any home (a JSON `null` is not an absent file), a
+  partly read process table or a `REAP` value that is not understood stops nothing in that tick; `AGENT_HUB_WATCHDOG_REAP=off` is respected per home. The rule is R7 because R6
   is the limit-pace report. It never removes the session: `claude attach <id>` and `claude --bg --resume <id>` still reach
   the history. A dry run only prints the plan. The hub skill now says to `roles retire hub` and end the turn when the stage
   is finished, instead of asking the owner to stop the session.

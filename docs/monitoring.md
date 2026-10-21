@@ -85,7 +85,7 @@ can be woken.
 | R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
 | R6 | Each engine's plan week ([limit pace](reference.md#limit-pace)), for a stage with a hub. | One journal line `[pace] @hub LIMIT …` per forecast crossing, stage, window and level; the owner is notified once per window projected to run out. Forecast context only: each launch compares fresh remaining weekly quota. |
-| R7 | The machine: the `claude --bg` session of a hub that is retired in its stage (`roles retire hub`, or replaced by a successor) and live nowhere, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`. | `claude stop <id>`; see the reaping of retired hubs below. |
+| R7 | The machine: the `claude --bg` session of a hub that is retired in this home (`roles retire hub`, or replaced by a successor) and live nowhere on the machine, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min). | `claude stop <id>`; see the reaping of retired hubs below. |
 
 "Addressed to the hub" is what the hub's own digest `jwait` would deliver (its tags, its status words, not its own lines),
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
@@ -164,8 +164,8 @@ requires that consumer to be installed and validated; fixture protocol controls 
   session anyway, it stops the copy, counts the wake as failed and notifies; it does not resume a second time in the
   same tick, the next tick (after the backoff) does.
 - **What it may stop.** Besides the stop before a resume, only the background session of a hub that is retired in its
-  stage and live nowhere (R6, below), after it has been quiet for the wake-after time. Never `claude rm`, never a
-  session that is a live role or a pending successor in any stage.
+  stage and live nowhere (R7, below), after it has been quiet for the wake-after time. Never `claude rm`, never a
+  session that is a live role, a pending successor or named by a running takeover in any stage of any known home.
 - **Do-not-wake marker.** `watchdog quiet --stage S --reason "…" [--for 8h | --until HH:MM|ISO]` writes
   `<stage>/do-not-wake.json` (who, when, until, reason); `watchdog quiet --stage S --clear` removes it; `watchdog quiet`
   alone lists every stage's marker. A marked stage gets no R3/R4 wake and no notification; R1 and R2 still write. An
@@ -189,26 +189,65 @@ requires that consumer to be installed and validated; fixture protocol controls 
   ids shortened to 8 characters; it writes no journal line, no state, no marker, no `EXIT` and takes no lock, and sends
   no notification.
 
-### Retired hubs are stopped (R6)
+### Retired hubs are stopped (R7)
 
 A hub that hands over to a successor or retires itself because its stage is finished leaves its `claude --bg` session
 running: it stays in `claude agents`, holds memory and may sit on a leftover background command. R7 stops such a session
 once per tick, with `claude stop <id>`; it never runs `claude rm`, so the history is kept and `claude attach <id>` or
-`claude --bg --resume <id>` still reach it. A row of `claude agents --json` is stopped only when all of these hold:
+`claude --bg --resume <id>` still reach it. The owner's requirement is no false positives: R7 stops a session only when
+it can show that nothing needs it, and any doubt (a file it cannot read, a session it cannot place) stops nothing.
 
-1. it is a `background` session with a `pid` (it runs);
+A row of `claude agents --json` is stopped only when all of these hold:
+
+1. it is a `background` session with a `pid` (it runs). A Desktop session, a terminal (`interactive`) one, a headless run
+   and a row with no kind are never touched; a grill session (`hub grill`) is a background session too, but its role is
+   `grill`, never `hub`;
 2. its session id (full or first 8 characters) is a `session` or `cli_session_id` of a `role: "hub"` record in the
-   `retired` list of some stage's `roles.json`;
-3. it is not the session of any live role, of any role and any stage (a session retired in one stage may be live in another);
-4. it is not the `id` of any stage's pending auto-handoff record (a successor that has not registered yet);
-5. it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (15m): the last write of its transcript, else its start time;
-   when neither is known it is skipped. A `busy` status does not protect it, only the quiet transcript does;
-6. `AGENT_HUB_WATCHDOG_REAP` is on (the default; `off` disables R6).
+   `retired` list of an open stage of the watchdog's own home (each home's watchdog reaps its own);
+3. it is not the session of any live role (any role) in any stage of **any known home** (`hubcore.known_homes()`: the
+   resolved home, `~/agent-hub`, the legacy home, `$AGENT_HUB_HOME` and the registry of homes), closed stages included: a
+   session retired in one stage or home may be live in another;
+4. it is not the `id` (or `bg_id`) of a pending auto-handoff record of any stage of any known home (a successor that has
+   not registered yet), and not named by a running `hub takeover` / `hub start` (below);
+5. it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER`, but at least 15 minutes (a foreground tool call of a live session
+   ends within the 10-minute Bash cap). Activity is the newest of: the last write of its transcript, the writes under its
+   own directory `projects/*/<session>/` (a running sub-agent's transcript, tool results) and the start of its current
+   process (a session resumed a minute ago and left idle is not quiet). When no transcript of the session is found
+   (it may keep it under another `CLAUDE_CONFIG_DIR`) the session is skipped: a start time alone says nothing about what it
+   did since. A time in the future counts as activity. A `busy` status does not protect it (a forgotten `jwait` keeps a
+   finished hub busy), only a live transcript does; a `blocked` one is stopped like an idle one;
+6. `AGENT_HUB_WATCHDOG_REAP` is on (the default; `off` disables R7). The setting is per home: a session that is also a
+   retired hub in a home where it is `off` is left alone.
+
+Everything is read afresh for each row and once more right before the stop, which is addressed by the 8-character id: a
+new `claude agents --json` must list exactly one row with that id, still `background` with the same full session id and no
+newer write, and no protected id may share its first 8 characters. If any known home cannot be listed, a stage's
+`roles.json` or `auto-handoff.json` cannot be read or has an unexpected shape, a home's `config.json` cannot be read, the
+registry of homes is unreadable or a recent takeover marker is unreadable, R7 stops nothing in that tick and says why in one
+line (`machine: not stopping any retired hub's session this tick: …`). The window that remains is the milliseconds between
+the last check and `claude stop`; it takes an old retired session re-registered in exactly that window, and no lock
+protocol with the registry writers is worth that.
+
+**With `hub takeover`.** A takeover stops the previous hub itself when it is not busy (`claude stop`, history kept) and
+names it in an ATTENTION line when it is busy, a Desktop or terminal session, or the stop failed. R7 covers what the
+takeover leaves: a hub retired without a successor (`roles retire hub`, `hub close` on a busy hub), a busy leftover with a
+forgotten `jwait`, a failed stop. The two never fight: the new hub is a live role as soon as `roles set hub` has run, and
+until then `hub takeover` and `hub start` keep a marker `<stage>/.takeover-<pid>.json` (the command's pid, the session that
+runs it and the one it registers) which R7 reads in every home; a marker whose process is gone or that is older than 6
+hours is a left-over of a killed command and says nothing. Should both stop an idle old hub at the same moment,
+the history stays and the next tick finds nothing listed.
 
 `watchdog run --dry-run` prints `[plan] <stage>: would stop the background session of retired hub-N (<id8>), quiet M min`
 and stops nothing. A real stop writes one line to the job output, `log.md` and the stage journal; a failed stop is
-reported with the exit code and the next tick tries again. Nothing is sent to a notification channel: R6 stays on the
-machine. If `claude agents --json` fails, R6 does nothing.
+reported with the exit code and the next tick tries again. Nothing is sent to a notification channel: R7 stays on the
+machine. If `claude agents --json` fails, R7 does nothing. Stages closed with `hub close` are outside the watchdog: their
+retired hubs are not candidates (a busy hub of a closed stage stays with the ATTENTION line of `hub close`), but a live
+role recorded in one still protects its session.
+
+Not covered, deliberately: a session whose home is in no registry of homes (a project home is registered when a stage is
+registered in it; delete `homes.json` and it is invisible until its next `roles set`); a retired hub silently busy for 15
+minutes without any write to its transcript or its sub-agents' (a long MCP or workflow call): it is stopped, and `claude
+--bg --resume <id>` brings it back.
 
 ### The load hold (R5)
 

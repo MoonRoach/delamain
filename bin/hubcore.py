@@ -389,6 +389,12 @@ def registry_load() -> list:
     return _registry_read()[0]
 
 
+def registry_readable() -> bool:
+    """False when the registry of homes exists but cannot be read or is not a registry of homes. known_homes() then lists
+    only the homes it finds without it; a caller that must not miss a home (the watchdog's R7) asks first."""
+    return _registry_read()[1] != "bad"
+
+
 def _registry_warn(msg: str) -> None:
     if _STAGE_GUARD and msg not in _REGISTRY_WARNED:  # a hook (stage_guard off) never writes to stderr
         _REGISTRY_WARNED.add(msg)

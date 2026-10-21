@@ -80,7 +80,8 @@ project the task is about (its main clone under `~/repos/`, or where the brief p
    with `MOVE <path>` or `NO PROJECT` means move or add `--repo`, then run it again — nothing was registered before.
    When the replaced hub is a background session that is not busy, the command stops it (`claude stop`, history kept) and
    says so; if it names a Desktop hub that still runs and you have `mcp__ccd_session_mgmt__archive_session`, archive that
-   session with it (a busy one or a terminal one is only named: leave it to the owner).
+   session with it (a busy one or a terminal one is only named: leave it to the owner; once it is quiet for 15 minutes,
+   the watchdog stops a leftover hub session of a retired hub itself, `docs/monitoring.md`, R7).
 
 Leaving: `hub handoff --stage <S>` writes a `HANDOFF-hub-*.md` draft with the facts filled in and TODOs; fill the TODOs
 (skill `handoff`; `hub handoff --finish` refuses a draft with TODO left in § 0–2, and `hub succeed` checks the same). Locks are not released — the successor's `hub takeover` takes them. It first looks for sub-agents of

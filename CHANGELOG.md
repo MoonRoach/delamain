@@ -4,12 +4,16 @@
 
 - **The watchdog stops the background sessions of retired hubs (R7).** A hub that handed over or retired itself kept
   its `claude --bg` session alive, holding memory (ten such sessions were found on one machine, one of them still `busy`
-  on a leftover `jwait`). Each tick now runs `claude stop` on a background session whose id is a retired hub of some
-  stage and is a live role nowhere (no stage), is not a pending auto-handoff successor, and has been quiet for the
-  wake-after time (15 min by default; the last write of its transcript counts, a `busy` status does not protect it). It
-  never removes the session: `claude attach <id>` and `claude --bg --resume <id>` still reach the history. A dry run only
-  prints the plan. `AGENT_HUB_WATCHDOG_REAP=off` turns it off. The hub skill now says to `roles retire hub` and end the
-  turn when the stage is finished, instead of asking the owner to stop the session.
+  on a leftover `jwait`). Each tick now runs `claude stop` on a background session whose id is a retired hub of an open
+  stage of the watchdog's own home and that is needed nowhere: not a live role of any stage of any known hub home (the
+  registry of homes), not a pending auto-handoff successor, not named by a running `hub takeover` / `hub start` (which
+  now keeps a short-lived `<stage>/.takeover-<pid>.json`), and quiet for the wake-after time, at least 15 minutes. Quiet is
+  counted from the newest of the transcript, the writes under the session's own directory (a running sub-agent) and the
+  start of its process; a session whose transcript is not found, or whose time lies in the future, is not stopped. Anything
+  unreadable in any home stops nothing in that tick; `AGENT_HUB_WATCHDOG_REAP=off` is respected per home. The rule is R7
+  because R6 is the limit-pace report. It never removes the session: `claude attach <id>` and `claude --bg --resume <id>`
+  still reach the history. A dry run only prints the plan. The hub skill now says to `roles retire hub` and end the turn
+  when the stage is finished, instead of asking the owner to stop the session.
 
 - **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
   per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never

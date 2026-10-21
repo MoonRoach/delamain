@@ -21,9 +21,11 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R6  an engine's plan week crosses to "ahead of pace" or "runs out before the reset" (bin/limit_pace.py) → one
       `[pace] @hub LIMIT …` line per stage with a hub, once per window and level; the owner is notified once per window
       when it runs out before the reset. AGENT_HUB_LIMIT_PACE=off turns it off
-  R7  the `claude --bg` session of a hub that is retired in its stage and live nowhere (no live role of any stage, not a
-      pending successor), quiet for the wake-after time → `claude stop` (never `claude rm`: the history stays resumable
-      with `claude attach <id>` or `claude --bg --resume <id>`); AGENT_HUB_WATCHDOG_REAP off turns it off
+  R7  the `claude --bg` session of a hub that is retired in its stage and live nowhere on the machine (no live role of any
+      stage of any known hub home, not a pending successor, not named by a running `hub takeover`), quiet for the wake-after
+      time (at least 15 min; transcript, sub-agent writes and process start count) → `claude stop` (never `claude rm`: the
+      history stays resumable with `claude attach <id>` or `claude --bg --resume <id>`); anything unreadable in any home
+      stops nothing; AGENT_HUB_WATCHDOG_REAP off turns it off (per home)
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
@@ -43,6 +45,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import glob
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -1078,6 +1081,10 @@ class ReapAbort(Exception):
     """R7 cannot tell what is live or pending: it stops nothing in this tick."""
 
 
+REAP_MIN_QUIET = dt.timedelta(minutes=15)  # the least R7 waits whatever WAKE_AFTER says: a foreground tool call ends within the Bash cap of 10 min
+TAKEOVER_MAX_AGE = dt.timedelta(hours=6)   # a takeover marker older than this is the left-over of a killed command
+
+
 def same_session(a: str, b: str) -> bool:
     """Whether two session ids name one session. Two full uuids must be equal (two sessions may share their first 8
     characters); when one side is only the 8-character form of `claude agents`, the prefix decides."""
@@ -1090,56 +1097,143 @@ def session_ids(*ids) -> list:
     return [x.strip() for x in ids if isinstance(x, str) and x.strip()]
 
 
-def strict_pending(stage: str):
-    """The pending record of auto-handoff.json: None when the file is absent or holds no pending. Any other failure
-    to read it raises ReapAbort (autopilot.load_state would hide it and drop the protection of a pending successor)."""
-    path = autopilot.state_path(stage)
+def read_json_strict(path: Path):
+    """The parsed JSON of a file; None when the file is absent. Any other failure to read it raises ReapAbort: the loaders
+    of the tools (roles_load, autopilot.load_state) hide or soften it, and a registry that cannot be read must not look
+    like one with nobody in it."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as e:
         raise ReapAbort(f"{path} cannot be read ({type(e).__name__}: {first_line(str(e))})") from None
-    if not isinstance(data, dict) or not isinstance(data.get("pending"), (dict, type(None))):
-        raise ReapAbort(f"{path} has an unexpected shape")
-    pend = data.get("pending")
-    if isinstance(pend, dict) and pend.get("id") is not None and not (isinstance(pend["id"], str) and pend["id"].strip()):
-        raise ReapAbort(f"{path} has a pending record whose id is not a session id")
-    return pend
 
 
-def reap_registry(stages: list):
-    """([(stage, tag, [ids])] of the retired hub records, [ids] that must not be stopped): every live role of ANY stage
-    (a session retired in one stage may be live in another) and the pending auto-handoff successor of ANY stage (one that
-    has not registered yet). Raises ReapAbort when a registry or a pending record cannot be read."""
+def reap_homes() -> list:
+    """Every hub home R7 looks into, the watchdog's own first: the machine's known homes (hc.known_homes(): ~/agent-hub, the
+    legacy home, $AGENT_HUB_HOME and the registry of homes). A session retired as a hub in one home may be a live role or a
+    pending successor in another. Raises ReapAbort when the registry of homes cannot be read (a home might be missing)."""
+    if not hc.registry_readable():
+        raise ReapAbort(f"{hc.registry_path()} is not readable as a registry of homes")
+    try:
+        homes = [Path(k.path) for k in hc.known_homes()]
+    except Exception as e:  # noqa: BLE001 — a list of homes that cannot be made is a reason to stop nothing
+        raise ReapAbort(f"the hub homes cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
+    own = hc.root()
+    return [own] + [h for h in homes if hc.real_path(h) != hc.real_path(own)]
+
+
+def home_stage_names(home: Path) -> list:
+    """Every stage directory of a home, open or closed. A home that cannot be listed raises ReapAbort (stage_names() would
+    answer "no stages")."""
+    try:
+        return sorted(p.name for p in home.iterdir() if hc.STAGE_RE.fullmatch(p.name) and p.is_dir())
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise ReapAbort(f"{home} cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
+
+
+def home_reap_off(home: Path) -> bool:
+    """Whether the config.json of another home switches R7 off there (AGENT_HUB_WATCHDOG_REAP). Read strictly: a file that
+    cannot be read raises ReapAbort. The watchdog's own home is asked through flag(), which also honours the environment."""
+    data = read_json_strict(home / "config.json")
+    if data is None:
+        return False
+    if not isinstance(data, dict):
+        raise ReapAbort(f"{home / 'config.json'} is not a JSON object")
+    val = data.get("AGENT_HUB_WATCHDOG_REAP")
+    if isinstance(val, bool):
+        return not val
+    return isinstance(val, (str, int, float)) and bool(str(val).strip()) and not hc.truthy(str(val))
+
+
+def marker_sessions(path: Path, now: dt.datetime) -> list:
+    """The sessions a running `hub takeover` / `hub start` names in its marker (bin/hub, takeover_marker). A marker whose
+    process is gone, or that is older than TAKEOVER_MAX_AGE, is the left-over of a killed command and says nothing. One that
+    cannot be read raises ReapAbort while it is recent: it may belong to a command that runs now."""
+    t = mtime_of(path)
+    old = t is not None and now - t > TAKEOVER_MAX_AGE
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        ids, pid = session_ids(*rec["sessions"]), rec["pid"]
+    except FileNotFoundError:
+        return []  # removed meanwhile: the command has ended
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        if old or t is None:
+            return []
+        raise ReapAbort(f"{path} cannot be read ({type(e).__name__}: {first_line(str(e))})") from None
+    return [] if old or not pid_alive(pid) else ids
+
+
+def read_stage(home: Path, stage: str, now: dt.datetime) -> tuple:
+    """(roles.json as a dict, [ids of the pending auto-handoff successor], [ids named by a running takeover]) of one stage
+    directory. A file that is absent says nothing; any other failure to read or understand it raises ReapAbort."""
+    d = home / stage
+    data = read_json_strict(d / "roles.json")
+    data = {} if data is None else data
+    if not isinstance(data, dict) or not isinstance(data.get("roles", {}), dict) or not isinstance(data.get("retired", []), list):
+        raise ReapAbort(f"{d / 'roles.json'} has an unexpected shape")
+    state = read_json_strict(d / "auto-handoff.json")
+    pend = None
+    if state is not None:
+        if not isinstance(state, dict) or not isinstance(state.get("pending"), (dict, type(None))):
+            raise ReapAbort(f"{d / 'auto-handoff.json'} has an unexpected shape")
+        pend = state.get("pending")
+    pend_ids = []
+    if isinstance(pend, dict):
+        if pend.get("id") is not None and not (isinstance(pend["id"], str) and pend["id"].strip()):
+            raise ReapAbort(f"{d / 'auto-handoff.json'} has a pending record whose id is not a session id")
+        pend_ids = session_ids(pend.get("id"), pend.get("bg_id"), pend.get("actual_thread_id"))
+    marks = []
+    try:
+        markers = sorted(d.glob(".takeover-*.json"))
+    except OSError as e:
+        raise ReapAbort(f"{d} cannot be listed ({type(e).__name__}: {first_line(str(e))})") from None
+    for m in markers:
+        marks += marker_sessions(m, now)
+    return data, pend_ids, marks
+
+
+def reap_registry() -> tuple:
+    """([(stage, tag, [ids])] of the retired hub records that may be stopped, [ids] that must not be stopped).
+
+    Candidates are the retired hubs of the watchdog's own home, in its open stages: each home's watchdog reaps its own.
+    The protection spans EVERY known home and every stage of it, closed ones too: a live role of any kind (a session retired
+    as a hub in one stage or home may be live in another), the pending auto-handoff successor, the sessions named by a
+    running takeover, and the retired hubs of a home that switched R7 off (its setting is respected there). The list is read
+    afresh on every call. Raises ReapAbort when a home, a registry, a pending record or a marker cannot be read."""
+    homes = reap_homes()
+    now = clock()
+    open_stages = set(stage_names())
     retired, protected = [], []
-    for stage in stages:
-        try:
-            data = hc.roles_load(stage)
-        except hc.Failure as e:
-            raise ReapAbort(first_line(str(e))) from None
-        for rec in data["roles"].values():
-            if isinstance(rec, dict):
-                protected += session_ids(rec.get("session"), rec.get("cli_session_id"))
-        for rec in data["retired"]:
-            if isinstance(rec, dict) and rec.get("role") == "hub":
+    for i, home in enumerate(homes):
+        off = i > 0 and home_reap_off(home)
+        for stage in home_stage_names(home):
+            data, pend_ids, marks = read_stage(home, stage, now)
+            for rec in data.get("roles", {}).values():
+                if isinstance(rec, dict):
+                    protected += session_ids(rec.get("session"), rec.get("cli_session_id"))
+            protected += pend_ids + marks
+            for rec in data.get("retired", []):
+                if not (isinstance(rec, dict) and rec.get("role") == "hub"):
+                    continue
                 ids = session_ids(rec.get("session"), rec.get("cli_session_id"))
-                if ids:
+                if off:
+                    protected += ids
+                elif ids and i == 0 and stage in open_stages:
                     retired.append((stage, rec.get("tag") or "hub", ids))
-        pend = strict_pending(stage)
-        if pend:
-            protected += session_ids(pend.get("id"))
     return retired, protected
 
 
 def retired_hub_of(row: dict):
-    """(stage, tag) when the row is the session of a retired hub that is protected nowhere, else None. The stages and
-    their registries are read afresh (a stage created meanwhile counts). A full-uuid protection covers only that uuid,
-    an 8-character one every session with that prefix: over-protecting is fine."""
+    """(stage, tag) when the row is the session of a retired hub that is protected nowhere, else None. The homes, stages and
+    registries are read afresh (a stage created meanwhile counts). A full-uuid protection covers only that uuid, an
+    8-character one every session with that prefix: over-protecting is fine."""
     ident = (row.get("sessionId") or row.get("id") or "").strip()
     if not ident:
         return None
-    retired, protected = reap_registry(stage_names())
+    retired, protected = reap_registry()
     if any(same_session(p, ident) for p in protected):
         return None
     for stage, tag, ids in retired:
@@ -1148,11 +1242,13 @@ def retired_hub_of(row: dict):
     return None
 
 
-def stop_blocker(cli, row: dict, cwd):
-    """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called right before `claude stop`, which is addressed
-    by the 8-character id: a fresh `claude agents --json` (not the tick's cache) must list exactly one row with that id,
-    still a running background session with the same full sessionId, and no protected id (a live role of any stage, a
-    pending successor; full or short) may share the 8-character prefix. Raises ReapAbort when a registry cannot be read."""
+def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
+    """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called
+    right before `claude stop`, which is addressed by the 8-character id: a fresh `claude agents --json` (not the tick's
+    cache) must list exactly one row with that id, still a running background session with the same full sessionId that has
+    not written anything since it was chosen (the owner may have resumed it meanwhile), and no protected id (a live role of
+    any stage of any home, a pending successor, a running takeover; full or short) may share the 8-character prefix. Raises
+    ReapAbort when a registry cannot be read."""
     short = (row.get("id") or (row.get("sessionId") or "")[:8]).strip()
     fresh = autopilot.list_agents(cli.path, cwd)
     if fresh is None:
@@ -1160,41 +1256,78 @@ def stop_blocker(cli, row: dict, cwd):
     same_id = [r for r in fresh if r.get("id") == short]
     if len(same_id) != 1:
         return f"{len(same_id)} listed sessions have the id {short}", False
-    now = same_id[0]
-    if now.get("kind") != "background" or not now.get("pid") or (now.get("sessionId") or "") != (row.get("sessionId") or ""):
+    seen = same_id[0]
+    if seen.get("kind") != "background" or not seen.get("pid") or (seen.get("sessionId") or "") != (row.get("sessionId") or ""):
         return f"the session listed as {short} is not the one that was chosen", False
-    if any(p[:8] == short for p in reap_registry(stage_names())[1]):
-        return f"a live role or a pending successor shares the id {short}", False
+    last = last_activity(seen)
+    if last is None or now - last < need:
+        return f"the session {short} wrote something since it was chosen", False
+    if any(p[:8] == short for p in reap_registry()[1]):
+        return f"a live role, a pending successor or a running takeover shares the id {short}", False
     return None
+
+
+def tree_mtimes(path: Path, cap: int = 500) -> list:
+    """The modification times of a directory, of its entries and of the entries of its subdirectories, at most `cap` of
+    them: what a session writes outside its transcript (a running sub-agent's transcript, tool results)."""
+    out, seen, todo = [], 0, [(path, 0)]
+    while todo and seen < cap:
+        d, depth = todo.pop()
+        try:
+            out.append(os.stat(d).st_mtime)
+            with os.scandir(d) as it:
+                for e in it:
+                    seen += 1
+                    try:
+                        out.append(e.stat().st_mtime)
+                        if depth < 1 and e.is_dir(follow_symlinks=False):
+                            todo.append((Path(e.path), depth + 1))
+                    except OSError:
+                        continue
+                    if seen >= cap:
+                        break
+        except OSError:
+            continue
+    return [dt.datetime.fromtimestamp(m, hc.TZ) for m in out]
 
 
 def last_activity(row: dict):
-    """When the background session of a row last did anything: its transcript's mtime, else its start; None when unknown."""
-    sid = row.get("sessionId") or ""
+    """When the background session of a row last did anything: the newest of its transcript's last write (every project
+    directory holding a file of that name: a resumed session may continue in another), the writes under its own directory
+    (a running sub-agent's transcript, tool results) and the start of its current process (a session resumed a minute ago and
+    left idle). None when no transcript of the session is found: it may be kept under another CLAUDE_CONFIG_DIR, and a start
+    time alone says nothing about what the session did since, so the session is not judged."""
+    sid = (row.get("sessionId") or "").strip()
+    if not sid:
+        return None
     try:
-        path = session_effort.find_transcript(sid) if sid else None
+        files = list((session_effort.claude_home() / "projects").glob(f"*/{glob.escape(sid)}.jsonl"))
     except OSError:
-        path = None
-    t = mtime_of(path) if path else None
-    if t is not None:
-        return t
+        return None
+    times = [mtime_of(f) for f in files]
+    for f in files:
+        times += tree_mtimes(f.with_suffix(""))
+    times = [t for t in times if t is not None]
+    if not times:
+        return None
     started = row.get("startedAt")
     if isinstance(started, (int, float)) and not isinstance(started, bool):
         try:
-            return dt.datetime.fromtimestamp(started / 1000, hc.TZ)
+            times.append(dt.datetime.fromtimestamp(started / 1000, hc.TZ))
         except (OverflowError, OSError, ValueError):
-            return None
-    return None
+            pass
+    return max(times)
 
 
 def rule_r7(tick: Tick) -> None:
-    """Stop (never remove) the background session of a retired hub that is live nowhere, once it has been quiet for the
-    wake-after time. A busy status does not protect it: a left-over background command keeps a finished hub busy. The
-    registries are read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
+    """Stop (never remove) the background session of a retired hub that is live nowhere on the machine, once it has been
+    quiet for the wake-after time (at least 15 minutes). A busy status does not protect it: a left-over background command
+    keeps a finished hub busy. The registries of every home are read again right before each stop (a stop takes up to 30 s;
+    the session may have become live meanwhile)."""
     if not flag("AGENT_HUB_WATCHDOG_REAP"):
         return
     try:
-        if not reap_registry(stage_names())[0]:
+        if not reap_registry()[0]:
             return
         rows = claude_rows(tick)
         if not rows:
@@ -1203,6 +1336,7 @@ def rule_r7(tick: Tick) -> None:
             cli = hc.find_claude(persist=False)
         except hc.Failure:
             return
+        need = max(tick.wake_after, REAP_MIN_QUIET)
         done = set()
         for row in rows:
             ident = row.get("sessionId") or row.get("id") or ""
@@ -1216,7 +1350,7 @@ def rule_r7(tick: Tick) -> None:
             if last is None:
                 continue
             quiet = tick.now - last
-            if quiet < tick.wake_after:
+            if quiet < need:
                 continue
             who = f"{tag} ({ident[:8]})"
             mins = int(quiet.total_seconds() // 60)
@@ -1227,7 +1361,7 @@ def rule_r7(tick: Tick) -> None:
             cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
             if retired_hub_of(row) is None:  # re-read right before the stop: registered or pending since?
                 continue
-            blocker = stop_blocker(cli, row, cwd)
+            blocker = stop_blocker(cli, row, cwd, need, tick.now)
             if blocker:
                 if blocker[1]:
                     tick.say(stage, "R7", f"not stopping retired {who}: {blocker[0]}")

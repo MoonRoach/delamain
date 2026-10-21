@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **A bundled reviewer skill: Gemini 4 Argon through Antigravity CLI.** `delamain:agy-review` and `bin/agy-review`
+  run a read-only review with Google's `agy` as a third vendor beside Claude and Codex, plugged in as a reviewer skill
+  (not as an `agent spawn` engine). `agy-review run --cwd <checkout> --brief <file>` starts the review detached and prints
+  `run: <dir>` under `<hub home>/agy-runs/`; the directory holds the brief, agy's JSON per attempt, `final.md`,
+  `usage.json` and, written last, `rc` (`0` review produced, `2` no answer after two resumes, else agy's exit code).
+  With a stage it journals a start line and `REVIEWED <run>/final.md — rc 0`. The review runs under its own HOME
+  (`<hub home>/agy-review-home`), whose `settings.json` is rewritten on every run: only reading commands are allowed,
+  writes, the web, MCP, shells, interpreters and network clients are denied, and `agy` runs with `--sandbox`
+  (never `--dangerously-skip-permissions`); the owner's own `~/.gemini/antigravity-cli/settings.json` is not touched.
+  A headless run that ends without an answer is resumed, at most twice. `agy-review limits` reads the quota from agy's
+  `/usage` panel through a pty, and `agy-review check` is the availability test for a reviewer entry (agy installed,
+  Argon's weekly quota not known to be below 20 %). New hub-wide settings `AGENT_HUB_AGY_BIN`,
+  `AGENT_HUB_AGY_REVIEW_MODEL` and `AGENT_HUB_AGY_REVIEW_MIN_LEFT`. A ready config entry and the design are in
+  [docs/reviewers.md](docs/reviewers.md#the-bundled-argon-reviewer-agy-review). Verified on macOS with agy 1.4.0; Linux is
+  untested. Tests use a stand-in `agy` (`tests/fake_agy.py`).
+
+- **An optional second opinion from another vendor: `hub reviewer --second`.** The rule "a `risky` change gets the same
+  single review, not a second reviewer" is now "one review by default; the hub may add one second opinion from a
+  different vendor when a miss would be costly and the quota allows", its decision and never required for a class. In a
+  trial on two real merge requests, Argon and a Codex reviewer found about as many real defects and mostly different
+  ones. A reviewer entry may carry `"second": true` (a boolean; anything else is rejected): it serves second opinions
+  only, and a plain `hub reviewer` walk passes over it without running its `check`. `hub reviewer --second` chooses the
+  primary reviewer exactly as before, then prints the first other available entry in list order, ordinary or `second`;
+  `--json` adds `second` and `primary`; exit 1 means only that there is no second opinion. Output, exit codes and JSON of
+  the plain walk are unchanged for existing configs. The hub skill's rule 10 and
+  [docs/reviewers.md](docs/reviewers.md#a-second-opinion) carry the new rule.
+
 - **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
   per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never
   appeared in the shared `agent-top`, which listed the resolved home only, though its agents run on the same machine. A

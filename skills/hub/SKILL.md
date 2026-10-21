@@ -216,8 +216,9 @@ repository, then the stage directory, a later file winning — and `HUB-NOTES.md
 9. **Agree the business result before you brief** (*Planning a stage*).
 10. **A change gets the review its class says** (`hub reviewer --for <class>`): `docs` — documentation, or tooling and
     configuration whose own positive and negative controls ran and are shown in the PR — gets no model review; `code`
-    gets one review; `risky` (money, migrations, production, permissions) the same single review, its brief narrowed
-    to that risk, not a second reviewer.
+    and `risky` (money, migrations, production, permissions) get one review, a `risky` brief narrowed to that risk. The
+    hub *may* add one second opinion from another vendor (`hub reviewer --second`) when a miss would be costly and the
+    quota allows: its call, never a default.
 11. **The reviewer is a different model from the author.**
 12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the
     owner did not set.** Before asking about a merge, deploy or release, check `ask allow --list --stage <S>`: a

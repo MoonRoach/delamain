@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
+  from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
+  the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary
+  recognized work. Codex active-turn Stop
+  continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
+  measured headroom checks. Paused implementation stays paused through an authorized same-stage read-only
+  discussion transfer. Existing grilling holds retain their exceptions and suppress Stop continuation; the ceiling
+  still requires the owner's handoff decision. Redacted lifecycle diagnostics are best effort; the independent
+  compaction veto is unchanged.
+
+- **Soft context budgets preserve replies and require complete handoff.** Every registered autopilot hub prompt
+  above WARN repeats the acknowledgement and next-quiet-point handoff advisory, preserving pending input.
+  Complete handoff still requires one native reservation and verified takeover. Settings failures retain a truthful
+  checkpoint/reply instruction; unavailable usage is never reported as measured usage. The BLOCK work gate
+  permits narrow settings, authority and generated-handoff reads with trusted executable resolution and no
+  shell-assignment overrides. Native conversion/cmdlet reads require the inherited Desktop hook marker and
+  proven native origin; bridge Bash bodies cannot borrow those exceptions. A failed context-window enrichment
+  retains known usage, explicit thresholds and the existing missing-window defaults.
+  Only the three numeric budget thresholds accept private stage overrides
+  (environment > registered stage > hub home > unchanged defaults). The independent compaction veto remains.
+
+- **Visible Codex compaction recovery.** The unconditional compaction veto now includes
+  the same human-readable warning in Python and native Windows hook output. It explains
+  that the automatic context threshold can stop a turn before an answer and points to
+  checkpoint recovery with a fresh authorized coordinator for the same stage. Existing
+  compaction, scope and permission policy remains unchanged.
+
+- **Codex compaction veto.** Enabled, trusted `PreCompact` hooks stop both automatic and manual
+  compaction independently of context budgets, identifiers and transcripts. The Windows envelope
+  returns the veto before WSL transport. Enforcement requires runtime dispatch and trusted hooks;
+  existing checkpoint and handoff policy is preserved.
+
+- **Worktree base metadata and diagnostics.** The recorded/ref SHA resolves in the caller checkout,
+  and unborn caller HEAD is rejected before creation with a caller-specific diagnostic. The actual
+  HEAD checkout already worked in main. Regression controls now distinguish those cases and use
+  canonical paths for macOS-style temporary-root aliases.
+- **Codex handoff settings and repository validation.** Latest complete settings survive long rollouts;
+  unknown model/effort/sandbox/native approval fail before reservation rather than falling back to
+  defaults. Refusal describes the allowed checkpoint/stop recovery without compaction or guessed
+  permissions. Contradictory request retries fail, and native preparation verifies the recorded Git
+  repository/worktree before reserving a successor. Claude and shared handoff defaults are retained.
+- **Native observation lifecycle.** Birth serialization skew, inherited history and resumed/stopped
+  turns are handled without fabricating death. Event activity uses owned native timestamps rather
+  than file mtime. Unknown observations expire after one hour and remain explicitly unknown in
+  show-all; proven live process evidence still blocks handoff. Native children use native completion
+  waits; detached workers and journal events use the canonical journal waiter.
+
+## 1.0.14 — 2026-10-21
+
 - **A bundled reviewer skill: Gemini 4 Argon through Antigravity CLI.** `delamain:agy-review` and `bin/agy-review`
   run a read-only review with Google's `agy` as a third vendor beside Claude and Codex, plugged in as a reviewer skill
   (not as an `agent spawn` engine). `agy-review run --cwd <checkout> --brief <file>` starts the review detached and prints
@@ -60,54 +109,6 @@
   like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
   (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
   Found by @Cartograf666 in #76.
-- **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
-  from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
-  the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary
-  recognized work. Codex active-turn Stop
-  continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
-  measured headroom checks. Paused implementation stays paused through an authorized same-stage read-only
-  discussion transfer. Existing grilling holds retain their exceptions and suppress Stop continuation; the ceiling
-  still requires the owner's handoff decision. Redacted lifecycle diagnostics are best effort; the independent
-  compaction veto is unchanged.
-
-- **Soft context budgets preserve replies and require complete handoff.** Every registered autopilot hub prompt
-  above WARN repeats the acknowledgement and next-quiet-point handoff advisory, preserving pending input.
-  Complete handoff still requires one native reservation and verified takeover. Settings failures retain a truthful
-  checkpoint/reply instruction; unavailable usage is never reported as measured usage. The BLOCK work gate
-  permits narrow settings, authority and generated-handoff reads with trusted executable resolution and no
-  shell-assignment overrides. Native conversion/cmdlet reads require the inherited Desktop hook marker and
-  proven native origin; bridge Bash bodies cannot borrow those exceptions. A failed context-window enrichment
-  retains known usage, explicit thresholds and the existing missing-window defaults.
-  Only the three numeric budget thresholds accept private stage overrides
-  (environment > registered stage > hub home > unchanged defaults). The independent compaction veto remains.
-
-- **Visible Codex compaction recovery.** The unconditional compaction veto now includes
-  the same human-readable warning in Python and native Windows hook output. It explains
-  that the automatic context threshold can stop a turn before an answer and points to
-  checkpoint recovery with a fresh authorized coordinator for the same stage. Existing
-  compaction, scope and permission policy remains unchanged.
-
-- **Codex compaction veto.** Enabled, trusted `PreCompact` hooks stop both automatic and manual
-  compaction independently of context budgets, identifiers and transcripts. The Windows envelope
-  returns the veto before WSL transport. Enforcement requires runtime dispatch and trusted hooks;
-  existing checkpoint and handoff policy is preserved.
-
-- **Worktree base metadata and diagnostics.** The recorded/ref SHA resolves in the caller checkout,
-  and unborn caller HEAD is rejected before creation with a caller-specific diagnostic. The actual
-  HEAD checkout already worked in main. Regression controls now distinguish those cases and use
-  canonical paths for macOS-style temporary-root aliases.
-- **Codex handoff settings and repository validation.** Latest complete settings survive long rollouts;
-  unknown model/effort/sandbox/native approval fail before reservation rather than falling back to
-  defaults. Refusal describes the allowed checkpoint/stop recovery without compaction or guessed
-  permissions. Contradictory request retries fail, and native preparation verifies the recorded Git
-  repository/worktree before reserving a successor. Claude and shared handoff defaults are retained.
-- **Native observation lifecycle.** Birth serialization skew, inherited history and resumed/stopped
-  turns are handled without fabricating death. Event activity uses owned native timestamps rather
-  than file mtime. Unknown observations expire after one hour and remain explicitly unknown in
-  show-all; proven live process evidence still blocks handoff. Native children use native completion
-  waits; detached workers and journal events use the canonical journal waiter.
-
-
 ## 1.0.13 — 2026-10-15
 
 - **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level

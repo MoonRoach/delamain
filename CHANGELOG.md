@@ -18,6 +18,8 @@
   the history. A dry run only prints the plan. The hub skill now says to `roles retire hub` and end the turn when the stage
   is finished, instead of asking the owner to stop the session.
 
+## 1.0.14 — 2026-10-21
+
 - **A bundled reviewer skill: Gemini 4 Argon through Antigravity CLI.** `delamain:agy-review` and `bin/agy-review`
   run a read-only review with Google's `agy` as a third vendor beside Claude and Codex, plugged in as a reviewer skill
   (not as an `agent spawn` engine). `agy-review run --cwd <checkout> --brief <file>` starts the review detached and prints

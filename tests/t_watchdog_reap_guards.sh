@@ -335,7 +335,7 @@ for _ in $(seq 100); do [ -f "$R/child.ready" ] && break; sleep 0.1; done
 kill -0 "$ROWPID" && [ -f "$R/child.ready" ]; check $? 0 "…the process of the row is alive and polling for the flag"
 check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 0 "…and has no child yet"
 rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1; check $? 0 "child appears during the last listing: the tick exits 0"
-check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the child `sleep 3003` did appear, after the flag"
+check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the child (sleep 3003) did appear, after the flag"
 stopped "a child starts between the first listing and the last look: not stopped" ""
 unset ROWPID
 

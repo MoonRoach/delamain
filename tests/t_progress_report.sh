@@ -20,14 +20,15 @@ template = (root / 'skills/progress-report/resources/template.html').read_text()
 block = re.search(r'<script type="application/json" id="report">\n(.*?)\n</script>', template, re.S)
 assert block, 'template has no report data block'
 data = json.loads(block.group(1))
-statuses = {'done', 'review', 'active', 'planned', 'decision', 'dropped'}
+statuses = {'done', 'review', 'active', 'planned', 'blocked', 'decision', 'unknown', 'dropped'}
 assert set(data['statuses']) == statuses, data['statuses']
 for track in data['tracks']:
     for item in track['items']:
         assert item['status'] in statuses, item
-for key in ('eyebrow', 'headline', 'count_format', 'lede', 'tracks', 'road', 'notes', 'foot', 'track_count_format'):
+for key in ('lang', 'eyebrow', 'headline', 'count_format', 'done_means', 'lede', 'show_bar', 'metrics', 'tracks',
+            'previous', 'changes_format', 'road', 'notes', 'foot', 'track_count_format'):
     assert key in data and re.search(rf'`{key}(\[\])?`', text), key
-for kind in ('now', 'soon', 'next', 'decision'):
+for kind in ('now', 'soon', 'next', 'blocked', 'decision'):
     assert f'.step.{kind} ' in template and f'`{kind}`' in text, kind
 for status in statuses:
     assert f'`{status}`' in text, status

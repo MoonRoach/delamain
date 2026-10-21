@@ -3,13 +3,17 @@
 ## Unreleased
 
 - **New skill `progress-report`: a one-page infographic status of a stage, phase or project.** Asked for “a status
-  with an infographic”, a hub builds a page from the bundled template: the headline count (*17 of 30 done*), one
-  segmented bar over six statuses (done, review, active, planned, needs decision, dropped), a card per track with its
-  tasks, the road to the end with the owner's open decisions, and notes on gaps in the plan. The agent fills only a JSON
-  block; every count and percentage is computed from the task list, so the headline, bar and counters cannot disagree.
-  The skill says where statuses come from (prod tag, merges, MRs and CI, journal, handoffs, question register), that an
-  unverified task is never counted as done, and publishes the page as a private Artifact where the host can, else saves
-  it under the stage's `coordinator/`.
+  with an infographic”, a hub builds a page from the bundled template: the headline count by the scope's own definition
+  of done (`done_means`: on production, merged and tagged, ticked in the phase checklist, accepted by the owner), the
+  change since the previous report (computed from its saved JSON, so a grown scope does not read as regression), figures
+  typed by hand each with its source, a segmented bar over seven statuses (done, awaiting check, in progress, not
+  started, waiting on others, needs decision, unverified; dropped is excluded) that can be switched off for
+  measurements and incident windows, a card per track, the road to the end and notes on gaps in the plan. The agent
+  fills only a JSON block; counts and percentages are computed. The skill first decides whether a few lines of text are
+  the better answer (a short deadline, a hub as the reader, a small or closed stage), works for many MRs or one MR per
+  phase, a tracker, a checklist or no code at all, and delivers where the reader is: a private Artifact for the owner,
+  a screenshot or markdown for an issue or chat, the self-contained HTML file otherwise, asking the owner before any
+  hosted copy of money, personal data or production topology.
 
 - **`agent-top` shows the stages of every hub home on the machine, backed by a registry of homes.** A stage in a
   per-project home (`.agent-hub/config.json` `"AGENT_HUB_HOME": "project"`, i.e. `<main checkout>/.agent-hub/local/`) never

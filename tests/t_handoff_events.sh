@@ -1,8 +1,7 @@
 #!/bin/bash
 # Picked up automatically by run_all.sh's tests/t_*.sh discovery.
 set -euo pipefail
-. "$(dirname "set -euo pipefail
-")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
+. "$(dirname "$0")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
 T="$(cd "$(dirname "$0")" && pwd)"
 S="$(mktemp -d)"
 trap 'rm -rf "$S"' EXIT

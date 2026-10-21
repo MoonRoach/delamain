@@ -1,8 +1,7 @@
 #!/bin/bash
 # Exercise registered real hook processes; no Codex model or runtime mutation.
 set -eu
-. "$(dirname "set -eu
-")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
+. "$(dirname "$0")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
 T="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$T/.." <<'PY'
 import json

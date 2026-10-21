@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Caller refs and bounded metadata reads: temp repositories/logs, no model calls.
 set -euo pipefail
-. "$(dirname "set -euo pipefail
-")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
+. "$(dirname "$0")/isolate.sh"   # isolate inherited paths before custom fixture sandboxes
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT

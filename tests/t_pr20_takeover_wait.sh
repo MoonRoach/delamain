@@ -229,13 +229,10 @@ def l3_skill():
     first_wait_contract('shared skill Autopilot', text)
 
 def m3():
-    # Keep the complete legacy contract with the approved next-quiet-point wording delta.
-    # The fixture remains immutable and available in shallow checkouts/source archives.
+    # Immutable review contract, available in shallow CI checkouts and source archives too.
     paragraph = (root / 'tests/fixtures/autopilot-0.9.0.md').read_text().rstrip('\n')
-    assert paragraph.count('At a quiet point') == 1
-    paragraph = paragraph.replace('At a quiet point', 'At the next quiet point')
     current = (root / 'skills/hub/references/autopilot.md').read_text()
-    assert paragraph in current, 'M3: the complete Claude/CLI Autopilot paragraph must match the approved contract'
+    assert paragraph in current, 'M3: the 0.9.0 Claude/CLI Autopilot paragraph must remain verbatim'
     section = current.split('**Autopilot**', 1)[1].lower()
     assert 'desktop' in section and 'finite' in section, 'M3: Desktop and finite-queue additions must remain'
 

@@ -268,8 +268,8 @@ print('PASS unknown or missing active sandbox fails; explicit override remains s
 assert 'detached Codex successor' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
 assert '--engine codex' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
 soft = ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
-assert 'Hand over now' in soft and 'already-active atomic operation' in soft
-assert 'next quiet point' not in soft and 'not a mandatory STOP' not in soft
+assert 'At the next quiet point, hand over; acknowledge the owner and finish any already-active atomic merge, lock or message operation first' in soft
+assert 'Hand over now' not in soft and 'not a mandatory STOP' not in soft
 assert 'Do not compact' in soft and 'available compaction' not in soft
 hard = ap.instruction('stage-a', 'opus', 'default', str(cwd), True, '10k')
 assert 'Hand over now' in hard and 'You may continue' not in hard

@@ -323,14 +323,19 @@ X=$(sid e0000039); retire_hub a "$X" hub-63; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "import time; time.sleep(3000)"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 rows "$X"; tick "python child"; stopped "the process has a Python child: not stopped" ""
 unset ROWPID
-# a child that appears between the first look and the last one (the process table is read again right before the stop)
-X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag"
+# a child that appears between the first look and the last one (the process table is read again right before the stop). The
+# process gets the flag path as an argument and says "ready" once it polls for the flag; the hook of the second listing touches the flag
+X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag" "$R/child.ready"
 spawn python3 -c '
 import os, subprocess, sys, time
+open(sys.argv[2], "w").close()
 while not os.path.exists(sys.argv[1]): time.sleep(0.05)
-subprocess.Popen(["sleep", "3003"]); time.sleep(3000)' "$R/child.flag"; ROWPID=$SPAWNED; sleep 1
-kill -0 "$ROWPID"; check $? 0 "…the process of the row is alive and has no child yet"
-rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1
+subprocess.Popen(["sleep", "3003"]); time.sleep(3000)' "$R/child.flag" "$R/child.ready"; ROWPID=$SPAWNED
+for _ in $(seq 100); do [ -f "$R/child.ready" ] && break; sleep 0.1; done
+kill -0 "$ROWPID" && [ -f "$R/child.ready" ]; check $? 0 "…the process of the row is alive and polling for the flag"
+check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 0 "…and has no child yet"
+rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1; check $? 0 "child appears during the last listing: the tick exits 0"
+check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the child `sleep 3003` did appear, after the flag"
 stopped "a child starts between the first listing and the last look: not stopped" ""
 unset ROWPID
 
@@ -396,6 +401,25 @@ printf '#!/bin/sh\necho %s > "%s/config.json"\n' "'{\"AGENT_HUB_WATCHDOG_REAP\":
 rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:sh $R/cfg-off.sh" WD run > "$R/tick.out" 2>&1
 stopped "REAP is switched off while the last listing is being made: not stopped" ""
 rm -f "$R/config.json"; rows "$X"; tick "control, REAP stays on"; stopped "control: REAP stays on: stopped" "stop e00000a3 "
+
+# ================================================================== registry, last look
+# the registries are read again after the fresh listing (up to 30 s slow): a role set, or a successor registered, while the
+# listing is being made protects the session
+X=$(sid e00000b1); retire_hub a "$X" hub-140; quiet_for "$X" 30; rows "$X"
+reset_log; FAKE_WD_ON_AGENTS="2:\"$B/roles\" set --stage a hub $X --kind cli --tag live-now > /dev/null" WD run > "$R/tick.out" 2>&1; check $? 0 "role set during the last listing: the tick exits 0"
+stopped "the session is registered as a live role while the last listing is made: not stopped" ""
+"$B/roles" retire --stage a hub --note t > /dev/null
+rows "$X"; tick "control, role retired again"; stopped "control: no live role: stopped" "stop e00000b1 "
+X=$(sid e00000b2); retire_hub a "$X" hub-141; quiet_for "$X" 30; rows "$X"
+cat > "$R/hook-pending.py" <<'PY'
+import json, os, sys
+d = os.path.join(os.environ["AGENT_HUB_HOME"], "a")
+json.dump({"chain": 1, "pending": {"n": 4, "kind": "bg", "id": sys.argv[1], "at": os.environ["AT5"], "taken_over": False}}, open(d + "/auto-handoff.json", "w"))
+PY
+reset_log; FAKE_WD_ON_AGENTS="2:python3 $R/hook-pending.py ${X:0:8}" WD run > "$R/tick.out" 2>&1; check $? 0 "successor registered during the last listing: the tick exits 0"
+stopped "a pending successor appears while the last listing is made: not stopped" ""
+rm -f "$R/a/auto-handoff.json"
+rows "$X"; tick "control, no pending record"; stopped "control: no pending record: stopped" "stop e00000b2 "
 
 # ================================================================== scans
 # the activity of a session is unknown when its directory cannot be scanned completely: it is not stopped

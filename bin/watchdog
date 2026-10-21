@@ -1448,28 +1448,39 @@ def busy_reason(row: dict, procs: dict) -> str:
     return ""
 
 
+def registry_blocker(row: dict, short: str):
+    """Why the registries of every home no longer allow the stop of the session of `row` (`short`: its 8-character id), else
+    None: it is not a retired, unprotected hub any more, or a live role, a pending successor or a running takeover, full or
+    short, shares the 8-character prefix (`claude stop` takes the short id). Read afresh on every call; may raise ReapAbort."""
+    if retired_hub_of(row) is None:
+        return f"the session {short} is no longer a retired, unprotected hub"
+    if any(p[:8] == short for p in reap_registry()[1]):
+        return f"a live role, a pending successor or a running takeover shares the id {short}"
+    return None
+
+
 def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
     """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called
     right before `claude stop`, which is addressed by the 8-character id. Two stages, the second as short as it can be:
-    1. the scans: the registries of every home (still a retired hub, no live role, pending successor or running takeover,
-       full or short, shares the 8-character prefix) and the session's activity (its quiet time, from a table of processes
-       that must be read completely);
-    2. the last look, in this order: a fresh `claude agents --json` (not the tick's cache) that lists exactly one row with that
-       id, still a running background session with the same full sessionId and the same process, `idle` and `done`; a fresh
-       process table in which that process has no descendant at all; the activity once more (the owner may have resumed the
-       session meanwhile); and, last of all, AGENT_HUB_WATCHDOG_REAP (the environment and the strictly read config.json).
+    1. the scans: the registries of every home (see registry_blocker) and the session's activity (its quiet time, from a
+       table of processes that must be read completely);
+    2. the last look, in this order: a fresh `claude agents --json` (not the tick's cache, and up to 30 s slow) that lists
+       exactly one row with that id, still a running background session with the same full sessionId and the same process,
+       `idle` and `done`; a fresh process table in which that process has no descendant at all; the activity once more (the
+       owner may have resumed the session meanwhile); the registries once more (a role set, a successor or a takeover
+       started while the listing was being made); and, last of all, AGENT_HUB_WATCHDOG_REAP (the environment and the strictly
+       read config.json).
     Raises ReapAbort when a registry or the setting cannot be read."""
     short = (row.get("id") or (row.get("sessionId") or "")[:8]).strip()
-    if retired_hub_of(row) is None:
-        return f"the session {short} is no longer a retired, unprotected hub", False
+    why = registry_blocker(row, short)
+    if why:
+        return why, False
     procs = read_procs()
     if procs is None:
         return "`ps` failed or could not be read completely", True
     last = last_activity(row, procs)
     if last is None or now - last < need:
         return f"the session {short} wrote something since it was chosen, or what it did cannot be told", False
-    if any(p[:8] == short for p in reap_registry()[1]):
-        return f"a live role, a pending successor or a running takeover shares the id {short}", False
     # the last look
     fresh = autopilot.list_agents(cli.path, cwd)
     if fresh is None:
@@ -1489,6 +1500,9 @@ def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
     last = last_activity(seen, procs)
     if last is None or now - last < need:
         return f"the session {short} wrote something since it was chosen, or what it did cannot be told", False
+    why = registry_blocker(row, short)
+    if why:
+        return why, False
     if not reap_enabled():
         return "AGENT_HUB_WATCHDOG_REAP is off now", False
     return None

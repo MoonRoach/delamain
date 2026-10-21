@@ -94,15 +94,20 @@ X=$(sid e0000039); retire_hub a "$X" hub-63; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "import time; time.sleep(3000)"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 rows "$X"; tick "python child"; stopped "the process has a Python child: not stopped" ""
 unset ROWPID
-# a child that appears between the first look and the last one (the process table is read again right before the stop)
-X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag"
+# a child that appears between the first look and the last one (the process table is read again right before the stop). The
+# process gets the flag path as an argument and says "ready" once it polls for the flag; the hook of the second listing touches the flag
+X=$(sid e000003a); retire_hub a "$X" hub-64; quiet_for "$X" 30; rm -f "$R/child.flag" "$R/child.ready"
 spawn python3 -c '
-import os, subprocess, time
-while not os.path.exists(os.environ["CHILD_FLAG"]): time.sleep(0.05)
-subprocess.Popen(["sleep", "3003"]); time.sleep(3000)'; ROWPID=$SPAWNED
-rows "$X"; reset_log; CHILD_FLAG=$R/child.flag FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1
+import os, subprocess, sys, time
+open(sys.argv[2], "w").close()
+while not os.path.exists(sys.argv[1]): time.sleep(0.05)
+subprocess.Popen(["sleep", "3003"]); time.sleep(3000)' "$R/child.flag" "$R/child.ready"; ROWPID=$SPAWNED
+for _ in $(seq 100); do [ -f "$R/child.ready" ] && break; sleep 0.1; done
+kill -0 "$ROWPID" && [ -f "$R/child.ready" ]; check $? 0 "…the process of the row is alive and polling for the flag"
+check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 0 "…and has no child yet"
+rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1; check $? 0 "child appears during the last listing: the tick exits 0"
+check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the child `sleep 3003` did appear, after the flag"
 stopped "a child starts between the first listing and the last look: not stopped" ""
 unset ROWPID
-
 
 exit $fail

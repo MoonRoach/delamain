@@ -528,11 +528,11 @@ def known_home_paths_strict() -> list:
     except FileNotFoundError:
         data = None
     except (OSError, ValueError) as e:
-        raise Failure(f"{registry_path()} cannot be read ({type(e).__name__}: {e})") from None
+        raise Failure(f"the registry of homes cannot be read ({type(e).__name__}): {registry_path()}") from None
     if data is not None:
         ents = data.get("homes") if isinstance(data, dict) else None
         if not isinstance(ents, list) or not all(isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] for e in ents):
-            raise Failure(f"{registry_path()} is not a registry of homes")
+            raise Failure(f"not a registry of homes: {registry_path()}")
         cands += [(Path(e["path"]), False) for e in ents]
     out, seen = [], set()
     for path, always in cands:

@@ -119,7 +119,7 @@ rm "$H2/z/auto-handoff.json"; echo '{' > "$H2/config.json"
 rows "$X"; tick "broken config.json in home B"; stopped "config.json of home B is broken (its REAP setting is unknown): nothing is stopped" ""; aborted "broken config.json in home B" "$H2/config.json"
 rm "$H2/config.json"
 REG=$XDG_CONFIG_HOME/delamain/homes.json; cp "$REG" "$R/homes.json.bak"; echo 'not json' > "$REG"
-rows "$X"; tick "broken registry of homes"; stopped "the registry of homes cannot be read (a home may be missing): nothing is stopped" ""; aborted "broken registry of homes" "$REG"
+rows "$X"; tick "broken registry of homes"; stopped "the registry of homes cannot be read (a home may be missing): nothing is stopped" ""; aborted "broken registry of homes" "registry of homes cannot be read"
 cp "$R/homes.json.bak" "$REG"
 rows "$X"; tick "control, everything readable"; stopped "control: with every file readable the session is stopped" "stop e0000003 "
 rmdir "$H2/z"
@@ -358,7 +358,7 @@ import json, sys
 d = json.load(open(sys.argv[1])); d["homes"].append({"path": sys.argv[2], "layer": "env"}); json.dump(d, open(sys.argv[1], "w"))
 PY
   chmod 000 "$R/locked"
-  rows "$X"; tick "registered home behind a closed directory"; stopped "a registered home whose path cannot be looked at: nothing is stopped" ""; aborted "unreachable registered home" "$R/locked/home"
+  rows "$X"; tick "registered home behind a closed directory"; stopped "a registered home whose path cannot be looked at: nothing is stopped" ""; aborted "unreachable registered home" "PermissionError"
   chmod 755 "$R/locked"
   rows "$X"; tick "control, reachable home"; stopped "control: the same home reachable and empty: stopped" "stop e0000060 "
   rm -r "$R/locked"
@@ -373,7 +373,7 @@ PY
 fi
 X=$(sid e0000062); retire_hub a "$X" hub-92; quiet_for "$X" 30
 echo '{"homes": [1]}' > "$XDG_CONFIG_HOME/delamain/homes.json"
-rows "$X"; tick "registry entry of the wrong shape"; stopped "an entry of the registry of homes of the wrong shape: nothing is stopped" ""; aborted "registry entry of the wrong shape" "registry of homes"
+rows "$X"; tick "registry entry of the wrong shape"; stopped "an entry of the registry of homes of the wrong shape: nothing is stopped" ""; aborted "registry entry of the wrong shape" "not a registry of homes"
 cp "$R/homes.json.bak" "$XDG_CONFIG_HOME/delamain/homes.json" 2>/dev/null
 
 exit $fail

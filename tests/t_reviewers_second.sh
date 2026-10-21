@@ -69,6 +69,27 @@ cfg "[{\"name\": \"a\", \"kind\": \"skill\", \"skill\": \"x\", \"check\": \"exit
 rv --second > /dev/null 2> $P/n3.err; check $? 1 "nothing available at all: exit 1"
 grep -q 'no second opinion is available (and no primary reviewer is available either)' $P/n3.err; check $? 0 "…said as such"
 
+# ---- the primary is the plain walk's, whatever a second entry's check does; no check runs twice
+# S (second-only) creates a marker; A's check wants no marker; B has no check. The plain walk never runs S, so A is the primary.
+SM='{"name": "s", "kind": "skill", "skill": "x", "second": true, "check": "echo run >> '$P'/count-s; touch '$P'/marker"}'
+AM='{"name": "a", "kind": "skill", "skill": "y", "check": "echo run >> '$P'/count-a; test ! -e '$P'/marker"}'
+cnt(){ [ -f $P/count-$1 ] && wc -l < $P/count-$1 | tr -d ' ' || echo 0; }
+cfg "[$SM, $AM, $G]"; rm -f $P/marker $P/count-s $P/count-a
+check "$(chosen --for code)" a "plain walk: A is primary"
+rm -f $P/marker $P/count-s $P/count-a
+rv --second --json > $P/sm.json 2>/dev/null
+check "$(jf '[d["primary"], d["chosen"]]' < $P/sm.json)" "['a', 's']" "--second agrees: A is primary (S's check did not run first and take it away), S is the second opinion"
+check "$(cnt a)-$(cnt s)" "1-1" "…each check ran once (A's verdict from the plain pass was reused)"
+rm -f $P/marker $P/count-s $P/count-a
+rv --second --all --json > $P/sma.json 2>/dev/null
+check "$(jf '[d["primary"], d["chosen"], len(d["entries"])]' < $P/sma.json)-$(cnt a)-$(cnt s)" "['a', 's', 3]-1-1" "--second --all: all three judged, each check once"
+cfg "[$SM, $AM, $G]"; rm -f $P/marker $P/count-s $P/count-a
+check "$(chosen --second)" s "the second opinion, as text"
+# a second-only entry after the primary, the ordinary entry in front of it unavailable: still judged once, in order
+cfg "[{\"name\": \"a\", \"kind\": \"skill\", \"skill\": \"y\", \"check\": \"echo run >> $P/count-a; exit 1\"}, $G, $SM]"; rm -f $P/marker $P/count-s $P/count-a
+rv --second --json > $P/sm2.json 2>/dev/null
+check "$(jf '[d["primary"], d["chosen"], [e["name"] for e in d["entries"]]]' < $P/sm2.json)-$(cnt a)-$(cnt s)" "['agent', 's', ['a', 'agent', 's']]-1-1" "a failed entry in front, the primary after it: its check is not run again"
+
 # ---- --all and the listing
 cfg "[$S, $A, $G]"
 rv --for code --second --all > $P/a.out 2>/dev/null

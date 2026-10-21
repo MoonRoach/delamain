@@ -397,23 +397,25 @@ def walk(loaded: Loaded, change_class: Optional[str], every: bool = False, autho
 
 def walk_second(loaded: Loaded, change_class: Optional[str], every: bool = False,
                 author: Optional[Author] = None) -> tuple:
-    """(verdicts, primary, chosen) for `hub reviewer --second`. The primary is what the plain walk would choose: the
-    first available entry that does not serve second opinions only. The second opinion is the first other available
-    entry in list order, whichever kind it is — so an available `second` entry listed ahead of the primary counts.
-    Each entry is judged once, and the walk stops when both are found (or goes on to the end with `every`)."""
-    verdicts, primary, chosen = [], None, None
+    """(verdicts, primary, chosen) for `hub reviewer --second`. The primary comes first, from the plain walk itself (the
+    same `judge` calls as `hub reviewer` without --second, so a `check` with side effects, such as a quota cache refresh,
+    can never change which entry is primary). The second opinion is then the first other available entry in list order,
+    whichever kind it is — an available `second` entry listed ahead of the primary counts. An entry already judged by the
+    plain walk keeps its verdict (no `check` runs twice); the entries it passed over or never reached are judged now."""
+    plain, primary = walk(loaded, change_class, every=every, author=author)
+    judged = {v.entry.name: v for v in plain if not v.entry.second}  # a second-only entry was passed over, not judged
+    chosen = None
     for entry in loaded.entries:
-        v = judge(entry, change_class, loaded.origin, author, second=True)
-        verdicts.append(v)
-        if not v.available:
+        if primary is not None and entry is primary.entry:
             continue
-        if primary is None and not entry.second:
-            primary = v
-        elif chosen is None:
+        v = judged.get(entry.name)
+        if v is None:
+            v = judged[entry.name] = judge(entry, change_class, loaded.origin, author, second=True)
+        if v.available and chosen is None:
             chosen = v
-        if primary and chosen and not every:
-            break
-    return verdicts, primary, chosen
+            if not every:
+                break
+    return [judged[e.name] for e in loaded.entries if e.name in judged], primary, chosen
 
 
 # ---------------------------------------------------------------- how to start it

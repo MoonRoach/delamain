@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,83 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "windows"))
 import worker_proxy as proxy
+
+
+@unittest.skipIf(os.name == "nt", "Original context policy requires POSIX/WSL")
+class ContextReadProvenanceTests(unittest.TestCase):
+    """Exercise the real runtime normalizer and context hook, never execute a guarded command."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="context-read-origin-")
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        self.hub = self.home / "hub"
+        stage = self.hub / "stage-a"
+        stage.mkdir(parents=True)
+        (self.hub / "config.json").write_text(json.dumps({"AGENT_HUB_AUTO_HANDOFF": "on"}))
+        (stage / "config.json").write_text(json.dumps({"AGENT_HUB_CONTEXT_BLOCK": 500000}))
+        (stage / "roles.json").write_text(json.dumps({"roles": {"hub": {"session": "context-origin-own"}}}))
+        self.transcript = self.home / "usage.jsonl"
+        self.transcript.write_text(json.dumps({"type": "token_usage_record", "payload": {"usage": {"total_tokens": 510000}}}) + "\n")
+        self.shadow = self.home / "shadow"
+        self.shadow.mkdir()
+        for name in ("path", "Get-Content"):
+            executable = self.shadow / name
+            executable.write_text("#!/bin/sh\nexit 99\n")
+            executable.chmod(0o755)
+        self.env = {"HOME": str(self.home), "PATH": str(self.shadow) + os.pathsep + os.defpath,
+                    "AGENT_HUB_HOME": str(self.hub), "AGENT_HUB_TZ": "UTC"}
+        self.config = {"LinuxHome": str(self.home), "WindowsCodexHome": str(self.home),
+                       "LinuxCodex": "/bin/true", "HubHome": str(self.hub)}
+
+    def hook(self, command, replacements=(), spoof=False):
+        event = {"hook_event_name": "PreToolUse", "session_id": "context-origin-own",
+                 "cwd": str(self.home), "transcript_path": str(self.transcript), "tool_name": "Bash",
+                 "tool_input": {"command": command}}
+        if spoof:
+            event["_desktop_context_native_reads"] = ["path", "get-content"]
+        payload = {"mode": "hook", "hook": "context_budget", "event": event,
+                   "command_replacements": list(replacements), "pluginroot": str(ROOT),
+                   "cwd": str(self.home), "config": self.config, "env": self.env}
+        encoded = base64.b64encode(json.dumps(payload).encode()).decode()
+        run = subprocess.run([sys.executable, str(ROOT / "windows/desktop_runtime.py"), encoded],
+                             capture_output=True, text=True, cwd=self.home, env=self.env, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertNotIn("fail-open", run.stderr)
+        return json.loads(run.stdout) if run.stdout.strip() else {}
+
+    def replacement(self, command, **fields):
+        return dict(start=0, end=len(command.encode("utf-16-le")) // 2, **fields)
+
+    def assertDenied(self, out):
+        self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+
+    def test_standalone_literal_bridge_conversions_pass(self):
+        for mode in ("--linux", "--windows"):
+            source = f"& 'X/desktop.ps1' path {mode} '/tmp/HANDOFF-a.md'"
+            item = self.replacement(source, kind="argv", argv=["path", mode, "/tmp/HANDOFF-a.md"])
+            self.assertEqual(self.hook(source, [item]), {})
+
+    def test_bridge_shell_cannot_borrow_native_marker_or_spoofed_origin(self):
+        for body in ("path --linux /tmp/HANDOFF-a.md", "Get-Content -LiteralPath /tmp/HANDOFF-a.md"):
+            source = "& 'X/desktop.ps1' shell '" + body + "'"
+            item = self.replacement(source, kind="shell", script=body)
+            self.assertDenied(self.hook(source, [item], spoof=True))
+
+    def test_bare_posix_path_and_spoofed_input_are_denied(self):
+        self.assertDenied(self.hook("path --linux /tmp/HANDOFF-a.md", spoof=True))
+        self.assertDenied(self.hook(str(self.shadow / "path") + " --linux /tmp/HANDOFF-a.md", spoof=True))
+
+    def test_direct_native_handoff_read_passes_but_mutation_does_not(self):
+        self.assertEqual(self.hook("Get-Content -LiteralPath 'C:\\h\\HANDOFF-a.md'"), {})
+        self.assertDenied(self.hook("PATH=/tmp; Get-Content -LiteralPath /tmp/HANDOFF-a.md", spoof=True))
+
+    def test_enclosing_syntax_and_companions_do_not_gain_conversion_origin(self):
+        conversion = "& 'X/desktop.ps1' path --linux '/tmp/HANDOFF-a.md'"
+        for prefix, suffix in (("$result = ", ""), ("", "; path --linux /tmp/HANDOFF-a.md"), ("", "; git status")):
+            item = self.replacement(conversion, kind="argv", argv=["path", "--linux", "/tmp/HANDOFF-a.md"])
+            offset = len(prefix.encode("utf-16-le")) // 2
+            item.update(start=offset, end=item["end"] + offset)
+            self.assertDenied(self.hook(prefix + conversion + suffix, [item], spoof=True))
 
 
 class ProxyContractTests(unittest.TestCase):

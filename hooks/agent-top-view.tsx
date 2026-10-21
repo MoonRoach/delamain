@@ -181,6 +181,8 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
   counters.push({ text: ` ●${sp}${live} `, node: live ? pill(`●${sp}${live}`, 'green') : t(` ●${sp}0 `, { dim: true }) })
   counters.push({ text: ` ✓${sp}${done} `, node: t(` ✓${sp}${done} `, { dim: true }) })
   counters.push({ text: ` ✗${sp}${failed} `, node: failed ? pill(`✗${sp}${failed}`, 'red', 'white') : t(` ✗${sp}0 `, { dim: true }) })
+  if (m.counts?.unknown) counters.push({ text: ` ?${sp}${m.counts.unknown} `, node: pill(`?${sp}${m.counts.unknown}`, 'yellow') })
+  if (m.counts?.stopped) counters.push({ text: ` ■${sp}${m.counts.stopped} `, node: t(` ■${sp}${m.counts.stopped} `, { dim: true }) })
   const titleRoom = w - 1 - counters.reduce((n, c) => n + len(c.text), 0)
   const title = ['Delamain · agent-top', 'agent-top', '◆'].find(s => len(s) <= titleRoom) ?? '◆'
   const leftLen = len(title) + 1 + counters.reduce((n, c) => n + len(c.text), 0)
@@ -487,14 +489,14 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     wrapLines(task, cw - L, 2).forEach((l, i) => lines.push(row(i === 0 ? 'card-task' : undefined, [t(padEnd(i === 0 ? 'Task' : '', L), { dim: true }), t(l)])))
     if (a.action) lines.push(row('card-now', [t(padEnd('Now', L), { dim: true }), t(clip(actionText(a), cw - L), { color: 'green' })]))
     else if (a.alive) lines.push(row('card-now', [t(padEnd('Now', L), { dim: true }), t('⋯ waiting for the model', { dim: true })]))
-    if (a.result && (a.state === 'done' || a.state === 'error')) {
+    if (a.result && (a.state === 'done' || a.state === 'error' || a.state === 'stopped')) {
       const isErr = a.result.is_error || a.state === 'error'
-      const head = clip(`${isErr ? '✗' : '✓'} ${a.result.subtype}${a.result.is_error ? ', error' : ''}`, Math.max(3, cw - L - 2))
+      const head = clip(`${isErr ? '✗' : a.state === 'stopped' ? '■' : '✓'} ${a.result.subtype}${a.result.is_error ? ', error' : ''}`, Math.max(3, cw - L - 2))
       const textW = cw - L - len(head) - 3
       lines.push(
         row('card-result', [
           t(padEnd('Result', L), { dim: true }),
-          pill(head, isErr ? 'red' : 'green', isErr ? 'white' : 'black'),
+          pill(head, isErr ? 'red' : a.state === 'stopped' ? 'gray' : 'green', isErr ? 'white' : 'black'),
           t(' '),
           t(clip(a.result.text, Math.max(0, textW)), { color: isErr ? 'red' : undefined, dim: !isErr }),
         ]),
@@ -506,6 +508,7 @@ export function drawPane(els: Els, m: PaneModel, act: PaneActions): Drawn {
     }
     if (a.unread.length) lines.push(row('card-unread', [t(clip(`✉ ${a.unread.length} unread in the inbox`, cw), { color: 'yellow', bold: true })]))
     if (a.state === 'dead') lines.push(row('card-dead', [t(clip('no process, no result: died or was killed', cw), { color: 'red' })]))
+    if (a.state === 'unknown') lines.push(row('card-unknown', [t(clip(a.expired ? 'unknown observation expired; no death evidence; not blocking handoff' : 'process state is unknown; no completion evidence', cw), { color: 'yellow' })]))
 
     const cardNode = isFramed ? (
       <Box key="card" flexDirection="column" borderStyle="round" borderColor={stateColor} borderDimColor={a.state === 'done'} paddingX={1}>

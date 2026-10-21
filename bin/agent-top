@@ -16,7 +16,11 @@ runs, the current action
 found in the parent session's transcript folder (<claude config>/projects/*/<session>/subagents/); done/error/died
 from the parent's completion notice (a foreground one: the result of its Agent call); without one it is live while
 the parent session runs (<claude config>/sessions/<pid>.json with a live claude pid) and died once it is gone —
-where that folder does not exist, died after 30 min of silence. Enter opens an
+where that folder does not exist, died after 30 min of silence. Native Codex actors use persisted terminal
+events and confirmed process/current-session evidence; without either, state is unknown. After one hour without
+activity the observation expires and stops blocking handoff. Show-all retains expired observations; confirmed
+live actors never expire.
+An interrupted native turn is stopped, distinct from failed. Enter opens an
 agent: live feed of its log (thoughts ✎, commands ▸, short results ◂), brief, inbox. `j` — stage journal with a
 filter, `s` — stages, locks, owner questions, roles, plan limits. `m` sends a message and `x` stops an agent through
 `agent send` / `agent stop`, `c` closes a stage through `hub close`, each after a y/N confirmation; nothing else is ever
@@ -348,6 +352,8 @@ class LogState:
         self.usage_by_sid = {}            # thread id -> its latest cumulative token usage
         self.model_usage = None           # the last result's modelUsage: per model, its contextWindow among others
         self.rollout = codex_rollouts.Normalizer()
+        self.last_event_ts = None
+        self.native_rollout = False
 
     @property
     def cost_sum(self):
@@ -411,7 +417,12 @@ class LogState:
             ev = _loads(line)
             if not ev:
                 return
+            if "payload" in ev:
+                self.native_rollout = True
             normalized = (self.rollout.events(ev) if "payload" in ev else engines.normalize_event(ev))
+            at = self.rollout.last_event_ts if "payload" in ev else parse_ts(ev.get("timestamp"))
+            if at is not None and (self.last_event_ts is None or at > self.last_event_ts):
+                self.last_event_ts = at
             for common in normalized:
                 self._common(pos, common)
             return
@@ -424,6 +435,7 @@ class LogState:
             self.codex_turns += 1
             self.codex_run_turns += 1
             self.running = True
+            self.last_result = None
             self.pending.clear()
             return
         if typ == "codex_context":
@@ -1035,6 +1047,11 @@ class Collector:
             agents += mine
         agents.sort(key=lambda a: (a["group"], a["stage"], a["role"], a["dir_name"]))
         counts = {k: sum(1 for a in agents if a["state"] == k) for k in ("live", "done", "error", "dead")}
+        # Keep the legacy four-key JSON shape when no new native state is present.
+        for key in ("unknown", "stopped"):
+            count = sum(1 for a in agents if a["state"] == key)
+            if count:
+                counts[key] = count
         locks = self._locks(now, refs)
         roles = {s: self._roles(s, rs, agents, now) for s, rs in roles_by_stage.items()}
         costs = {s: self._stage_costs(self.where[s], rs) for s, rs in roles_by_stage.items()}   # reads every log of the stage first:
@@ -1065,9 +1082,13 @@ class Collector:
             mtime = log.stat().st_mtime
         except OSError:
             mtime = None
-        if not self.show_all and (archived or (not alive and (mtime is None or now - mtime > RECENT_S))):
+        if not self.show_all and (archived or (meta.get("engine") != "codex" and
+                not alive and (mtime is None or now - mtime > RECENT_S))):
             return None
         ls = self.log_state(log)
+        event_at = ls.last_event_ts if ls.native_rollout else mtime
+        if not self.show_all and (archived or (not alive and (event_at is None or now - event_at > RECENT_S))):
+            return None
         res = ls.last_result
         if alive:
             state = "live"
@@ -1075,7 +1096,7 @@ class Collector:
             state = "error" if (res.get("is_error") or res.get("subtype") != "success") else "done"
         else:
             state = "dead"
-        age = None if mtime is None else max(0, now - mtime)
+        age = None if event_at is None else max(0, now - event_at)
         unread = [u for u in meta.get("inbox_unread") or []
                   if isinstance(u, dict) and max(ls.inbox_touch, ls.done_at) < num(u.get("log_offset"))]
         act = ls.action() if alive else None
@@ -1092,7 +1113,7 @@ class Collector:
             "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),
             "retired": d.name not in registry, "archived": archived,
             "age_s": None if age is None else int(age),
-            "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
+            "last_event_at": None if event_at is None else dt.datetime.fromtimestamp(event_at, hc.TZ).isoformat(timespec="seconds"),
             "started_at": meta.get("started_at"), "runs": len(meta.get("runs") or []),
             "turns": ls.turns, "run_turns": ls.run_turns, "sub_turns": ls.sub_turns, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
@@ -1125,7 +1146,7 @@ class Collector:
                 info.update(kind="session", parent=None, role=role, dir_name=role,
                             title=rec.get("title") or "Codex session", agent_type=None, background=False,
                             cwd=sub.meta.get("cwd"), started_at=sub.meta.get("timestamp"),
-                            liveness_source="completion" if sub.status else "activity")
+                            liveness_source="completion" if sub.status else "unknown" if sub.state == "unknown" else "process")
                 out.append(info)
         return out
 
@@ -1143,10 +1164,12 @@ class Collector:
         ls = self.log_state(sub.log)
         aid, mtime, status, state = sub.aid, sub.mtime, sub.status, sub.state
         alive = state == "live"
-        age = None if mtime is None else max(0, now - mtime)
+        event_at = sub.last_event_ts if sub.meta.get("engine") == "codex" else mtime
+        age = sub.age(now)
         act = ls.action() if alive else None
         desc = sub.description
         meta = sub.meta
+        terminal_text = str((ls.last_result or {}).get("result") or ls.last_text)
         return {
             "kind": "subagent", "parent": prole,
             "engine": meta.get("engine") or ls.engine,
@@ -1154,11 +1177,11 @@ class Collector:
             "tag": prec.get("tag") or prole, "title": desc or str(meta.get("agentType") or "sub-agent"),
             "model": str(meta.get("model") or ""), "model_id": ls.model, "effort": ls.effort,
             "ctx_window": ls.ctx_window(ls.model or meta.get("model")),
-            "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
+            "state": state, "group": {"live": 0, "unknown": 0, "dead": 1, "error": 1, "stopped": 2, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
-            "alive": alive, "pid": None, "session_id": aid, "retired": False, "archived": False,
+            "alive": alive, "expired": sub.expired, "handoff_blocking": sub.unresolved, "pid": None, "session_id": aid, "retired": False, "archived": False,
             "age_s": None if age is None else int(age),
-            "last_event_at": None if mtime is None else dt.datetime.fromtimestamp(mtime, hc.TZ).isoformat(timespec="seconds"),
+            "last_event_at": None if event_at is None else dt.datetime.fromtimestamp(event_at, hc.TZ).isoformat(timespec="seconds"),
             "started_at": None, "runs": 1,
             "turns": ls.turns, "run_turns": ls.turns, "sub_turns": 0, "turns_approx": ls.truncated,
             "ctx_tokens": ls.ctx or None,
@@ -1167,7 +1190,7 @@ class Collector:
             "turns_kind": "user" if ls.engine == "codex" else "model",
             "cost_usd": None,
             "result": None if status is None else {"subtype": status, "is_error": state == "error", "num_turns": None,
-                                                   "text": ls.last_text[:400]},
+                                                   "text": terminal_text[:400]},
             "action": None if not act else {"tool": act["tool"], "text": act["text"], "detail": act["detail"],
                                             "elapsed_s": None if not act["ts"] else max(0, int(now - act["ts"]))},
             "last_text": ls.last_text, "unread": [],
@@ -1351,8 +1374,9 @@ def find_agent(snap: dict, name: str):
 
 # ---------------------------------------------------------------- rendering: rows are lists of (text, style)
 
-GLYPH = {"live": ("●", "live"), "done": ("✓", "done"), "error": ("✗", "err"), "dead": ("✗", "err")}
-WORD = {"live": "live", "done": "done", "error": "error", "dead": "died"}
+GLYPH = {"live": ("●", "live"), "done": ("✓", "done"), "error": ("✗", "err"), "dead": ("✗", "err"),
+         "unknown": ("?", "warn"), "stopped": ("■", "dim")}
+WORD = {"live": "live", "done": "done", "error": "error", "dead": "died", "unknown": "unknown", "stopped": "stopped"}
 
 
 class Row:
@@ -1396,8 +1420,10 @@ def what_now(a: dict) -> tuple:
         if a["action"]:
             return action_text(a), "norm"
         return ("⋯ " + a["last_text"] if a["last_text"] else "⋯ thinking"), "dim"
-    if a["result"] and a["state"] in ("done", "error"):
+    if a["result"] and a["state"] in ("done", "error", "stopped"):
         return (a["last_text"] or a["result"]["text"] or a["result"]["subtype"] or ""), "dim"
+    if a.get("expired"):
+        return "unknown observation expired; no death/completion evidence; not blocking handoff", "dim"
     if a.get("kind") == "session":
         return (a["last_text"] or "no completed turn — session process is unknown"), "dim"
     if a.get("kind") == "subagent":
@@ -1413,6 +1439,10 @@ def header_row(snap: dict, width: int, view_label: str) -> Row:
     title = " Delamain · agent-top " if width >= 60 else " agent-top "
     bits = [(title, "head_b"), (f"● {c['live']} ", "head_live"), (f"✓ {c['done']} ", "head"),
             (f"✗ {c['error'] + c['dead']} ", "head_err" if c["error"] + c["dead"] else "head")]
+    if c.get('unknown'):
+        bits.append((f"? {c['unknown']} ", "head"))
+    if c.get('stopped'):
+        bits.append((f"■ {c['stopped']} ", "head"))
     if view_label:
         bits.append((view_label + " ", "head_b"))
     # optional pieces, dropped from the end when the terminal is narrow
@@ -1599,13 +1629,13 @@ def card_rows(a: dict, width: int) -> list:
         rows += wrap_rows(action_text(a), width, "live", " ", "   ", 2)
     elif a["alive"]:
         rows.append(R((" ⋯ waiting for the model", "dim")))
-    if a["state"] in ("done", "error") and a["result"]:
+    if a["state"] in ("done", "error", "stopped") and a["result"]:
         r = a["result"]
         rows += wrap_rows(f"result: {r['subtype']}{', error' if r['is_error'] else ''} — {one_line(r['text'])[:300]}", width,
                           "err" if r["is_error"] else "done", " ", "   ", 3)
     if a.get("kind") == "session":
         rows += wrap_rows("native Codex session; read-only here — continue it in Codex. "
-                          "Process identity is unavailable; unfinished state uses recent activity.", width, "dim", " ", "   ", 3)
+                          "Without process or completion evidence, unfinished state is unknown.", width, "dim", " ", "   ", 3)
     elif a.get("kind") == "subagent":
         rows += wrap_rows(f"sub-agent of {a['parent']} ({a.get('agent_type') or '?'}, "
                           f"{'background' if a.get('background') else 'foreground'}); read-only here — only its parent "
@@ -1867,7 +1897,7 @@ def render_once(snap: dict, coll: Collector, width: int, agent=None, lines: int 
 
 
 WIDGET_STATE = {"live": ("live", "success"), "done": ("done", "secondary"), "error": ("error", "danger"),
-                "dead": ("died", "danger")}
+                "dead": ("died", "danger"), "unknown": ("unknown", "warning"), "stopped": ("stopped", "secondary")}
 
 
 def render_widget(snap: dict) -> str:
@@ -1892,6 +1922,10 @@ def render_widget(snap: dict) -> str:
     cards = [metric("running", str(c["live"]), "success" if c["live"] else ""), metric("done", str(c["done"])),
              metric("failed", str(bad), "danger" if bad else ""),
              metric("owner questions", f"{q_open}" + (f" / overdue {q_over}" if q_over else ""), "danger" if q_over else "")]
+    if c.get('unknown'):
+        cards.append(metric("unknown", str(c['unknown']), "warning"))
+    if c.get('stopped'):
+        cards.append(metric("stopped", str(c['stopped'])))
     for k, lab in (("five_hour", "limit 5 h"), ("seven_day", "limit week")):
         if isinstance(win.get(k), dict):
             cards.append(metric(lab, pct(win[k]), use_tone(win[k])))

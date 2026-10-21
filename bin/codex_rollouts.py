@@ -1,8 +1,7 @@
 """Read-only discovery and normalization of Codex's local rollout JSONL files.
 
 The persisted format is distinct from ``codex exec --json``. Unknown records are
-ignored. No process registry is inferred from files; recent activity is only a
-fallback when the parent's process cannot be identified. Forked rollouts can
+ignored. No process registry or liveness is inferred from file activity. Forked rollouts can
 include the parent's history: only tasks started after the child was created
 belong to the child.
 """
@@ -10,7 +9,9 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
+import re
 import time
 from pathlib import Path
 
@@ -39,6 +40,55 @@ def spawn_source(meta):
 
 def home():
     return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def latest_turn_context(path):
+    """Latest complete context, scanning backwards with bounded memory.
+
+    Tool output may put the context arbitrarily far from EOF. Read fixed chunks,
+    skip oversized non-metadata lines and torn final writes, never load a log tail
+    (or an unbounded JSON record) into memory.
+    """
+    with Path(path).open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        pos = f.tell()
+        if not pos:
+            return None
+        f.seek(pos - 1)
+        torn = f.read(1) != b"\n"
+        pending = None if torn else b""
+        while pos:
+            size = min(pos, 64 << 10)
+            pos -= size
+            f.seek(pos)
+            parts = f.read(size).split(b"\n")
+            right = parts[-1]
+            parts[-1] = (right + pending if pending is not None and len(right) + len(pending) <= HEADER_MAX else None)
+            if len(parts) > 1:
+                if parts[-1] is None and not torn and re.match(
+                        rb'^\s*\{\s*(?:"timestamp"\s*:\s*"[^"]*"\s*,\s*)?"type"\s*:\s*"turn_context"', right):
+                    return {}  # latest metadata exceeds the bound: unknown, never inherit an older context
+                torn = False
+            for raw in reversed(parts[1:]):
+                if raw is None or len(raw) > HEADER_MAX or b'"turn_context"' not in raw:
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    if re.match(rb'^\s*\{\s*(?:"timestamp"\s*:\s*"[^"]*"\s*,\s*)?"type"\s*:\s*"turn_context"', raw):
+                        return {}  # complete but malformed current metadata is not an older turn
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "turn_context":
+                    return ev["payload"] if isinstance(ev.get("payload"), dict) else {}
+            pending = parts[0] if len(parts[0] or b"") <= HEADER_MAX else None
+        if pending and b'"turn_context"' in pending:
+            try:
+                ev = json.loads(pending)
+                if isinstance(ev, dict) and ev.get("type") == "turn_context" and isinstance(ev.get("payload"), dict):
+                    return ev["payload"]
+            except ValueError:
+                pass
+    return None
 
 
 class Index:
@@ -136,6 +186,12 @@ class Normalizer:
         self.birth = None
         self.own_task = True
         self.turn = None
+        self.last_event_ts = None
+
+    def observe(self, timestamp):
+        at = epoch(timestamp)
+        if at is not None and (self.last_event_ts is None or at > self.last_event_ts):
+            self.last_event_ts = at
 
     def events(self, ev):
         typ, payload = ev.get("type"), ev.get("payload")
@@ -149,19 +205,31 @@ class Normalizer:
         if typ == "session_meta":
             if self.sid is not None:
                 return []  # inherited metadata must not reset the child's identity
-            self.sid, self.birth = payload.get("id"), epoch(ts)
+            # Native serialization can write the envelope in the next second.
+            # Older formats omit payload.timestamp; an explicitly invalid birth
+            # must stay unknown rather than fall back to the envelope.
+            birth = payload.get("timestamp", ts)
+            self.sid, self.birth = payload.get("id"), epoch(birth)
+            self.observe(birth)
             self.own_task = not bool(spawn_source(payload))
             return [record("system", subtype="init", session_id=self.sid)]
         if typ == "event_msg" and payload.get("type") == "task_started":
             started = payload.get("started_at")
             if not self.own_task:
-                if not isinstance(started, (int, float)) or self.birth is None or started < int(self.birth):
+                if (isinstance(started, bool) or not isinstance(started, (int, float)) or
+                        not math.isfinite(started) or self.birth is None or started < int(self.birth)):
                     return []
                 self.own_task = True
             self.turn = payload.get("turn_id")
+            self.observe(ts)
             return [record("codex_turn_start", turn_id=self.turn)]
         if not self.own_task:
             return []
+        if (typ == "event_msg" and payload.get("type") in
+                ("task_complete", "turn_aborted", "task_failed", "turn_failed") and
+                payload.get("turn_id") and self.turn and payload["turn_id"] != self.turn):
+            return []  # a late terminal record is not activity of the current turn
+        self.observe(ts)
         if typ == "turn_context":
             return [record("codex_context", model=payload.get("model"), effort=payload.get("effort"))]
         if typ == "event_msg":
@@ -175,9 +243,10 @@ class Normalizer:
                 return [record("codex_usage", codex_usage=info.get("total_token_usage"),
                                context_tokens=last.get("input_tokens"), context_window=info.get("model_context_window"),
                                codex_usage_scope="session", codex_rate_limits=payload.get("rate_limits"))]
-            if ptype in ("task_complete", "turn_aborted"):
-                failed = ptype != "task_complete"
-                return [record("result", subtype="error" if failed else "success", is_error=failed,
+            if ptype in ("task_complete", "turn_aborted", "task_failed", "turn_failed"):
+                failed = ptype in ("task_failed", "turn_failed")
+                subtype = "interrupted" if ptype == "turn_aborted" else "error" if failed else "success"
+                return [record("result", subtype=subtype, is_error=failed,
                                result=payload.get("last_agent_message") or payload.get("message") or payload.get("reason") or "")]
             return []  # item_completed duplicates the response_item stream
         if typ != "response_item":
@@ -221,6 +290,7 @@ class State:
         self.normalizer = Normalizer()
         self.status = None
         self.model = self.effort = None
+        self.last_event_ts = None
 
     def update(self):
         try:
@@ -229,6 +299,7 @@ class State:
                 self.ino, self.offset = st.st_ino, 0
                 self.normalizer = Normalizer()
                 self.status = self.model = self.effort = None
+                self.last_event_ts = None
             with self.path.open("rb") as f:
                 f.seek(self.offset)
                 while True:
@@ -246,9 +317,11 @@ class State:
                         if norm["type"] == "codex_turn_start":
                             self.status = None
                         elif norm["type"] == "result":
-                            self.status = "failed" if norm.get("is_error") else "completed"
+                            self.status = ("stopped" if norm.get("subtype") == "interrupted" else
+                                           "failed" if norm.get("is_error") else "completed")
                         elif norm["type"] == "codex_context":
                             self.model, self.effort = norm.get("model"), norm.get("effort")
+                    self.last_event_ts = self.normalizer.last_event_ts
         except OSError:
             pass
         return self

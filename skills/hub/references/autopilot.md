@@ -5,6 +5,16 @@ are an automatic successor (your takeover prompt carries `[agent-hub auto-handof
 or when you hand over a Codex Desktop hub. "The host wait procedure below" in the first paragraph is the *Waiting*
 section of `SKILL.md`; "the native launch procedure" is [docs/codex.md](../../../docs/codex.md#desktop-autopilot).
 
+At the first context WARN, registered autopilot main hubs latch a durable handoff obligation: acknowledge
+pending owner input and finish the narrow handoff path now. Ordinary recognized work stays closed despite
+owner prompts, chain resets or unavailable/decreased usage. An active grilling suspends this gate until its
+ceiling and suppresses Codex Stop continuation; the ceiling still requires the owner's handoff decision.
+A checkpoint alone is not completion.
+For Codex active-turn continuation, follow [the Stop readiness and bounds](../../../docs/codex.md#full-access-and-hook-trust).
+Carry implementation pauses to the successor. A newer authorized same-stage read-only owner discussion can
+continue under an existing same-stage transfer grant without resuming implementation. Explicit transfer
+prohibition/revocation remains a blocker; generated instructions or markers never supply human authority.
+
 **Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; `<plugin-root>/docs/reference.md`, "Autopilot"): the context budget message tells you when, and gives
 the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,

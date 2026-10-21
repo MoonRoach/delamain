@@ -153,18 +153,24 @@ sys.path.insert(0, str(ROOT / "hooks"))
 import failsafe
 bad = []
 seen = set()
+standalone_veto = []
 for cfg in ("hooks.json", "codex-hooks.json"):
-    for groups in json.loads((ROOT / "hooks" / cfg).read_text())["hooks"].values():
+    for event, groups in json.loads((ROOT / "hooks" / cfg).read_text())["hooks"].items():
         for g in groups:
             for h in g["hooks"]:
                 m = re.search(r"hooks/([\w-]+\.py)", h["command"])
                 if not m:
+                    continue
+                if m.group(1) == "no_compaction.py":
+                    standalone_veto.append((cfg, event, g.get("matcher"), h["timeout"]))
                     continue
                 seen.add(m.group(1))
                 d = failsafe.DEADLINES.get(m.group(1), failsafe.DEFAULT_DEADLINE_S)
                 if abs(d - (h["timeout"] - 1.5)) > 1e-9:
                     bad.append(f"{cfg}: {m.group(1)} deadline {d} vs timeout {h['timeout']}")
 check(not bad and seen == set(failsafe.DEADLINES), f"every hook script has a deadline exactly 1.5 s under its configured timeout ({sorted(seen)}) {bad}")
+check(standalone_veto == [("codex-hooks.json", "PreCompact", "^(manual|auto)$", 5)],
+      f"standalone unconditional compaction veto is only Codex PreCompact, outside fail-open deadlines ({standalone_veto})")
 sys.exit(fail)
 PY
 fail=$?

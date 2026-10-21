@@ -1367,14 +1367,14 @@ def hub_sessions(stage: str, given: str, me: dict) -> list:
 
 
 def live_subagents(cli: str, rec: dict) -> list:
-    """Sub-agents (the Agent tool) of the session `cli` that are still running. The session that runs this command
+    """Sub-agents of `cli` that run or have an unexpired unknown observation. The session that runs this command
     is alive by definition; any other is judged by its process (bin/subagents.py)."""
     if cli == hc.session_id():
         alive = True
     else:
         table = subagents.process_table()
         alive = subagents.parent_alive(rec, cli, table, subagents.live_sessions(table))
-    return [s for s in subagents.Finder().of_session(cli, alive, time.time()) if s.alive]
+    return [s for s in subagents.Finder().of_session(cli, alive, time.time()) if s.unresolved]
 
 
 def subagent_rows(subs: list, session: str = "") -> list:
@@ -1384,7 +1384,8 @@ def subagent_rows(subs: list, session: str = "") -> list:
     for s in subs:
         last = "no transcript yet" if s.mtime is None else f"last write {hc.age(dt.datetime.fromtimestamp(s.mtime, hc.TZ))} ago"
         rows.append(f"{'[' + session[:8] + '] ' if session else ''}{s.aid}  "
-                    f"\"{s.description or s.meta.get('agentType') or 'sub-agent'}\"  {last}")
+                    f"\"{s.description or s.meta.get('agentType') or 'sub-agent'}\"  "
+                    f"{'unknown; ' if s.state == 'unknown' else ''}{last}")
     return rows
 
 
@@ -1427,7 +1428,7 @@ def cmd_handoff(a) -> int:
         live_rows += subagent_rows(live_subagents(cli, hub_rec), cli if len(sessions) > 1 else "")
     if live_rows and not a.allow_live_subagents:
         print(f"hub handoff: {len(live_rows)} sub-agent(s) of the hub's session "
-              f"{' and '.join(c[:8] for c, _ in sessions)} still running — they die with it, and the successor "
+              f"{' and '.join(c[:8] for c, _ in sessions)} still running or have unknown process state; the successor "
               "cannot message them:", file=sys.stderr)
         print("".join(f"  {r}\n" for r in live_rows) + "Ways out, for each:\n"
               "  1. wait for it: its completion notice arrives in this session;\n"
@@ -1437,7 +1438,7 @@ def cmd_handoff(a) -> int:
         return 2
     live_note = ""
     if live_rows:
-        live_note = ("\n- TODO: sub-agents of this session still running at handoff — they die with it and the successor cannot "
+        live_note = ("\n- TODO: sub-agents of this session still running at handoff or have unknown process state; the successor cannot "
                      "message them; for each say \"relaunched as `agent spawn` role …\" or \"lost: …\":\n"
                      + "\n".join(f"  - {r}" for r in live_rows[:12]) + (f"\n  - … and {len(live_rows) - 12} more" if len(live_rows) > 12 else ""))
     work = hc.work_dir(stage)

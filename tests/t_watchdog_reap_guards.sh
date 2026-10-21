@@ -294,6 +294,7 @@ X=$(sid e0000037); retire_hub a "$X" hub-60; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["sh", "-c", "sleep 3001; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 rows "$X"; tick "shell child"; stopped "the process has a shell child with a child of its own (a command in flight): not stopped" ""
 grep -q "retired hub e0000037 (a) is running a child process (.*) for 30 min; stop it by hand" "$R/tick.out"; check $? 0 "…and it is reported"
+unset ROWPID
 
 # the status or the process of the row changes between the first look and the fresh listing right before the stop
 cat > "$R/hook-row.py" <<'PY'

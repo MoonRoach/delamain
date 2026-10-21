@@ -16,10 +16,14 @@ a repository's .agent-hub/config.json or the hub home's config.json (the usual o
           the hub): such an entry is skipped
   until   optional YYYY-MM-DD: available through that day, not after
   for     optional list of change classes the entry serves; absent = every class
+  second  optional boolean: true = the entry serves second opinions only (`hub reviewer --second`); a plain walk skips it
 
 The change's author — who really wrote it, not which host runs `hub reviewer` — comes from `--author` (a role of the
 stage, or `engine[/model]`). A `check` sees it as AGENT_HUB_REVIEW_AUTHOR_ENGINE and AGENT_HUB_REVIEW_AUTHOR_MODEL
 (both removed from its environment when the author is unknown); the built-in default entry takes the other engine.
+
+A second opinion is optional and the hub's own call: `hub reviewer --second` chooses the primary reviewer exactly as the
+plain walk does, then returns the first other available entry (ordinary and `second` entries alike, in list order).
 
 A broken entry is reported on stderr and skipped; a list with no valid entry gives the built-in default, one
 `agent` entry. Every value that reaches the line the hub is told to run, or the text it reads — name, skill, model,
@@ -47,7 +51,7 @@ SETTING = "AGENT_HUB_REVIEWERS"
 AUTHOR_ENGINE_VAR, AUTHOR_MODEL_VAR = "AGENT_HUB_REVIEW_AUTHOR_ENGINE", "AGENT_HUB_REVIEW_AUTHOR_MODEL"
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@\[\]/-]{0,99}")
 KINDS = ("agent", "skill")
-FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for", "engine")
+FIELDS = ("name", "kind", "skill", "model", "effort", "check", "until", "for", "engine", "second")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")                       # name, change class: 64 at most
 SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9._-]{0,63})?")  # skill, plugin:skill
 SHOWN = 30  # characters of a rejected key or value that are echoed back: enough to find it, too few to carry text
@@ -78,6 +82,7 @@ class Entry:
         self.check = raw.get("check")
         self.until = raw.get("until")
         self.classes = raw.get("for")
+        self.second = raw.get("second") is True
 
     def as_dict(self) -> dict:
         out = {"name": self.name, "kind": self.kind}
@@ -87,6 +92,8 @@ class Entry:
                            ("check", self.check), ("until", self.until), ("for", self.classes)):
             if value:
                 out[key] = value
+        if self.second:
+            out["second"] = True
         return out
 
 
@@ -228,6 +235,8 @@ def _validate(item, seen: set, cwd=None) -> dict:
                 or not all(isinstance(c, str) and NAME_RE.fullmatch(c) for c in classes)):
             raise ValueError("`for` must be a non-empty list of change classes — letters, digits, '.', '_' and '-' "
                              "only — e.g. [\"code\", \"risky\"]")
+    if "second" in item and not isinstance(item["second"], bool):
+        raise ValueError("`second` must be true or false")
     return item
 
 
@@ -342,9 +351,13 @@ def _short(text: str) -> str:
     return text if len(text) <= OUTPUT_CHARS else text[:OUTPUT_CHARS - 1] + "…"
 
 
-def judge(entry: Entry, change_class: Optional[str], origin: str, author: Optional[Author] = None) -> Verdict:
+def judge(entry: Entry, change_class: Optional[str], origin: str, author: Optional[Author] = None,
+          second: bool = False) -> Verdict:
     """Whether the entry can review a change of this class now. The cheap tests come first; the `check` command
-    runs only for an entry that passed them."""
+    runs only for an entry that passed them. An entry that serves second opinions only is judged just when `second`
+    (a plain walk passes over it without running its check)."""
+    if entry.second and not second:
+        return Verdict(entry, False, "serves second opinions only (hub reviewer --second)")
     if entry.until and hc.now().date() > dt.date.fromisoformat(entry.until):
         return Verdict(entry, False, f"until {entry.until} has passed")
     if change_class and entry.classes and change_class.strip().lower() not in {c.strip().lower() for c in entry.classes}:
@@ -380,6 +393,29 @@ def walk(loaded: Loaded, change_class: Optional[str], every: bool = False, autho
             if not every:
                 break
     return verdicts, chosen
+
+
+def walk_second(loaded: Loaded, change_class: Optional[str], every: bool = False,
+                author: Optional[Author] = None) -> tuple:
+    """(verdicts, primary, chosen) for `hub reviewer --second`. The primary comes first, from the plain walk itself (the
+    same `judge` calls as `hub reviewer` without --second, so a `check` with side effects, such as a quota cache refresh,
+    can never change which entry is primary). The second opinion is then the first other available entry in list order,
+    whichever kind it is — an available `second` entry listed ahead of the primary counts. An entry already judged by the
+    plain walk keeps its verdict (no `check` runs twice); the entries it passed over or never reached are judged now."""
+    plain, primary = walk(loaded, change_class, every=every, author=author)
+    judged = {v.entry.name: v for v in plain if not v.entry.second}  # a second-only entry was passed over, not judged
+    chosen = None
+    for entry in loaded.entries:
+        if primary is not None and entry is primary.entry:
+            continue
+        v = judged.get(entry.name)
+        if v is None:
+            v = judged[entry.name] = judge(entry, change_class, loaded.origin, author, second=True)
+        if v.available and chosen is None:
+            chosen = v
+            if not every:
+                break
+    return [judged[e.name] for e in loaded.entries if e.name in judged], primary, chosen
 
 
 # ---------------------------------------------------------------- how to start it

@@ -35,6 +35,7 @@ it comes from the environment, a repository's `.agent-hub/config.json` or the hu
 | `check` | optional | A shell command; exit 0 means "available now" — a quota probe, a login check. The verdict is the shell's own exit: a background child that keeps the output open does not hold it up. It runs in the hub home — not in the repository you are working in, whose `make`, `./script` or `npm` it would otherwise run — with a 10 s timeout (`AGENT_HUB_REVIEW_CHECK_TIMEOUT`, in seconds, finite and above 0, overrides it); on expiry its whole process group is killed. Its output is shown only by `--all`. |
 | `until` | optional | `YYYY-MM-DD`: available through that day (hub time zone), not after — for a quota or a credit that expires. |
 | `for` | optional | The change classes the entry serves (next section), each made of letters, digits, `.`, `_`, `-` (64 characters at most). Absent: every class. |
+| `second` | optional | `true` or `false` (a JSON boolean, nothing else). `true`: the entry serves [second opinions](#a-second-opinion) only; a plain `hub reviewer` walk passes over it without running its `check`. |
 
 Rules the tool enforces:
 - **A `check` from a repository's config is never run.** A cloned repository must not run commands through the hub:
@@ -48,7 +49,7 @@ Rules the tool enforces:
   does not is reported and skipped, and a rejected key or value is echoed back cut to 30 characters. The `agent spawn` line the hub is told to run has every value shell-quoted. `--json` repeats the text of a `check` only for an entry whose check was run. An alias of `AGENT_HUB_MODEL_MAP` must stand for a model id too (letters, digits and `. _ : @ [ ] / -`, so a Bedrock id or an inference-profile ARN is fine); a pair outside that is reported and left out.
 - **A broken entry is reported and skipped, never a crash.** Not an object, a missing or duplicate `name`, an unknown
   `kind`, a `skill` entry without a valid `skill`, a field that belongs to the other kind, a bad `model`, `effort`,
-  `until` or class, an unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or
+  `until` or class, a `second` that is not a boolean, an unknown field (a misspelt `for` must not quietly widen an entry to every class). A list with no valid entry — or
   not valid JSON — falls back to the built-in default.
 - **The built-in default** when nothing is set is one entry, `{"name": "agent", "kind": "agent"}`, with the model and
   effort from `AGENT_HUB_REVIEW_MODEL` and `AGENT_HUB_REVIEW_EFFORT`.
@@ -58,7 +59,7 @@ Rules the tool enforces:
 ## Choosing
 
 ```
-hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage STAGE] [--json] [--all]
+hub reviewer [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage STAGE] [--json] [--all] [--second]
 ```
 
 It walks the list in order and stops at the first entry that is available now: not past its `until`, serving the
@@ -97,7 +98,8 @@ gives it the four inputs of the contract.
 `--author` names who wrote the change, so the reviewer is chosen by that and not by the engine of the hub that runs
 the command (see [the author](#the-author-of-the-change)). `--all` judges every entry and prints why each one passed or not (check exit code, `until` passed, class mismatch,
 invalid), with the output of each `check`. `--json` prints the same as JSON (`chosen`, `start`, `entries`,
-`invalid`). Exit 0 with a choice, 1 when none is available, 2 on a usage error. Nothing is written.
+`invalid`). Exit 0 with a choice, 1 when none is available, 2 on a usage error. Nothing is written. `--second` asks for
+a [second opinion](#a-second-opinion) instead.
 
 ## The author of the change
 
@@ -148,11 +150,34 @@ recommended; the names are free (`--for` and `for` just compare strings), so a t
 |---|---|---|
 | `docs` | Documentation only, or tooling and configuration whose own positive and negative controls were run and are shown in the PR | None by a model: CI and the author's controls are the check. |
 | `code` | Any other change to code | One review. |
-| `risky` | Money, migrations, production, permissions | The **same single review**, with its brief narrowed to that risk ("Look hardest at" in the template) — not a second reviewer. |
+| `risky` | Money, migrations, production, permissions | One review by default, with its brief narrowed to that risk ("Look hardest at" in the template). The hub **may** add one [second opinion](#a-second-opinion) from a different vendor when a miss would be costly and that reviewer's quota allows: its decision, never a default and never required. |
 
-*Why:* a review costs a full read of the diff and its context, and a second reviewer on the same risk mostly finds the
-same thing twice. A narrower brief gets more out of one reader than a second reader gets out of a wide one. When the
-author cannot tell whether a change needs a review at all, it reviews and says why in the PR.
+*Why:* a review costs a full read of the diff and its context, and a second reviewer of the same vendor on the same
+risk mostly finds the same thing twice, so one review is the default; a narrower brief gets more out of one reader than
+a second reader gets out of a wide one. A reader from another vendor is a different case. In a trial on two real merge
+requests (one small, one large and risky) Google's Gemini 4 Argon and a Codex reviewer found about as many real defects,
+and mostly different ones: each missed what the other found, and neither reported a defect that was not there. That is
+worth a second read when a miss is expensive, and not worth one on every change, because such a reviewer has its own
+quota (one Argon review took 6–13 % of a Pro week). When the author cannot tell whether a change needs a review at all,
+it reviews and says why in the PR.
+
+## A second opinion
+
+```
+hub reviewer --second [--for CLASS] [--author ROLE|ENGINE[/MODEL]] [--stage STAGE] [--json] [--all]
+```
+
+It chooses the primary reviewer exactly as the plain walk does, then walks the list again, skips that entry and returns
+the first other available one, in list order: an entry marked `"second": true` and an ordinary entry alike. The output
+names it (`reviewer: argon (skill delamain:agy-review) — second opinion, the primary is skill-a`) and prints its start
+line as a plain choice does. `--json` adds `"second": true` and `"primary"` (the primary's name, or null when no ordinary
+entry is available; a second entry is then still returned if one is). Exit 1 means only that there is no second opinion
+(no other entry is available): the primary review stands, and the hub goes on without one.
+
+An entry with `"second": true` is skipped by a plain `hub reviewer`, so listing a costly reviewer that way keeps it out of
+the default choice. The second opinion is optional and the hub's own call: no class requires it, and at most one is added.
+Start it beside the primary review (an `agent` entry with its own role, a skill with its own run), and verify its findings
+against the code like the primary's.
 
 ## The reviewer is a different model from the author
 
@@ -218,3 +243,71 @@ Inputs: BRIEF (a file), REPO (a directory), BASE (a sha), HEAD (a ref).
 
 Then list it: `{"name": "my-review-skill", "kind": "skill", "skill": "my-review-skill", "check": "my-review-quota --ok"}`
 — the `check` lets `hub reviewer` skip it before anyone loads the skill when the quota is gone.
+
+## The bundled Argon reviewer (`agy-review`)
+
+The plugin ships a reviewer skill, `delamain:agy-review`, and the tool behind it, `bin/agy-review`: a read-only review by
+Google's Gemini 4 Argon through the Antigravity CLI (`agy`). It is a third vendor beside Claude and Codex, plugged in as a
+reviewer skill; it is not an `agent spawn` engine. Verified on macOS with agy 1.4.0 and a Google AI Pro account (Argon has
+a weekly quota of its own there). **Linux is untested**: the review HOME links the macOS keychain (`~/Library`) and the
+tool guesses nothing about another layout.
+
+List it in the hub home's `config.json` (an entry with a `check` is never taken from a repository's config):
+
+```json
+{"AGENT_HUB_REVIEWERS": [
+  {"name": "argon", "kind": "skill", "skill": "delamain:agy-review", "second": true,
+   "for": ["code", "risky"], "check": "agy-review check"},
+  {"name": "agent", "kind": "agent"}]}
+```
+
+- `skill` is `plugin:skill`; the plugin is `delamain`. With `"second": true` a plain `hub reviewer` never picks it; ask for
+  it with [`hub reviewer --second`](#a-second-opinion), at the hub's discretion. Drop `second` and list it ahead of the
+  others only if you want Argon to be the primary reviewer.
+- `check` runs in the hub's environment, so `agy-review` must be on that `PATH`: the plugin's `bin/` is, in Claude Code.
+  Where it is not (a Codex hub, a plain terminal), `hub reviewer --all` shows `check exited 127`; write the absolute path
+  of the plugin copy's `bin/agy-review` instead. Exit 0 means `agy` is on `PATH` (or `AGENT_HUB_AGY_BIN` names it) and
+  Argon's weekly quota is not *known* to be below 20 %; an unreadable quota counts as available. The reading is cached
+  for 10 minutes in `<hub home>/agy-limits.json`, takes about 2 s, and is capped well inside the 10 s check timeout.
+
+`agy-review run --cwd <checkout> --brief <file> [--model M] [--name N] [--add-dir D]... [--min-left PCT] [--stage S]`
+starts the review detached and prints `run: <dir>` (`<hub home>/agy-runs/<name>-<time>`), `model: <id>` and, once the
+worker has installed its signal handlers and published its pid, `pid: <n>` (a SIGTERM to it stops agy and still ends in an `rc`). The directory
+holds `brief.md` (the brief plus a read-only footer), `out-N.json` (agy's answer per attempt), `final.md` (the review),
+`usage.json` (summed tokens, duration, attempts, conversation id, denied actions), `stderr.log`, `meta`, `pid` and `rc`,
+written last. `rc`: `0` the review is in `final.md`; `2` agy finished without an answer even after two resumes; any other
+value is agy's own exit code. The hub waits with one `jwait --file <dir>/rc`. With a stage the run journals a start line
+and `REVIEWED <dir>/final.md — rc 0` (`EXIT agy-review …` when there is no review). `run` refuses with exit 3 when `agy`,
+the checkout or the brief is missing, or when the weekly Argon quota is known to be below `--min-left` (default 20 %).
+`agy-review limits [--json]` prints the quota; `agy-review run --dry-run` prepares everything and starts nothing.
+
+| Setting (environment or the hub home's `config.json`; never a repository's) | Default | Meaning |
+|---|---|---|
+| `AGENT_HUB_AGY_BIN` | `agy` on `PATH` | The agy executable. A relative path (`./tools/agy`) is resolved once, against the directory you run from, and stored absolute: agy is later started from the home directory and from the checkout. |
+| `AGENT_HUB_AGY_REVIEW_MODEL` | `gemini-4-argon-high` | The model id passed to `agy --model`; `--model` wins. |
+| `AGENT_HUB_AGY_REVIEW_MIN_LEFT` | `20` | Percent of Argon's weekly quota below which `run` refuses and `check` fails. |
+
+**Read-only.** The review runs under its own HOME, `<hub home>/agy-review-home`, which links only the sign-in files of
+`~/.gemini` and `~/Library`. Its `settings.json` is rewritten on every run: only commands that cannot start another
+program are allowed (`git diff/log/show/blame/status/ls-files/ls-tree/rev-parse/cat-file`, `grep`, `ls`, `cat`, `head`,
+`tail`, `wc`, `cut`, `tr`, `nl`, `uniq`, `diff`, `jq`, `file`, `stat`, `du`, `tree`, …). Writes, the web, MCP, shells,
+interpreters, build and test runners, network and database clients are denied, and so, explicitly, is everything that can
+launch a program: `awk`, `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pagers and editors, and git's `-c`, `difftool`,
+`submodule`, `remote` and the like. A deny rule beats an allow rule, and a denied call is refused to the model while the
+run goes on. `agy` runs with `--sandbox`, which stops shell writes (also inside the checkout) but **not the network**, so
+it is this list, not the sandbox, that keeps a prompt injection in the reviewed repository from starting a program that
+sends files out. For the same reason `printf` and the builtins that assign, export or alias anything are denied (`printf
+-v PATH …` would swap the program the next `cat` runs), agy gets a fixed `PATH` of absolute directories outside the
+checkout and the extra dirs, and git has implicit bare repositories off (`safe.bareRepository = explicit`, in the review
+HOME's `.gitconfig` and in the environment), so a tracked directory with a bare-repository layout cannot name a diff
+handler. That setting exists from git 2.38: `run` refuses (exit 3) when the git on that `PATH` is older or its version
+cannot be read. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
+`.git/config` names, and repository content cannot set that. The reviewer searches with `grep -rn` and reads ranges with
+`cat`/`head`/`tail` or agy's file-view tool. The tool never
+passes `--dangerously-skip-permissions`: with it the file tool writes outside the checkout even under `--sandbox`. The
+owner's own `~/.gemini/antigravity-cli/settings.json` is never read or written. A headless `agy` ends its run without an
+answer when the model calls a command that is neither allowed nor denied; the tool then resumes the same conversation, at
+most twice (a real review needed one or two resumes).
+
+**Cost.** One review of a real change took 6–12 minutes and 6–13 % of a Pro week's Argon quota, so roughly eight to fifteen
+reviews a week: a second opinion for changes where a miss is expensive, not a review of every change.

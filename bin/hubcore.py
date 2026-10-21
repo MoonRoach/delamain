@@ -526,13 +526,14 @@ def known_home_paths_strict() -> list:
     raw = os.environ.get(HOME_KEY)
     if raw:
         cands.append((Path(raw).expanduser().absolute(), False))
+    missing = object()  # only an absent registry says "no registered homes"; a file that holds `null` is not a registry
     try:
         data = json.loads(registry_path().read_text(encoding="utf-8"))
     except FileNotFoundError:
-        data = None
+        data = missing
     except (OSError, ValueError) as e:
         raise Failure(f"the registry of homes cannot be read ({type(e).__name__}): {registry_path()}") from None
-    if data is not None:
+    if data is not missing:
         ents = data.get("homes") if isinstance(data, dict) else None
         if not isinstance(ents, list) or not all(isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] for e in ents):
             raise Failure(f"not a registry of homes: {registry_path()}")

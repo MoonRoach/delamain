@@ -23,10 +23,11 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
       when it runs out before the reset. AGENT_HUB_LIMIT_PACE=off turns it off
   R7  the `claude --bg` session of a hub that is retired in its stage and live nowhere on the machine (no live role of any
       stage of any known hub home, not a pending successor, not named by a running `hub takeover`), idle (status idle, state
-      done, no shell child) and quiet for the wake-after time (at least 15 min; transcript, sub-agent writes and the actual
+      done, no live process anywhere below its own) and quiet for the wake-after time (at least 15 min; transcript, sub-agent writes and the actual
       start of its process count) → `claude stop` (never `claude rm`: the history stays resumable with `claude attach <id>`
-      or `claude --bg --resume <id>`). A quiet one that is busy or blocked is only reported, once a day: stop it by hand.
-      Anything unreadable or unknown stops nothing; AGENT_HUB_WATCHDOG_REAP off turns it off (per home)
+      or `claude --bg --resume <id>`). A quiet one that is busy, blocked or has a child process is only reported, once a day: stop
+      it by hand. Anything unreadable or unknown (a file that is not what it should be, a partly read process table, a
+      setting not understood) stops nothing; AGENT_HUB_WATCHDOG_REAP off turns it off (per home)
 How a hub is woken depends on where it runs: a headless hub gets `agent send`; a `claude --bg` hub that is idle gets
 `claude stop` and `claude --bg --resume <same id>`; a Codex hub goes through bin/watchdog_codex.py; a Desktop or a
 terminal hub is only notified. It never starts a successor: no `hub succeed`, no `agent spawn`, no new session id.
@@ -1096,7 +1097,6 @@ class ReapAbort(Exception):
 REAP_MIN_QUIET = dt.timedelta(minutes=15)  # the least R7 waits whatever WAKE_AFTER says: a foreground tool call ends within the Bash cap of 10 min
 TAKEOVER_MAX_AGE = dt.timedelta(hours=6)   # a takeover marker older than this is the left-over of a killed command
 SCAN_CAP = 50000                           # entries of a session's own directory that are looked at; more: its activity is unknown
-SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh")  # a child of this kind is a Bash tool call or a background task
 
 
 def same_session(a: str, b: str) -> bool:
@@ -1111,14 +1111,18 @@ def session_ids(*ids) -> list:
     return [x.strip() for x in ids if isinstance(x, str) and x.strip()]
 
 
+MISSING = object()  # a file that is not there; a file that holds the JSON `null` is NOT missing
+
+
 def read_json_strict(path: Path):
-    """The parsed JSON of a file; None when the file is absent. Any other failure to read it raises ReapAbort: the loaders
-    of the tools (roles_load, autopilot.load_state) hide or soften it, and a registry that cannot be read must not look
-    like one with nobody in it."""
+    """The parsed JSON of a file; MISSING when the file is absent (only that says "nothing there": a file that holds `null`,
+    a list or a number returns that value and the caller, which knows the shape it expects, aborts on it). Any other failure
+    to read it raises ReapAbort: the loaders of the tools (roles_load, autopilot.load_state) hide or soften it, and a
+    registry that cannot be read must not look like one with nobody in it."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
+        return MISSING
     except (OSError, ValueError) as e:
         raise ReapAbort(f"{path} cannot be read ({type(e).__name__}: {first_line(str(e))})") from None
 
@@ -1157,18 +1161,34 @@ def home_stage_names(home: Path) -> list:
     return sorted(names)
 
 
+REAP_ON, REAP_OFF = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
+
+
+def reap_value_on(val) -> bool:
+    """Whether a value of AGENT_HUB_WATCHDOG_REAP (a JSON value of a config.json, or the text of the environment) says R7 is
+    on. Unset (absent, null, empty) is the default, on. A value that is not one of the known words (or not a boolean, a
+    string or a number at all) is not understood: R7 is off, never on by default."""
+    if val is None or (isinstance(val, str) and not val.strip()):
+        return True
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val == 1
+    if isinstance(val, str):
+        return val.strip().lower() in REAP_ON
+    return False
+
+
 def home_reap_off(home: Path) -> bool:
-    """Whether the config.json of another home switches R7 off there (AGENT_HUB_WATCHDOG_REAP). Read strictly: a file that
-    cannot be read raises ReapAbort. The watchdog's own home is asked through flag(), which also honours the environment."""
+    """Whether the config.json of a home switches R7 off there (AGENT_HUB_WATCHDOG_REAP), the environment apart. Read
+    strictly: only an absent file leaves R7 on; a file that cannot be read, or whose JSON is not an object (`null`, a list, a
+    number), raises ReapAbort."""
     data = read_json_strict(home / "config.json")
-    if data is None:
+    if data is MISSING:
         return False
     if not isinstance(data, dict):
         raise ReapAbort(f"{home / 'config.json'} is not a JSON object")
-    val = data.get("AGENT_HUB_WATCHDOG_REAP")
-    if isinstance(val, bool):
-        return not val
-    return isinstance(val, (str, int, float)) and bool(str(val).strip()) and not hc.truthy(str(val))
+    return not reap_value_on(data.get("AGENT_HUB_WATCHDOG_REAP"))
 
 
 def marker_sessions(path: Path, now: dt.datetime) -> list:
@@ -1194,12 +1214,12 @@ def read_stage(home: Path, stage: str, now: dt.datetime) -> tuple:
     directory. A file that is absent says nothing; any other failure to read or understand it raises ReapAbort."""
     d = home / stage
     data = read_json_strict(d / "roles.json")
-    data = {} if data is None else data
+    data = {} if data is MISSING else data
     if not isinstance(data, dict) or not isinstance(data.get("roles", {}), dict) or not isinstance(data.get("retired", []), list):
         raise ReapAbort(f"{d / 'roles.json'} has an unexpected shape")
     state = read_json_strict(d / "auto-handoff.json")
     pend = None
-    if state is not None:
+    if state is not MISSING:
         if not isinstance(state, dict) or not isinstance(state.get("pending"), (dict, type(None))):
             raise ReapAbort(f"{d / 'auto-handoff.json'} has an unexpected shape")
         pend = state.get("pending")
@@ -1273,17 +1293,21 @@ class Unknown(Exception):
 
 
 def reap_enabled() -> bool:
-    """AGENT_HUB_WATCHDOG_REAP of the watchdog's own home, read fresh (not through the cached hc.setting()) and strictly: the
-    environment first, else the home's config.json, whose being unreadable or malformed raises ReapAbort. Default on."""
+    """AGENT_HUB_WATCHDOG_REAP of the watchdog's own home, read fresh (not through the cached hc.setting()) and strictly. The
+    config.json is always read, whatever the environment says (one that cannot be read, or is not an object, raises ReapAbort
+    even when the environment says on); the environment, when set and not empty, then decides; a value of either that is not
+    understood means off. Default on."""
+    from_config = not home_reap_off(hc.root())
     env = os.environ.get("AGENT_HUB_WATCHDOG_REAP")
-    if env:
-        return hc.truthy(env)
-    return not home_reap_off(hc.root())
+    if env and env.strip():
+        return reap_value_on(env)
+    return from_config
 
 
 def read_procs():
     """{pid: (ppid, start, command)} of every process from one `ps` (the actual start of a process, in the hub time zone), or
-    None when `ps` cannot be run or understood."""
+    None when `ps` cannot be run or any row of its answer cannot be understood: a table with a row missing could hide the
+    child of a session, so a partly read table is no table."""
     try:
         res = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart=,comm="], capture_output=True, text=True, timeout=20,
                              env={**os.environ, "LC_ALL": "C"}, stdin=subprocess.DEVNULL)
@@ -1293,14 +1317,16 @@ def read_procs():
         return None
     out = {}
     for line in res.stdout.splitlines():
+        if not line.strip():
+            continue
         parts = line.split(None, 7)
         if len(parts) < 8:
-            continue
+            return None
         try:
             started = time.mktime(time.strptime(" ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"))
             out[int(parts[0])] = (int(parts[1]), dt.datetime.fromtimestamp(started, hc.TZ), parts[7].strip())
         except (ValueError, OverflowError, OSError):
-            continue
+            return None
     return out or None
 
 
@@ -1388,28 +1414,63 @@ def last_activity(row: dict, procs: dict):
         return None
 
 
+def descendants(pid, procs: dict) -> list:
+    """[(pid, command)] of every process below `pid` in the process table, at any depth, in pid order."""
+    kids = {}
+    for p, (ppid, _, cmd) in procs.items():
+        kids.setdefault(ppid, []).append(p)
+    out, todo, seen = [], list(kids.get(pid, [])), {pid}
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append((p, procs[p][2]))
+        todo += kids.get(p, [])
+    return sorted(out)
+
+
 def busy_reason(row: dict, procs: dict) -> str:
     """Why the session of a row may be working or waiting, "" when nothing says so. Only an `idle` status with a `done`
     state is quiet: busy, working, blocked, waiting, running, a missing or any other value protects the session, and so does
-    a shell among the direct children of its process (a Bash tool call or a background task in flight). The other children,
-    MCP servers, stay: every session has them, started minutes after the session itself."""
+    ANY live process below its own, whatever it is and however deep (a Bash call, a background task, a Python or Node child, a
+    `sleep`: R7 cannot tell a working child from an MCP server, so every child counts). A pid that is not in the table is
+    unknown, and protects as well."""
     status, state = row.get("status"), row.get("state")
     if status != "idle" or state != "done":
         return f"{status or '?'}/{state or '?'}"
     pid = row.get("pid")
-    if any(ppid == pid and os.path.basename(cmd).lstrip("-") in SHELLS for ppid, _, cmd in procs.values()):
-        return "running a shell command"
+    if pid not in procs:
+        return "not in the process table"
+    below = descendants(pid, procs)
+    if below:
+        return f"running a child process ({os.path.basename(below[0][1]).lstrip('-')}" + (f" and {len(below) - 1} more" if len(below) > 1 else "") + ")"
     return ""
 
 
 def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
     """(why, say) when the session of `row` must not be stopped now (`say`: worth a line in the output), else None. Called
-    right before `claude stop`, which is addressed by the 8-character id: a fresh `claude agents --json` (not the tick's
-    cache) must list exactly one row with that id, still a running background session with the same full sessionId and the
-    same process, idle and done, with no shell child and no write since it was chosen (the owner may have resumed it
-    meanwhile), and no protected id (a live role of any stage of any home, a pending successor, a running takeover; full or
-    short) may share the 8-character prefix. Raises ReapAbort when a registry cannot be read."""
+    right before `claude stop`, which is addressed by the 8-character id. Two stages, the second as short as it can be:
+    1. the scans: the registries of every home (still a retired hub, no live role, pending successor or running takeover,
+       full or short, shares the 8-character prefix) and the session's activity (its quiet time, from a table of processes
+       that must be read completely);
+    2. the last look, in this order: a fresh `claude agents --json` (not the tick's cache) that lists exactly one row with that
+       id, still a running background session with the same full sessionId and the same process, `idle` and `done`; a fresh
+       process table in which that process has no descendant at all; the activity once more (the owner may have resumed the
+       session meanwhile); and, last of all, AGENT_HUB_WATCHDOG_REAP (the environment and the strictly read config.json).
+    Raises ReapAbort when a registry or the setting cannot be read."""
     short = (row.get("id") or (row.get("sessionId") or "")[:8]).strip()
+    if retired_hub_of(row) is None:
+        return f"the session {short} is no longer a retired, unprotected hub", False
+    procs = read_procs()
+    if procs is None:
+        return "`ps` failed or could not be read completely", True
+    last = last_activity(row, procs)
+    if last is None or now - last < need:
+        return f"the session {short} wrote something since it was chosen, or what it did cannot be told", False
+    if any(p[:8] == short for p in reap_registry()[1]):
+        return f"a live role, a pending successor or a running takeover shares the id {short}", False
+    # the last look
     fresh = autopilot.list_agents(cli.path, cwd)
     if fresh is None:
         return "`claude agents --json` failed just before the stop", True
@@ -1422,14 +1483,14 @@ def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
         return f"the session listed as {short} is not the one that was chosen", False
     procs = read_procs()
     if procs is None:
-        return "`ps` failed just before the stop", True
+        return "`ps` failed or could not be read completely just before the stop", True
     if busy_reason(seen, procs):
         return f"the session {short} is {busy_reason(seen, procs)} now", False
     last = last_activity(seen, procs)
     if last is None or now - last < need:
         return f"the session {short} wrote something since it was chosen, or what it did cannot be told", False
-    if any(p[:8] == short for p in reap_registry()[1]):
-        return f"a live role, a pending successor or a running takeover shares the id {short}", False
+    if not reap_enabled():
+        return "AGENT_HUB_WATCHDOG_REAP is off now", False
     return None
 
 
@@ -1461,8 +1522,9 @@ def report_busy(tick: Tick, stage: str, ident: str, why: str, quiet: dt.timedelt
 def rule_r7(tick: Tick) -> None:
     """Stop (never remove) the background session of a retired hub that is live nowhere on the machine, once it has been quiet
     for the wake-after time (at least 15 minutes) and only when it is idle: a busy, blocked or otherwise not idle session, or
-    one with a shell child, is reported once a day and left to the owner. The registries of every home and the own setting are
-    read again right before each stop (a stop takes up to 30 s; the session may have become live meanwhile)."""
+    one with any live descendant process, is reported once a day and left to the owner. Everything unknown (a file that is not
+    what it should be, a process table that is not read completely, a setting not understood) stops nothing. The registries of
+    every home, the listing, the process table and the own setting are read again right before each stop (see stop_blocker)."""
     try:
         if not reap_enabled():
             return
@@ -1503,15 +1565,16 @@ def rule_r7(tick: Tick) -> None:
                 tick.say(stage, "R7", f"would stop the background session of retired {who}, quiet {mins} min")
                 continue
             cwd = row.get("cwd") if isinstance(row.get("cwd"), str) and os.path.isdir(row["cwd"]) else None
-            if not reap_enabled() or retired_hub_of(row) is None:  # read again right before the stop: switched off, registered or pending since?
-                continue
             blocker = stop_blocker(cli, row, cwd, need, tick.now)
             if blocker:
                 if blocker[1]:
                     tick.say(stage, "R7", f"not stopping retired {who}: {blocker[0]}")
                 continue
-            # accepted residual window: milliseconds between this last check and the stop; it takes an old retired session
-            # re-registered in exactly that window, and no lock protocol with the registry writers is worth that
+            # Residual window, accepted: stop_blocker() ends with the read of AGENT_HUB_WATCHDOG_REAP, and the stop starts a
+            # moment after it (milliseconds: a function return and a process spawn). Behind that read stay the listing, the
+            # process table and the activity look, a few tens of milliseconds older (`claude agents --json` is the slow one and
+            # comes first). It takes a session that turns busy, gets a child, is resumed or is re-registered in exactly that
+            # time; no lock protocol with the writers of the registries or of the sessions is worth that.
             res = run([cli.path, "stop", row.get("id") or ident[:8]], 30, cwd)
             if res.returncode != 0:
                 tick.say(stage, "R7", f"stopping the background session of retired {who} failed: claude stop exit "

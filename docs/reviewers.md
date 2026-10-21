@@ -282,15 +282,22 @@ the checkout or the brief is missing, or when the weekly Argon quota is known to
 
 | Setting (environment or the hub home's `config.json`; never a repository's) | Default | Meaning |
 |---|---|---|
-| `AGENT_HUB_AGY_BIN` | `agy` on `PATH` | The agy executable. |
+| `AGENT_HUB_AGY_BIN` | `agy` on `PATH` | The agy executable. A relative path (`./tools/agy`) is resolved once, against the directory you run from, and stored absolute: agy is later started from the home directory and from the checkout. |
 | `AGENT_HUB_AGY_REVIEW_MODEL` | `gemini-4-argon-high` | The model id passed to `agy --model`; `--model` wins. |
 | `AGENT_HUB_AGY_REVIEW_MIN_LEFT` | `20` | Percent of Argon's weekly quota below which `run` refuses and `check` fails. |
 
 **Read-only.** The review runs under its own HOME, `<hub home>/agy-review-home`, which links only the sign-in files of
-`~/.gemini` and `~/Library`. Its `settings.json` is rewritten on every run: only reading commands are allowed (`git
-diff/log/show/grep/blame`, `rg`, `grep`, `ls`, `cat`, `head`, `sed -n`, `find`, …); writes, the web, MCP, shells,
-interpreters, build and test runners, and network and database clients are denied, and a deny rule beats an allow rule.
-`agy` runs with `--sandbox`, which stops shell writes (also inside the checkout) but not the network. The tool never
+`~/.gemini` and `~/Library`. Its `settings.json` is rewritten on every run: only commands that cannot start another
+program are allowed (`git diff/log/show/blame/status/ls-files/ls-tree/rev-parse/cat-file`, `grep`, `ls`, `cat`, `head`,
+`tail`, `wc`, `cut`, `tr`, `nl`, `uniq`, `diff`, `jq`, `file`, `stat`, `du`, `tree`, …). Writes, the web, MCP, shells,
+interpreters, build and test runners, network and database clients are denied, and so, explicitly, is everything that can
+launch a program: `awk`, `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pagers and editors, and git's `-c`, `difftool`,
+`submodule`, `remote` and the like. A deny rule beats an allow rule, and a denied call is refused to the model while the
+run goes on. `agy` runs with `--sandbox`, which stops shell writes (also inside the checkout) but **not the network**, so
+it is this list, not the sandbox, that keeps a prompt injection in the reviewed repository from starting a program that
+sends files out. What is left: `git diff/log/show` run an external diff or textconv driver that the checkout's own
+`.git/config` names, and repository content cannot set that. The reviewer searches with `grep -rn` and reads ranges with
+`cat`/`head`/`tail` or agy's file-view tool. The tool never
 passes `--dangerously-skip-permissions`: with it the file tool writes outside the checkout even under `--sandbox`. The
 owner's own `~/.gemini/antigravity-cli/settings.json` is never read or written. A headless `agy` ends its run without an
 answer when the model calls a command that is neither allowed nor denied; the tool then resumes the same conversation, at

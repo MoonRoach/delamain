@@ -8,9 +8,11 @@
   `run: <dir>` under `<hub home>/agy-runs/`; the directory holds the brief, agy's JSON per attempt, `final.md`,
   `usage.json` and, written last, `rc` (`0` review produced, `2` no answer after two resumes, else agy's exit code).
   With a stage it journals a start line and `REVIEWED <run>/final.md — rc 0`. The review runs under its own HOME
-  (`<hub home>/agy-review-home`), whose `settings.json` is rewritten on every run: only reading commands are allowed,
-  writes, the web, MCP, shells, interpreters and network clients are denied, and `agy` runs with `--sandbox`
-  (never `--dangerously-skip-permissions`); the owner's own `~/.gemini/antigravity-cli/settings.json` is not touched.
+  (`<hub home>/agy-review-home`), whose `settings.json` is rewritten on every run: only commands that cannot start another
+  program are allowed, writes, the web, MCP, shells, interpreters, network clients and every program launcher (`awk`,
+  `find`, `sed`, `rg`, `sort`, `xargs`, `git grep`, pagers) are denied, and `agy` runs with `--sandbox`, which leaves the
+  network open (never `--dangerously-skip-permissions`); the owner's own `~/.gemini/antigravity-cli/settings.json` is not
+  touched. A stop (SIGTERM) ends agy's whole process group, with SIGKILL after ten seconds, and still writes the `rc`.
   A headless run that ends without an answer is resumed, at most twice. `agy-review limits` reads the quota from agy's
   `/usage` panel through a pty, and `agy-review check` is the availability test for a reviewer entry (agy installed,
   Argon's weekly quota not known to be below 20 %). New hub-wide settings `AGENT_HUB_AGY_BIN`,

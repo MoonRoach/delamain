@@ -28,8 +28,10 @@ That is why the config entry marks it `"second": true` and the hub asks for it o
 trial on two real merge requests Argon and Codex found about as many real defects, and different ones.
 
 **Read-only, in three lines.** The review runs under its own HOME (`<hub home>/agy-review-home`) with a `settings.json` the
-tool rewrites on every run: only reading commands are allowed; writes, the web, MCP, shells, interpreters, build tools and
-network and database clients are denied. `agy` runs with `--sandbox`, and `--dangerously-skip-permissions` is never used.
+tool rewrites on every run: only commands that cannot start another program are allowed (`git diff/log/show`, `grep`, `cat`,
+`head`, `tail`, `ls`, …); writes, the web, MCP, shells, interpreters, `awk`, `find`, `sed`, `rg`, `sort`, `xargs`, build
+tools and network and database clients are denied. `agy` runs with `--sandbox`, which leaves the network open, so it is the
+list that keeps programs from starting; `--dangerously-skip-permissions` is never used.
 Your own `~/.gemini/antigravity-cli/settings.json` is neither read nor written.
 
 Verified on macOS with agy 1.4.0 only. Linux and Windows are untested.

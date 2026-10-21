@@ -21,7 +21,7 @@ jf(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sy
 call(){ python3 -c 'import json,sys; c=[json.loads(x) for x in open(sys.argv[1])][int(sys.argv[2])]; print(eval(sys.argv[3]))' $FA/calls.jsonl "$1" "$2"; }
 ncalls(){ [ -f $FA/calls.jsonl ] && wc -l < $FA/calls.jsonl | tr -d ' ' || echo 0; }
 # start a review and wait for its rc; RUN is the run dir. Returns run's exit code, 99 when rc never came.
-waitrc(){ local i; for i in $(seq 1 300); do [ -e $1/rc ] && return 0; sleep 0.1; done; return 99; }
+waitrc(){ local i; for i in $(seq 1 ${2:-300}); do [ -e $1/rc ] && return 0; sleep 0.1; done; return 99; }
 runit(){ $B/agy-review run --cwd $CO --brief $P/brief.md --name t "$@" > $P/run.out 2> $P/run.err; local rc=$?
   RUN=$(sed -n 's/^run: //p' $P/run.out); [ $rc = 0 ] || return $rc; waitrc $RUN; }
 dry(){ $B/agy-review run --cwd $CO --brief $P/brief.md --name dry --dry-run "$@" > $P/dry.out 2> $P/dry.err; }
@@ -80,7 +80,13 @@ check "$(call 0 '"write_file(*)" in json.loads(c["settings"])["permissions"]["de
 check "$(call 0 '[a for a in json.loads(c["settings"])["permissions"]["allow"] if a.startswith(("write_file", "read_url", "mcp"))]')" "[]" "…and allow no write, web or MCP tool"
 check "$(call 0 '"command(git diff)" in json.loads(c["settings"])["permissions"]["allow"] and "command(git push)" in json.loads(c["settings"])["permissions"]["deny"] and "command(git push)" not in json.loads(c["settings"])["permissions"]["allow"]')" True "…allow reading git, deny pushing"
 check "$(call 0 'set(json.loads(c["settings"])["permissions"]["allow"]) & set(json.loads(c["settings"])["permissions"]["deny"])')" "set()" "…no command is both allowed and denied"
-check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["deny"] for x in ("command(xargs)", "command(python3)", "command(bash)", "command(curl)", "command(rm)"))')" True "…interpreters, shells, xargs, network clients and rm are denied"
+check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["deny"] for x in ("command(python3)", "command(bash)", "command(curl)", "command(rm)", "command(less)", "command(vim)", "command(git -c)", "command(git submodule)", "command(git remote)"))')" True "…interpreters, shells, network clients, pagers, editors and git's program-starting forms are denied"
+# commands that can start another program are denied EXPLICITLY (the model gets a refusal, the run goes on), and nothing
+# that allows them by prefix is on the allow list: --sandbox leaves the network open, so the list is what keeps them out
+check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["deny"] for x in ("command(awk)", "command(gawk)", "command(find)", "command(sed)", "command(rg)", "command(git grep)", "command(sort)", "command(xargs)"))')" True "awk, gawk, find, sed, rg, git grep, sort and xargs are in deny"
+check "$(call 0 '[(a, x) for a in json.loads(c["settings"])["permissions"]["allow"] for x in ("awk", "gawk", "find", "sed", "rg", "git grep", "sort", "xargs", "less", "vim") if a.startswith("command(") and x.startswith(a[8:-1])]')" "[]" "…and no allow entry is a prefix of any of them"
+check "$(call 0 'all(x in json.loads(c["settings"])["permissions"]["allow"] for x in ("command(grep)", "command(cat)", "command(head)", "command(tail)", "command(git diff)", "command(git log)", "command(git show)", "command(git blame)", "command(ls)", "command(wc)"))')" True "…while grep, cat, head, tail, ls, wc and the reading git forms are allowed"
+grep -q 'awk`, `find`, `sed`, `rg`, `sort`, `git grep`, `xargs`' $RUN/brief.md && grep -q 'grep -rn' $RUN/brief.md; check $? 0 "the footer of brief.md names grep -rn for searching and says awk, find, sed, rg, sort, git grep are refused"
 
 # ======== the owner's own agy settings and sign-in
 cmp -s $OWNER/.gemini/antigravity-cli/settings.json $P/sentinel.copy; check $? 0 "the owner's ~/.gemini/antigravity-cli/settings.json is untouched"
@@ -148,6 +154,20 @@ FAKE_PID=$(call 0 'c["pid"]'); kill -TERM $(cat $TERM_RUN/pid)
 waitrc $TERM_RUN; check "$(cat $TERM_RUN/rc 2>/dev/null)" 143 "SIGTERM to the worker: rc 143"
 [ -f $TERM_RUN/final.md ] && [ -f $TERM_RUN/usage.json ]; check $? 0 "…final.md and usage.json are written"
 sleep 0.3; kill -0 $FAKE_PID 2>/dev/null; check $? 1 "…and agy was stopped, not left running"
+# an agy that ignores SIGTERM: the worker escalates to SIGKILL on agy's group after a grace period, and still ends with an rc
+scn "[{\"sleep\": 60, \"ignore_term\": true, \"json\": $OK}]"
+$B/agy-review run --cwd $CO --brief $P/brief.md --name stubborn > $P/st.out 2>&1; ST_RUN=$(sed -n 's/^run: //p' $P/st.out)
+for i in $(seq 1 100); do [ "$(ncalls)" = 1 ] && break; sleep 0.1; done
+ST_PID=$(call 0 'c["pid"]'); kill -TERM $(cat $ST_RUN/pid)
+waitrc $ST_RUN 900; check "$(cat $ST_RUN/rc 2>/dev/null)" 137 "SIGTERM that agy ignores: the worker ends with an rc (137, agy's group was killed) within a bounded time"
+[ -f $ST_RUN/final.md ] && [ -f $ST_RUN/usage.json ]; check $? 0 "…final.md and usage.json are written"
+sleep 0.3; kill -0 $ST_PID 2>/dev/null; check $? 1 "…and the stubborn agy is gone"
+# a stop ends the run: no resume begins after it, even though the attempt that was running finished with an empty answer
+scn "[{\"sleep\": 3, \"ignore_term\": true, \"json\": {\"conversation_id\": \"c9\", \"status\": \"SUCCESS\", \"response\": \"\"}}, {\"json\": $OK}]"
+$B/agy-review run --cwd $CO --brief $P/brief.md --name nostart > $P/ns.out 2>&1; NS_RUN=$(sed -n 's/^run: //p' $P/ns.out)
+for i in $(seq 1 100); do [ "$(ncalls)" = 1 ] && break; sleep 0.1; done
+kill -TERM $(cat $NS_RUN/pid); waitrc $NS_RUN 600
+check "$(cat $NS_RUN/rc)-$(ncalls)-$(jf $NS_RUN/usage.json 'd["attempts"]')" "143-1-1" "a stop during an attempt that ends unanswered: rc 143 and no second attempt is started"
 
 # ======== journal
 rm -rf $R/s1; scn "[{\"json\": $OK}]"
@@ -169,6 +189,28 @@ scn "[{\"sleep\": 2, \"json\": $OK}]"
 $B/agy-review run --cwd $CO --brief $P/brief.md --name jw > $P/jw.out 2>&1; JW=$(sed -n 's/^run: //p' $P/jw.out)
 bounded 40 $B/jwait --file $JW/rc --for 30s --settle 1 --caller agy-test > $P/jw.wait 2>&1; check $? 0 "jwait --file <run>/rc returns when the review ends"
 grep -q '^0$\|[[:space:]]0$' $P/jw.wait; check $? 0 "…and shows the rc"
+
+# ======== ordering: `pid` and the start line are there before `rc` and REVIEWED can be
+# the worker writes its own pid first thing: run it by hand on a prepared (dry-run) directory, where the parent never wrote one
+scn "[{\"json\": $OK}]"; dry; D=$(sed -n 's/^run: //p' $P/dry.out); [ ! -e $D/pid ]
+$B/agy-review _worker $D > /dev/null 2>&1; check "$([ "$(cat $D/pid)" = "$(call 0 'c["ppid"]')" ] && echo own-pid)-$(cat $D/rc)" "own-pid-0" "the worker writes its own pid (agy's parent) before agy runs, independently of the parent"
+# the start line is written before the worker is started: with the journal locked, nothing starts; released, start precedes REVIEWED
+rm -rf $R/s3; mkdir -p $R/s3/coordinator/work; scn "[{\"json\": $OK}]"; rm -rf $R/agy-runs
+python3 -I - $B $R/s3/coordinator/work/.journal.lock $P/locked <<'PY' &
+import fcntl, sys, time
+fh = open(sys.argv[2], "a"); fcntl.flock(fh, fcntl.LOCK_EX); open(sys.argv[3], "w").write("locked"); time.sleep(5)
+PY
+for i in $(seq 1 100); do [ -e $P/locked ] && break; sleep 0.1; done
+$B/agy-review run --cwd $CO --brief $P/brief.md --name lock --stage s3 > $P/lk.out 2>&1 &
+LK_PID=$!
+sleep 3
+LK_RUN=$(ls -d $R/agy-runs/lock-* 2>/dev/null | head -1)
+check "$([ -n "$LK_RUN" ] && [ ! -e $LK_RUN/pid ] && [ "$(ncalls)" = 0 ] && echo nothing-started)" nothing-started "with the journal locked the start line cannot be written, and then no worker and no agy has started"
+wait $LK_PID; waitrc $LK_RUN
+check "$(cat $LK_RUN/rc)-$([ -f $LK_RUN/pid ] && echo pid)" "0-pid" "released: the run goes on, and pid is there when rc is"
+J3=$(journal s3)
+check "$(grep -n 'started' $J3 | head -1 | cut -d: -f1)-$(grep -n 'REVIEWED' $J3 | head -1 | cut -d: -f1)" "1-2" "…the start line precedes REVIEWED in the journal"
+rm -f $P/locked
 
 # ======== refusals (exit 3) and usage errors (exit 2)
 rm -f $R/agy-limits.json
@@ -296,6 +338,21 @@ unset FAKE_AGY_PANEL; rm -f $R/agy-limits.json
 $B/agy-review limits > /dev/null 2> $P/l3.err; check $? 1 "limits: an agy that draws no panel: exit 1"
 grep -q 'panel was not read' $P/l3.err; check $? 0 "…and says so"
 FAKE_AGY_PANEL=$P/panel-used.txt AGENT_HUB_HOME=$P/no-hub-yet $B/agy-review limits --json > /dev/null; check "$?-$([ -e $P/no-hub-yet ] && echo made || echo none)" "0-none" "a machine with no hub home is not given one by a quota read"
+
+# ======== a relative AGENT_HUB_AGY_BIN is made absolute where it is resolved, never run from the checkout or the home
+mkdir -p $P/relbin $CO/relbin $OWNER/relbin
+printf '#!/bin/sh\nexec %s "$@"\n' $T/fake_agy.py > $P/relbin/agy-rel; chmod +x $P/relbin/agy-rel
+for d in $CO $OWNER; do printf '#!/bin/sh\ntouch %s/decoy-ran\nexit 1\n' $P > $d/relbin/agy-rel; chmod +x $d/relbin/agy-rel; done
+rm -f $P/decoy-ran; scn "[{\"json\": $OK}]"
+(cd $P && AGENT_HUB_AGY_BIN=./relbin/agy-rel $B/agy-review run --cwd $CO --brief $P/brief.md --name rel > $P/rel.out 2>&1); REL_RUN=$(sed -n 's/^run: //p' $P/rel.out); waitrc $REL_RUN
+check "$(cat $REL_RUN/rc)-$(ncalls)" "0-1" "AGENT_HUB_AGY_BIN=./relbin/agy-rel from another directory: the program it names ran (the review is done)"
+check "$(jf $REL_RUN/meta 'd["agy"]')" "$(cd $P && pwd -P)/relbin/agy-rel" "…meta records its absolute path"
+[ -e $P/decoy-ran ]; check $? 1 "…and the same relative path inside the checkout was not run"
+export FAKE_AGY_PANEL=$P/panel-used.txt; rm -f $R/agy-limits.json
+(cd $P && AGENT_HUB_AGY_BIN=./relbin/agy-rel $B/agy-review limits --json > $P/rel.json 2>&1); check "$(jf $P/rel.json 'd["argon_weekly_remaining"]')" 84.12 "the quota probe, which starts agy from the home directory, ran the right program too"
+[ -e $P/decoy-ran ]; check $? 1 "…and not the relative path inside the home"
+rm -f $R/agy-limits.json; (cd $P && AGENT_HUB_AGY_BIN=./relbin/agy-rel $B/agy-review check > /dev/null 2>&1); check "$?-$(jf $R/agy-limits.json 'd["argon_weekly_remaining"]')" "0-84.12" "…also for check"
+unset FAKE_AGY_PANEL
 
 # ======== the tool is a command of the plugin like the others
 python3 - $B > $P/tools.out <<'PY'

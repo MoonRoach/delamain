@@ -25,7 +25,8 @@ check   for a reviewer entry's `check`: exit 0 when agy is on PATH and Argon's w
         threshold (cache max age 600 s, probe capped well inside the hub's 10 s check timeout), else 1.
 
 The review runs under its own HOME, <hub home>/agy-review-home, whose settings.json this tool rewrites on every run: only
-read-only commands are allowed, writes, network and interpreters are denied, and agy runs with --sandbox. Your own
+commands that cannot start another program are allowed (the sandbox leaves the network open, so the list is what stops
+awk, find, sed, rg, sort, xargs, pagers…), writes, network and interpreters are denied, and agy runs with --sandbox. Your own
 ~/.gemini/antigravity-cli/settings.json is never read or written; the sign-in files are linked from ~/.gemini and
 ~/Library (macOS keychain). Verified on macOS with agy 1.4.0; Linux is untested. AGENT_HUB_AGY_BIN names another agy.
 Settings (environment or the hub home's config.json): AGENT_HUB_AGY_BIN, AGENT_HUB_AGY_REVIEW_MODEL,
@@ -68,23 +69,29 @@ ANTIGRAVITY_LINKS = ("installation_id", "jetski_state.pbtxt", "bin", "builtin")
 
 # Permissions of the review HOME. DENY BEATS ALLOW: a call that matches a deny rule is refused to the model and the run
 # goes on, whereas a call that is neither allowed nor denied ends the headless run with an empty answer (it is resumed,
-# see RESUMES). So every command that could write, run code, reach the network or a database is listed in DENY_COMMANDS
-# even when an allow rule would also match its prefix, and a prefix that is read-only only in one form (`git branch
-# --list`, `sed -n`) is allowed in that form while its writing forms are denied. Compound commands are checked per
-# segment. Besides this list agy runs with --sandbox, which blocks shell writes (also inside the checkout) but not the
-# network. `find`, `awk` and `sed -n` stay allowed because a review cannot do without them, and they can start programs:
-# the sandbox, not this list, is what stops those from writing. `xargs` is denied for the same reason and is not needed.
+# see RESUMES). So everything that could write, start another program, reach the network or a database is listed in
+# DENY_COMMANDS explicitly, even where nothing allows it, and a prefix that is read-only only in one form (`git branch
+# --list`) is allowed in that form while its writing forms are denied. Compound commands are checked per segment.
+# THE LIST, NOT THE SANDBOX, IS WHAT KEEPS PROGRAMS FROM BEING STARTED: --sandbox blocks shell writes (also inside the
+# checkout) but leaves the network open, so a prompt injection in the reviewed repository that got a program started
+# (`awk 'BEGIN{system("curl …")}'`, `find -exec`, `sed` with `e`/`w`, `rg --pre CMD`, `git grep -O CMD`, `sort
+# --compress-program=CMD`, `xargs`, a pager or an editor) could send files out. READ_COMMANDS therefore holds only
+# commands that cannot start one; searching is `grep -rn`, reading a range is `cat`/`head`/`tail` or agy's file-view tool.
+# Residual risk: `git diff/log/show` run an external diff or textconv driver that the checkout's own .git/config names
+# (a repository's content cannot set that: .git/config is not versioned).
 READ_COMMANDS = (
-    "git diff", "git log", "git show", "git grep", "git blame", "git status", "git ls-files", "git ls-tree",
-    "git rev-parse", "git merge-base", "git cat-file", "git branch --list", "git describe", "rg", "grep", "ls", "cat",
-    "head", "tail", "wc", "cd", "pwd", "echo", "printf", "sed -n", "awk", "sort", "uniq", "cut", "tr", "nl", "find",
-    "diff", "jq", "file", "stat", "du", "tree", "true")
+    "git diff", "git log", "git show", "git blame", "git status", "git ls-files", "git ls-tree", "git rev-parse",
+    "git merge-base", "git cat-file", "git describe", "git branch --list", "grep", "ls", "cat", "head", "tail", "wc",
+    "cd", "pwd", "echo", "printf", "uniq", "cut", "tr", "nl", "diff", "jq", "file", "stat", "du", "tree", "true")
 DENY_COMMANDS = (
     "git push", "git commit", "git checkout", "git switch", "git reset", "git restore", "git stash", "git fetch",
     "git pull", "git merge", "git rebase", "git cherry-pick", "git revert", "git am", "git apply", "git clean",
     "git worktree", "git tag", "git branch -", "git config", "git gc", "git rm", "git mv", "git add", "git notes",
+    "git grep", "git -c", "git --exec-path", "git difftool", "git mergetool", "git submodule", "git archive",
+    "git bundle", "git daemon", "git send-email", "git remote", "git ls-remote", "git request-pull",
+    "awk", "gawk", "find", "sed", "sed -i", "rg", "sort", "less", "more", "man", "vi", "vim", "nano", "emacs",
     "rm", "mv", "cp", "mkdir", "rmdir", "touch", "tee", "ln", "chmod", "chown", "dd", "truncate", "install",
-    "sed -i", "perl", "python", "python3", "uv", "pip", "pip3", "node", "npm", "npx", "pnpm", "yarn", "ruby",
+    "perl", "python", "python3", "uv", "pip", "pip3", "node", "npm", "npx", "pnpm", "yarn", "ruby",
     "bash", "sh", "zsh", "source", ".", "eval", "exec", "env", "xargs", "sudo", "make", "pytest", "tox", "docker",
     "kubectl", "psql", "sqlite3", "mysql", "redis-cli", "curl", "wget", "ssh", "scp", "rsync", "nc", "gh", "glab",
     "open", "osascript", "kill", "pkill", "killall", "bin/", "./", "dbt", "alembic", "terraform", "yc", "aws")
@@ -96,9 +103,11 @@ NUDGE = ("Your last tool call was refused because that command is not permitted 
 FOOTER = """
 ## Read-only (added by agy-review)
 Do not create, edit or delete any file, not even a scratch or review file; do not commit, push or run tests.
-Shell: one read-only command per call — `git diff/log/show/grep/blame/status/ls-files`, `rg`, `grep`, `ls`, `cat`,
-`head`, `tail`, `wc`, `sed -n`, `awk`, `sort`, `find` and the like. Anything else is refused, and an unknown command
-can end the run without your answer. Return the review as your final answer.
+Shell: one read-only command per call, from `git diff/log/show/blame/status/ls-files/ls-tree/rev-parse/cat-file`, `grep`
+(`grep -rn` searches), `ls`, `cat`, `head`, `tail` (or the file-view tool) for reading a range, `wc`, `cut`, `tr`, `nl`,
+`uniq`, `diff`, `jq`, `file`, `stat`, `du`, `tree`. `awk`, `find`, `sed`, `rg`, `sort`, `git grep`, `xargs`, pagers and
+editors are refused, as is anything that writes, runs a program or uses the network; an unknown command can end the run
+without your answer. Return the review as your final answer.
 """
 
 
@@ -114,8 +123,12 @@ def refuse(text: str) -> int:
 
 
 def agy_binary():
-    """The agy executable as a path, or None: AGENT_HUB_AGY_BIN (a path or a name on PATH), else `agy`."""
-    return shutil.which((hc.setting("AGENT_HUB_AGY_BIN") or "agy").strip() or "agy")
+    """The agy executable as an ABSOLUTE path, or None: AGENT_HUB_AGY_BIN (a path or a name on PATH), else `agy`. A
+    relative setting (`./tools/agy`) and a relative PATH entry are resolved against the caller's directory here, once:
+    agy is later started from the home directory (the quota probe) and from the checkout (the review), where the same
+    relative path could name a program of the reviewed repository."""
+    found = shutil.which((hc.setting("AGENT_HUB_AGY_BIN") or "agy").strip() or "agy")
+    return os.path.abspath(found) if found else None
 
 
 def pct(value):
@@ -469,12 +482,18 @@ def cmd_run(args) -> int:
     if args.dry_run:
         print("DRY-RUN: nothing started")
         return 0
-    with open(run / "stderr.log", "a", encoding="utf-8") as err:
-        proc = subprocess.Popen([sys.executable, os.path.realpath(__file__), "_worker", str(run)], cwd=run,
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, start_new_session=True,
-                                env=dict(os.environ, AGENT_HUB_HOME=meta["hub_home"]))
-    (run / "pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    # the start line comes before the worker exists, so no REVIEWED can precede it; the worker writes its own pid first
+    # thing (below), so `pid` is there before `rc` can be
     journal(stage, meta["tag"], f"agy-review {name} started: model {model}, run {run} — wait for {run}/rc")
+    try:
+        with open(run / "stderr.log", "a", encoding="utf-8") as err:
+            proc = subprocess.Popen([sys.executable, os.path.realpath(__file__), "_worker", str(run)], cwd=run,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                    start_new_session=True, env=dict(os.environ, AGENT_HUB_HOME=meta["hub_home"]))
+    except OSError as e:
+        journal(stage, meta["tag"], f"EXIT agy-review {name}: the worker could not be started ({e})")
+        raise hc.Failure(f"could not start the worker: {e}") from None
+    hc.atomic_write(run / "pid", f"{proc.pid}\n")  # the same value the worker wrote
     return 0
 
 
@@ -497,6 +516,31 @@ def _answer(path: Path) -> dict:
 
 
 STATE: dict = {"child": None, "stop": False}   # the agy being waited for, and whether the worker was told to stop
+KILL_AFTER_S = 10.0                              # SIGTERM to agy's group, then SIGKILL if it is still there after this
+
+
+def _signal_group(child, sig) -> None:
+    try:
+        os.killpg(child.pid, sig)  # agy was started as the leader of its own session and group
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _wait(child) -> int:
+    """agy's exit status, waiting in short steps. Once the worker was told to stop, agy's whole group gets SIGTERM and,
+    if it is still running KILL_AFTER_S later, SIGKILL: a stop is never left waiting for a program that ignores it."""
+    asked = None
+    while True:
+        if STATE["stop"]:  # checked before the first wait too: a stop that came before agy started acts at once
+            if asked is None:
+                asked = time.monotonic()
+                _signal_group(child, signal.SIGTERM)
+            elif time.monotonic() - asked >= KILL_AFTER_S:
+                _signal_group(child, signal.SIGKILL)
+        try:
+            return child.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def attempts(run: Path, meta: dict) -> tuple:
@@ -510,15 +554,24 @@ def attempts(run: Path, meta: dict) -> tuple:
     env = dict(os.environ, HOME=meta["home"])
     prompt = (run / "brief.md").read_text(encoding="utf-8")
     usage: dict = {}
-    duration, conversation, rc, response, failed, denied, attempt = 0.0, None, 0, "", False, [], 0
+    duration, conversation, rc, response, failed, denied, made = 0.0, None, 0, "", False, [], 0
     for attempt in range(RESUMES + 1):
+        if STATE["stop"]:  # told to stop: no attempt begins, whatever the earlier one left undone
+            failed, rc = True, rc or 143
+            break
         command = base + (["--conversation", conversation, "-p", NUDGE] if conversation else ["-p", prompt])
         out = run / f"out-{attempt}.json"
         with open(out, "w", encoding="utf-8") as sink, open(run / "stderr.log", "a", encoding="utf-8") as err:
-            child = subprocess.Popen(command, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=sink, stderr=err)
+            child = subprocess.Popen(command, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=sink,
+                                     stderr=err, start_new_session=True)
             STATE["child"] = child
-            rc = child.wait()
-            STATE["child"] = None
+            try:
+                rc = _wait(child)
+            finally:
+                if child.poll() is None:  # only if _wait left by an exception
+                    _signal_group(child, signal.SIGKILL)
+                STATE["child"] = None
+            made += 1
         rc = 128 - rc if rc < 0 else rc
         data = _answer(out)
         for key, value in (data.get("usage") or {}).items():
@@ -532,27 +585,25 @@ def attempts(run: Path, meta: dict) -> tuple:
         if failed and rc == 0:
             err_text = data.get("error") or f"status {data.get('status')}"
             with open(run / "stderr.log", "a", encoding="utf-8") as err:
-                err.write(f"agy-review: attempt {attempt} failed: {err_text}\n")
+                err.write(f"agy-review: attempt {made - 1} failed: {err_text}\n")
         if failed or STATE["stop"] or not conversation or response.strip():
             break
     if rc == 0 and (failed or not response.strip()):
-        rc = 2
-    record = {"usage": usage, "duration_seconds": round(duration, 1), "attempts": attempt + 1,
+        rc = 143 if STATE["stop"] else 2   # a run told to stop that has no answer was stopped, not unanswered
+    record = {"usage": usage, "duration_seconds": round(duration, 1), "attempts": made,
               "conversation_id": conversation, "denied_actions": denied}
     return rc, response, record
 
 
-def _terminate(signum, frame) -> None:  # SIGTERM / SIGINT: stop agy, then finish the run the usual way
+def _terminate(signum, frame) -> None:  # SIGTERM / SIGINT: only a flag; _wait stops agy, then the run ends the usual way
     STATE["stop"] = True
-    child = STATE["child"]
-    if child is not None:
-        child.terminate()
 
 
 def worker(run: Path) -> int:
-    meta = json.loads((run / "meta").read_text(encoding="utf-8"))
     signal.signal(signal.SIGTERM, _terminate)
     signal.signal(signal.SIGINT, _terminate)
+    hc.atomic_write(run / "pid", f"{os.getpid()}\n")  # before anything else: `pid` exists whenever `rc` does
+    meta = json.loads((run / "meta").read_text(encoding="utf-8"))
     rc, response, record = 1, "", {}
     try:
         rc, response, record = attempts(run, meta)

@@ -3,13 +3,15 @@
 
 Headless (`-p`): appends one record per call to $FAKE_AGY_DIR/calls.jsonl (argv, HOME, cwd and the settings.json the call
 sees under that HOME) and answers with entry N of the list in $FAKE_AGY_DIR/scenario.json (the last entry once the list is
-used up): {"json": {...agy's JSON...}, "exit": 0, "sleep": 0, "raw": "text printed instead of the JSON"}.
+used up): {"json": {...agy's JSON...}, "exit": 0, "sleep": 0, "raw": "text printed instead of the JSON",
+"ignore_term": true (ignores SIGTERM)}.
 Interactive (no `-p`): appends to interactive.log and draws what the real CLI draws for /usage, read from
 $FAKE_AGY_PANEL (a file; without it the stand-in exits at once, which is how agy looks when it cannot be read); with
 $FAKE_AGY_HANG it prints nothing and sits there.
 """
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -42,12 +44,14 @@ if "-p" not in args:
 
 calls = state / "calls.jsonl"
 index = len(calls.read_text().splitlines()) if calls.exists() else 0
-settings = Path(os.environ.get("HOME", "")) / ".gemini" / "antigravity-cli" / "settings.json"
-with open(calls, "a") as log:
-    log.write(json.dumps({"argv": args, "pid": os.getpid(), "home": os.environ.get("HOME"), "cwd": os.getcwd(),
-                          "settings": settings.read_text() if settings.is_file() else None}) + "\n")
 scenario = json.loads((state / "scenario.json").read_text())
 step = scenario[min(index, len(scenario) - 1)]
+if step.get("ignore_term"):   # an agy that does not stop for SIGTERM; set before the call is logged, so a test can rely on it
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+settings = Path(os.environ.get("HOME", "")) / ".gemini" / "antigravity-cli" / "settings.json"
+with open(calls, "a") as log:
+    log.write(json.dumps({"argv": args, "pid": os.getpid(), "ppid": os.getppid(), "home": os.environ.get("HOME"),
+                          "cwd": os.getcwd(), "settings": settings.read_text() if settings.is_file() else None}) + "\n")
 time.sleep(step.get("sleep", 0))
 if "raw" in step:
     print(step["raw"])

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.14 — 2026-10-21
+
 - **A bundled reviewer skill: Gemini 4 Argon through Antigravity CLI.** `delamain:agy-review` and `bin/agy-review`
   run a read-only review with Google's `agy` as a third vendor beside Claude and Codex, plugged in as a reviewer skill
   (not as an `agent spawn` engine). `agy-review run --cwd <checkout> --brief <file>` starts the review detached and prints

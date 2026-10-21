@@ -237,8 +237,9 @@ Everything is read afresh for each row and once more right before the stop, whic
 new `claude agents --json` must list exactly one row with that id, still `background` with the same full session id and the
 same process, idle and done with no descendant process in a fresh process table, no newer write, and no protected id may
 share its first 8 characters. The order of that last look is: the registries and the activity scan first, then the new
-listing, the new process table, the activity once more, and **last of all** `AGENT_HUB_WATCHDOG_REAP` (environment and the
-strictly read `config.json`). If any known home cannot be listed, a stage's `roles.json` or `auto-handoff.json`, a home's
+listing (up to 30 s slow), the new process table, the activity once more, the registries once more (a role set, a successor
+or a takeover started while the listing was made protects the session), and **last of all** `AGENT_HUB_WATCHDOG_REAP`
+(environment and the strictly read `config.json`). If any known home cannot be listed, a stage's `roles.json` or `auto-handoff.json`, a home's
 `config.json` or the registry of homes is unreadable, has the JSON `null` or another unexpected shape (only a missing file
 means "nothing there"), or a recent takeover marker is unreadable, R7 stops nothing in that tick and says why in one line
 (`machine: not stopping any retired hub's session this tick: …`). The window that remains is what lies behind the read of the

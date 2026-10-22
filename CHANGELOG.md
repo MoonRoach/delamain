@@ -7,7 +7,7 @@
   `.claude/worktrees/…`, Codex's, any other path) is reused only when `git status --porcelain` is empty, with a
   note, and is refused otherwise — also when `git status` fails — before anything is created or launched. The
   refusal names the path and says to commit there or take another branch
-  (`--worktree <new-branch> --base origin/<branch>`).
+  (`--worktree <new-branch> --base <branch>`).
 
 ## 1.0.15 — 2026-10-22
 

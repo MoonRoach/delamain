@@ -133,7 +133,7 @@ chooses another start (`--base HEAD`: the old behaviour). An existing worktree o
 continues the work: one under `<repo>/.worktrees/` as it is, one elsewhere (a Claude Code or Codex session's) only
 when `git status` there is clean, with a note. With uncommitted changes there, or when `git status` fails,
 `agent spawn` refuses before it creates or starts anything: commit there, or take another branch
-(`--worktree <new-branch> --base origin/<branch>`). Two agents writing
+(`--worktree <new-branch> --base <branch>`). Two agents writing
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
 branch is merged, `git worktree remove <path>`.
 

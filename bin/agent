@@ -55,7 +55,7 @@ footer of every brief.
 --worktree: the agent works in a git worktree of BRANCH (default agent/<R>): an existing worktree of that branch is
 reused, so a re-spawn continues the work — one under <repo>/.worktrees/ as it is, one elsewhere (a Claude Code or Codex
 session's) only when it is clean, with a note; with uncommitted changes there it is refused (commit, or take another
-branch: --worktree <new-branch> --base origin/<BRANCH>); otherwise <repo>/.worktrees/<BRANCH> of the main repository,
+branch: --worktree <new-branch> --base <BRANCH>); otherwise <repo>/.worktrees/<BRANCH> of the main repository,
 with /.worktrees/ added to .git/info/exclude (never untracked noise). A BRANCH that does not exist is created from
 origin's default branch (origin/HEAD, else origin/main, else origin/master) after a bounded `git fetch origin
 <default>` — not from the commit --cwd has checked out, which may be a foreign feature branch; the fetch failing
@@ -224,7 +224,7 @@ def _check_reusable(top: Path, existing: Path, branch: str) -> None:
     owner's) is refused — an executor would work on top of someone's uncommitted changes. A failing `git status` is dirty."""
     if existing.resolve().is_relative_to((top / WORKTREES_DIR).resolve()):
         return
-    res = git("status", "--porcelain", "--untracked-files=all", cwd=existing)
+    res = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none", cwd=existing)
     if res.returncode == 0 and not res.stdout.strip():
         print(f"note: {existing} is a foreign worktree of {branch} (not under {top / WORKTREES_DIR}), clean: reused",
               file=sys.stderr)
@@ -232,7 +232,7 @@ def _check_reusable(top: Path, existing: Path, branch: str) -> None:
     why = ("has uncommitted changes" if res.returncode == 0
            else f"cannot be inspected ({res.stderr.strip() or res.stdout.strip() or 'git status failed'})")
     raise hc.UsageError(f"--worktree: {existing} {why} and is not an agent worktree (not under {top / WORKTREES_DIR}) — "
-                        f"commit there, or pick another branch (--worktree <new-branch> --base origin/{branch})")
+                        f"commit there, or pick another branch (--worktree <new-branch> --base {branch})")
 
 
 def make_worktree(repo: Path, role: str, branch: str | None, base: str | None = None) -> tuple[Path, str, str]:
@@ -1326,7 +1326,7 @@ def main(argv: list) -> int:
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): reuse under <repo>/.worktrees/ even if dirty; "
                         "elsewhere reuse only if clean, with a note; otherwise commit there or pick another branch "
-                        "(--worktree <new-branch> --base origin/<branch>). New worktrees go under <repo>/.worktrees/<BRANCH> "
+                        "(--worktree <new-branch> --base <branch>). New worktrees go under <repo>/.worktrees/<BRANCH> "
                         "from origin's default branch (--base)")
     s.add_argument("--base", metavar="REF", help="with --worktree: start a new branch from REF (default: origin's default "
                    "branch after a fetch; --base HEAD is the checked-out commit of --cwd)")

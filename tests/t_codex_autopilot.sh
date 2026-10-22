@@ -84,6 +84,11 @@ try:
     assert calls()[-1]['env']['CODEX_APP_TOOLS_PIPE_PATH'] is None
     brief=(home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
     assert 'finite queue snapshot' in brief and 'Terminal follow-through' in brief and '--for 9m' not in brief
+    for phrase in ('WARN is a soft advisory: acknowledge the owner\nand transfer at the next quiet point, after any already-active atomic merge, lock or message operation finishes.\nThe durable handoff obligation survives owner prompts, chain resets and missing/decreased usage; WARN does not\nclose tools before the first actual BLOCK. BLOCK is the hard barrier for ordinary recognized work; once reached,\nit survives missing/decreased usage until an explicit threshold-policy or registration reset.', 'A checkpoint alone is not completion',
+                   'Do not compact to extend the shift', 'only the handoff procedure may continue',
+                   'journal the settings refusal and end the shift', 'genuine data/resource/safety gates and human stop'):
+        assert phrase in brief, (phrase, brief)
+    assert 'available compaction' not in brief and 'Context warnings are advisory' not in brief
     os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
     assert state(home)['pending']['engine']=='codex' and state(home)['chain']==1
     assert 'becomes never' in out and 'Remote Control' not in (home/'stage-a/coordinator/work/hub-2-takeover-brief.md').read_text()
@@ -181,15 +186,15 @@ home,handoff,cwd=setup('default')
 (home/'config.json').write_text(json.dumps({'AGENT_HUB_DESKTOP_CLI_HANDOFF':True}))
 os.environ.update(CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop',CODEX_APP_TOOLS_PIPE_PATH='/never-connect')
 try:
-    rc,out=succeed(handoff,cwd,headless=True)
+    before=len(calls())
+    try: succeed(handoff,cwd,headless=True)
+    except hc.UsageError as e: assert 'model is unknown' in str(e)
+    else: raise AssertionError('unknown current settings silently used CLI defaults')
+    assert len(calls())==before and not (home/'stage-a/auto-handoff.json').exists()
+    print('PASS missing current Codex settings refuse before reservation or launch')
+finally:
     os.environ.pop('CODEX_INTERNAL_ORIGINATOR_OVERRIDE');os.environ.pop('CODEX_APP_TOOLS_PIPE_PATH')
-    assert rc==0
-    argv=calls()[-1]['argv']
-    assert '-m' not in argv and '--dangerously-bypass-approvals-and-sandbox' in argv
-    assert state(home)['pending']['effort'] is None
-    assert state(home)['pending']['model'] is None
-    print('PASS unspecified Codex model uses CLI config and autonomous full access')
-finally: stop()
+    ap.codex_rollouts.INDEX.checked=None
 
 # In Git, successors leave the predecessor's disposable worktree and start from main HEAD in a fresh one.
 home,handoff,cwd=setup('worktree')
@@ -256,15 +261,66 @@ for bad in ({'sandbox_policy':{'type':'unknown-restricted-policy'}}, {'sandbox_p
     except hc.UsageError: pass
     else: raise AssertionError('unknown/missing active sandbox silently widened')
     assert ap.codex_policy('workspace-write',bad,cwd)==('workspace-write','never')
-assert ap.codex_policy(None,{},cwd)==('danger-full-access','never')
-print('PASS unknown or missing active sandbox fails; explicit override and genuine missing discovery work')
+try: ap.codex_policy(None,{},cwd)
+except hc.UsageError as e: assert 'unknown' in str(e)
+else: raise AssertionError('missing discovery guessed Full Access')
+print('PASS unknown or missing active sandbox fails; explicit override remains supported')
 assert 'detached Codex successor' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
 assert '--engine codex' in ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
-print('PASS Codex budget instructions use native engine and wait harness')
+soft = ap.instruction('stage-a', 'opus', 'default', str(cwd), False, '10k')
+assert 'At the next quiet point, hand over; acknowledge the owner and finish any already-active atomic merge, lock or message operation first' in soft
+assert 'Hand over now' not in soft and 'not a mandatory STOP' not in soft
+assert 'Do not compact' in soft and 'available compaction' not in soft
+hard = ap.instruction('stage-a', 'opus', 'default', str(cwd), True, '10k')
+assert 'Hand over now' in hard and 'You may continue' not in hard
+# Root restores this hook to upstream; CORE_CONTEXT_HOOK permits that exact
+# integration source to be checked in an author's independently owned worktree.
+hook = pathlib.Path(os.environ.get('CORE_CONTEXT_HOOK', str(root/'hooks/context_budget.py')))
+home,handoff,cwd=setup('hard-boundary')
+os.environ['AGENT_HUB_AUTO_HANDOFF']='on'
+transcript = tmp/'hard-context.jsonl'
+def hook_call(tool, tool_input, tokens=550000, auto=True, claude=False):
+    transcript.write_text(json.dumps({'type':'assistant','message':{'model':'claude-opus',
+        'usage':{'input_tokens':tokens}}})+'\n')
+    data = dict(hook_event_name='PreToolUse' if tool else 'PostToolUse', session_id=os.environ['CODEX_THREAD_ID'],
+                transcript_path=str(transcript), cwd=str(cwd), tool_name=tool, tool_input=tool_input)
+    env = dict(os.environ, PLUGIN_ROOT=str(root), PYTHONPATH=str(root/'hooks'),
+               AGENT_HUB_AUTO_HANDOFF='on' if auto else 'off', AGENT_HUB_STATE_DIR=str(tmp/('state-'+str(tokens))))
+    if claude:
+        env.pop('CODEX_THREAD_ID', None)
+        (cwd/'.agent-hub').mkdir(exist_ok=True)
+        (cwd/'.agent-hub/config.json').write_text(json.dumps({'AGENT_HUB_ENGINE':'codex'}))
+        env.pop('AGENT_HUB_ENGINE', None)
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(data), env=env, text=True, capture_output=True)
+    assert r.returncode == 0, (r.returncode,r.stderr)
+    return json.loads(r.stdout)['hookSpecificOutput'] if r.stdout.strip() else None
+assert hook_call('Bash', {'command':'git status'})['permissionDecision']=='deny'
+for tool, args in (('Bash', {'command':str(root/'bin/hub')+' handoff --stage stage-a'}),
+                   ('Bash', {'command':str(root/'bin/hub')+' succeed --stage stage-a --handoff '+str(handoff)}),
+                   ('Bash', {'command':str(root/'bin/jlog')+' "BLOCKED saved handoff settings unavailable"'}),
+                   ('Write', {'file_path':str(handoff.parent/'HANDOFF-recovery.md')})):
+    assert hook_call(tool,args) is None, (tool,args)
+# Missing metadata refuses without reserving/spawning, with allowed journal/stop instructions.
+original_context=ap.codex_context
+ap.codex_context=lambda: {}
+before=len(calls())
+try: succeed(handoff,cwd)
+except hc.UsageError as e:
+    assert 'Required recovery' in str(e) and str(handoff) in str(e)
+    assert 'journal BLOCKED' in str(e) and 'end this shift' in str(e) and 'Do not compact' in str(e)
+else: raise AssertionError('missing rollout became successful transfer')
+finally: ap.codex_context=original_context
+assert len(calls())==before and not (home/'stage-a/auto-handoff.json').exists()
+warning = hook_call(None, {}, tokens=320000, auto=False, claude=True)['additionalContext']
+assert 'handoff threshold' in warning and 'write a handoff' in warning
+assert 'advisory' not in warning and 'available compaction' not in warning
+os.environ.pop('AGENT_HUB_AUTO_HANDOFF')
+print('PASS required no-compaction handoff, actual hardgate allowed safe failure exit and Claude 320k/project-Codex warning')
 
 home,handoff,cwd=setup('unknown-nested')
 original_context=ap.codex_context
-ap.codex_context=lambda: {'sandbox_policy':{'type':'workspace-write','unknown_exclusions':['/restricted']}}
+ap.codex_context=lambda: {'model':'fixture-codex-model','effort':'high',
+                          'sandbox_policy':{'type':'workspace-write','unknown_exclusions':['/restricted']}}
 before=len(calls())
 try: succeed(handoff,cwd)
 except hc.UsageError as e: assert 'unsupported fields' in str(e)

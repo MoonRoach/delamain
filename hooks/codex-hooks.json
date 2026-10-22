@@ -106,6 +106,29 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "^(manual|auto)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/no_compaction.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/bin/run-python\" --min-version 3.11 \"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

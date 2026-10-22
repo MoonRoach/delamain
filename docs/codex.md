@@ -54,6 +54,65 @@ Codex's SessionStart hook selects the Codex engine for that session. In a plain 
 untrusted, pass `--engine codex` or set `AGENT_HUB_ENGINE=codex`. In a plain terminal with no configured engine or detected Codex host, the default is `claude`.
 Use the installed plugin's `bin/` directory explicitly if a command is absent or shadowed on PATH.
 
+### Compaction veto
+
+The enabled, trusted Codex plugin registers `PreCompact` for both `auto` and `manual`.
+Its standalone guard returns the common hook output `continue: false`, `stopReason`
+and a nonempty `systemMessage` with exit 0, stopping compaction before it runs.
+The guard applies to every session
+where Codex dispatches this plugin hook, including native subagents; it does not need
+session identifiers or a transcript. Context budget settings and thresholds cannot
+bypass it. The Windows envelope returns the veto in native PowerShell before WSL
+transport, so an unavailable WSL does not open this path. Existing checkpoint and
+handoff policy still applies; the guard does not launch a successor or stop a process.
+
+`systemMessage` is the human-readable warning in the Codex UI/event stream;
+`stopReason` is recorded as the reason for stopping. The warning explains that an
+automatic context threshold can stop a turn before the assistant answers. No hook
+output can make the runtime continue sampling beyond that threshold after the veto.
+Save a checkpoint and hand off early under existing authority. If the turn has
+stopped because the automatic context limit was reached, recover from that checkpoint
+with a fresh coordinator for the same stage under existing authority; repeating
+prompts in the overfull session does not recover it. Below that limit, normal prompts
+and tools can continue after a blocked manual compaction attempt.
+Recovery preserves the compaction ban and the existing scope and permissions; it
+does not authorize a bypass or grant new permissions.
+
+The separate soft context budget never vetoes `UserPromptSubmit`. In a registered autopilot hub, every prompt
+above WARN reminds the hub to acknowledge the latest human input and transfer at the next quiet point.
+WARN is a soft advisory for both Claude and Codex: complete any already-active atomic merge, lock or message
+operation first. Preserve pending owner input in the checkpoint/handoff. BLOCK is the hard tool barrier.
+A settings refusal must leave a concrete owner reply and checkpoint, without guessed model/effort/access or a
+false READY result. Missing usage is never presented as measured usage. The three numeric
+budget thresholds alone can have private registered-stage overrides; see [Agent discipline](reference.md#agent-discipline).
+
+At the first WARN, a registered main hub with autopilot enabled latches durable `handoff_due` without closing
+tools. Missing/decreased usage, repeated warning buckets and owner/chain resets preserve the obligation and its
+reminders without a tool gate before the first actual BLOCK. At BLOCK, ordinary recognized work closes; this
+hard gate survives missing/decreased usage until an explicit threshold-policy or registration reset. The handoff
+path and narrow existing reads remain available, and acknowledgement/reply stays possible.
+A real registry change or explicit threshold-policy change can release the old obligation. Subagents,
+non-hubs and disabled autopilot keep their previous behavior.
+
+Codex alone registers a `Stop` hook using the [official top-level continuation output](https://learn.chatgpt.com/docs/hooks#stop).
+It can continue an active handoff at most twice per obligation, with canonical same-request progress required
+before the second. The first continuation needs no readiness marker: it can check actual authority/settings and
+prepare the same handoff after a premature model final, without dispatching or granting authority. The assistant appends `[delamain handoff-continuation-ready]` only after checking the actual
+same-stage human transfer grant, observed settings and absence of human stop/revocation or a real blocker.
+That readiness assertion grants nothing; the continued app agent must recheck authority before native dispatch.
+No readiness for a second continuation, explicit stop/revocation, stale/unknown usage timestamp (over 120 seconds), insufficient measured headroom, unknown dispatch,
+settings failure or failed atomic counter reservation ends continuation. `stop_hook_active` cannot start an
+unreserved loop. Continuations carry `[delamain handoff-continuation]`, which never resets owner/chain state.
+This is active-turn continuation, not idle wake or a prompt veto. Native runtime qualification is required;
+a hook-process fixture alone does not prove the app dispatched or honored `Stop`.
+
+This requires a Codex runtime that dispatches `PreCompact` and honors the common stop
+output, with this hook enabled and trusted. Disabled or untrusted hooks, missing plugin
+files, or hook launch failures cannot provide a veto; do not treat a large automatic
+compaction threshold as an off switch. Hook-process and package tests alone do not
+prove runtime dispatch. This registration is Codex-specific and does not establish a
+Claude compaction veto. See [Codex PreCompact and common hook output](https://learn.chatgpt.com/docs/hooks#precompact).
+
 ### Update to a new version
 
 `codex plugin add` for a new version deletes every older version directory under the plugin cache,
@@ -268,12 +327,15 @@ rules with `delegation try`; prefer explicit definitions when effort inheritance
   shown as unavailable rather than inferred. Codex has no `/agent-top`: run `agent-top` in a shell. The live pane is a
   Claude Code mod and does not draw in Codex.
 - Codex console autopilot (`hub succeed --engine codex --surface cli`, or automatic console detection) starts a detached Codex successor. It inherits the actual
-  rollout model, reasoning effort and sandbox policy, or the recorded launch settings when discovery is unavailable. Supported
+  rollout model, reasoning effort and sandbox policy, or the recorded launch settings of that exact detached worker when discovery is unavailable. Supported
   workspace policy fields include network access, writable roots and temporary-directory exclusions; unknown
-  policy fields are refused explicitly instead of discarded. An unspecified model
-  stays with the CLI configuration. Interactive approval policies become `never` for unattended successors: denied
-  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model, effort and sandbox policy. An absent effort stays with the launcher
-  default; unsupported effort values are refused before launch.
+  policy fields are refused explicitly instead of discarded. Unknown model or sandbox settings are refused before reservation;
+  native Desktop successors additionally require a known supported approval policy.
+  `AGENT_HUB_CODEX_DEFAULT_MODEL` and Full Access are not successor fallbacks. Interactive approval policies become `never` for unattended successors: denied
+  tools fail, with no fallback to broader access. `--again` keeps a dead successor's recorded model, effort and sandbox policy.
+  Codex successor effort is mandatory: if the current `turn_context` has none and no actual recorded launch effort is available,
+  the suggested command may omit `--effort`, but launch refuses; save/fill the handoff, journal `BLOCKED`, and end the shift until settings are observed or the owner recovers it.
+  Unsupported effort values are also refused before launch.
   `AGENT_HUB_SUCCESSOR_ENGINE` selects a hub-wide successor engine; `--engine` overrides it. The chain limit,
   reservations and takeover checks prevent duplicate launches. Reach the successor through `agent send` and the shared registers;
   in Git, it starts from the main checkout in a fresh named worktree so archiving the old coordinator cannot remove its directory.
@@ -326,15 +388,30 @@ A standing explicit owner instruction authorizing automatic same-stage context h
 API's explicit-user requirement until revoked: continue without another per-transfer approval. Record its exact
 source/reference and scope in the handoff and carry that pointer into the native takeover brief, preserving the
 Business DoD. The grant covers one successor for that active stage's context transfer; a new business scope,
-unrelated task, parallel duplicate coordinator or paused/completed stage needs its own authority. If authority
+unrelated task, parallel duplicate coordinator or completed stage needs its own authority. An implementation pause
+carries to the successor. A newer authorized same-stage read-only owner discussion may continue through the existing
+transfer grant without resuming implementation; an explicit transfer prohibition/revocation remains a blocker. If authority
 is absent or revoked, retain the request and predecessor and ask once for the missing scope; do independent
 authorized work while it is pending. If transport, access or identity is unavailable, retain the same request
 and report that concrete blocker. Neither case permits a CLI fallback, policy override, automatic retry or
 duplicate creation. Preparation remains pending work until verified takeover.
 
+The work-limit shell gate leaves the whole preparation path available, including read-only `hub effort`,
+`hub home`, authority queries through `ask`, literal path conversion and generated HANDOFF reads. Native app
+tools remain available under their existing human-authorization rules. Repeated owner prompts must reuse the
+same pending request and preserve new input. If dispatch is already reserved or its result is unknown, do not
+launch another successor. A prompt received by the predecessor after takeover is not automatically forwarded:
+the fresh coordinator must receive it through an actually authorized native message before claiming delivery.
+
 Under matching human authority, the app agent executes the full procedure through bind, takeover and verified status:
 
-1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file>`. Keep its request token.
+1. Run `hub succeed --stage <S> --engine codex --surface desktop --handoff <file> --cwd <verified hub Git worktree>`
+   from the registered hub's verified working directory. Keep its request token. For a stage with a recorded
+   repository, preparation rejects a parent directory outside Git, a different repository, or an unavailable
+   recorded repository before reserving a successor. An existing unreadable or malformed stage record also fails
+   before reservation. Linked worktrees normalize to that repository's main checkout.
+   A saved UI project may be a containing workspace; its path is separate from the requested Git root and must
+   never replace the verified Git worktree in `--cwd`. Projectless and legacy stages retain their directory behavior.
    The command reserves one successor/chain count and writes its takeover brief. Preparation is not launch success.
 2. Call native `list_projects`. Find the unique saved local project whose path, normalized to its Git main
    checkout (including realpath/symlinks), matches the request's `project_root`. Use the returned projectId/path;

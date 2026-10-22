@@ -29,7 +29,8 @@ class ContextReadProvenanceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="context-read-origin-")
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        # The diagnostic writer requires canonical roots (macOS /var is a symlink).
+        self.home = Path(self.temp.name).resolve()
         self.plugin = ROOT
         self.hub = self.home / "hub"
         stage = self.hub / "stage-a"

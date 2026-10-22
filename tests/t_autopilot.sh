@@ -573,7 +573,7 @@ export AGENT_HUB_AUTO_HANDOFF=on AGENT_HUB_STATE_DIR=$R/state
 cbh UserPromptSubmit > $R/h1.out
 grep -qF 'Autopilot is on' $R/h1.out && grep -qF "$BR_BIN/"'hub succeed --stage stage-a --handoff <the draft> --model claude-opus-5-5 --effort high --permission-mode acceptEdits --cwd /repo/x' $R/h1.out; check $? 0 "hook, warn: autopilot instruction with the exact command (model, effort, mode, cwd)"
 grep -q "plainly where it is: a background Remote Control session; in Claude Desktop it is listed under the repository's address group (for a repository not hosted on github.com a separate group from the folder group), on the phone in the Remote Control list" $R/h1.out; check $? 0 "hook, warn: the instruction tells the hub to say where the successor is"
-grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure"
+grep -qF "$BR_BIN/hub handoff --stage stage-a" $R/h1.out && grep -qF "$BR_BIN/hub succeed --stage stage-a --fallback" $R/h1.out && grep -qF 'next quiet point' $R/h1.out; check $? 0 "hook, warn: the whole procedure at the next quiet point"
 SID=$HUB2 cbh PostToolUse Bash > $R/h2.out; grep -q "delamain:handoff" $R/h2.out && ! grep -q Autopilot $R/h2.out; check $? 0 "hook, warn: a session that is not the hub gets today's warning"
 echo '{"AGENT_HUB_SUCCESSOR_PERMISSION_MODE": "default"}' > $R/config.json; usage 360000
 cbh PostToolUse Bash | grep -qF -- '--permission-mode default --cwd'; check $? 0 "hook, warn: the configured mode wins over the session's"
@@ -587,10 +587,14 @@ fresh a; HOOK_EFFORT=xhigh cbh PostToolUse Bash | grep -qF -- '--model claude-op
 fresh b; HOOK_EFFORT=xhigh AGENT_HUB_SUCCESSOR_EFFORT=low cbh PostToolUse Bash | grep -qF -- '--effort low --permission-mode'; check $? 0 "hook, warn: AGENT_HUB_SUCCESSOR_EFFORT beats the hook input"
 fresh c; ( unset CLAUDE_EFFORT; PATH=$NO_PS:$PATH; HOOK_EFFORT=none cbh PostToolUse Bash ) > $R/h5.out
 grep -qF -- '--model claude-opus-5-5 --permission-mode' $R/h5.out; check $? 0 "hook, warn: an input with no effort and nothing else readable — the command has no --effort"
-grep -qF 'your own effort could not be read here' $R/h5.out; check $? 0 "hook, warn: …and the text tells the hub to let \`hub succeed\` read it, or pass --effort"
+grep -qF 'Your own effort could not be read here' $R/h5.out; check $? 0 "hook, warn: …and the text tells the hub to let \`hub succeed\` read it, or pass --effort"
 fresh d; HOOK_EFFORT=none CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: no effort in the input — the hook's own environment answers"
 TR=$TR0
-cbh PreToolUse Bash '{"command":"ls"}' > $R/h3.out; check "$(wc -c < $R/h3.out | tr -d ' ')" 0 "hook: below block, Bash passes"
+for tool in Bash Agent SendMessage; do
+  # PreToolUse permits by returning silently, without a JSON decision (context_budget.py).
+  cbh PreToolUse "$tool" '{"command":"ls","prompt":"ordinary work","message":"ordinary work"}' > $R/h3.out 2> $R/h3.err
+  check "$?:$(wc -c < $R/h3.out | tr -d ' '):$(wc -c < $R/h3.err | tr -d ' ')" "0:0:0" "hook: warn permits ordinary $tool before block (successful, silent)"
+done
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"

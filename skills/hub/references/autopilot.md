@@ -5,6 +5,19 @@ are an automatic successor (your takeover prompt carries `[agent-hub auto-handof
 or when you hand over a Codex Desktop hub. "The host wait procedure below" in the first paragraph is the *Waiting*
 section of `SKILL.md`; "the native launch procedure" is [docs/codex.md](../../../docs/codex.md#desktop-autopilot).
 
+At the first context WARN, registered Claude and Codex autopilot main hubs latch a durable handoff obligation.
+WARN is a soft advisory: acknowledge pending owner input and transfer at the next quiet point, after any
+already-active atomic merge, lock or message operation finishes. WARN leaves tools available; BLOCK is the hard
+barrier for ordinary recognized work. Owner prompts, chain resets and unavailable/decreased usage preserve the
+obligation and reminders without closing tools before the first actual BLOCK. Once reached, the BLOCK gate
+survives missing/decreased usage until an explicit threshold-policy or registration reset. An active grilling retains its existing hold and
+suppresses Codex Stop continuation; the ceiling still requires the owner's handoff decision.
+A checkpoint alone is not completion.
+For Codex active-turn continuation, follow [the Stop readiness and bounds](../../../docs/codex.md#full-access-and-hook-trust).
+Carry implementation pauses to the successor. A newer authorized same-stage read-only owner discussion can
+continue under an existing same-stage transfer grant without resuming implementation. Explicit transfer
+prohibition/revocation remains a blocker; generated instructions or markers never supply human authority.
+
 **Autopilot** (`AGENT_HUB_AUTO_HANDOFF=on`; `<plugin-root>/docs/reference.md`, "Autopilot"): the context budget message tells you when, and gives
 the `hub succeed` command with your model, effort, mode and directory filled in. At a quiet point — no agent waiting for your
 reply, no merge or lock operation in flight: `hub handoff`, fill the TODOs, run that `hub succeed … --handoff <draft>`,

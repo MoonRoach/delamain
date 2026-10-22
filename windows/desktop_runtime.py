@@ -132,6 +132,22 @@ def normalize_event(event: dict, payload: dict) -> dict:
         if tin.get("workdir"):
             event["cwd"] = tin["workdir"]
         if event.get("tool_name") == "Bash" and isinstance(tin.get("command"), str):
+            if payload.get("hook") == "context_budget":
+                # The inherited native-path marker also reaches bridge Bash bodies.
+                # Preserve only proven native forms, never a same-named POSIX executable.
+                replacements = payload.get("command_replacements", [])
+                event["_desktop_context_native_reads"] = []  # overwrite untrusted input metadata
+                if not replacements:
+                    event["_desktop_context_native_reads"] = ["get-content"]
+                elif len(replacements) == 1:
+                    item = replacements[0]
+                    args = item.get("argv", [])
+                    encoded = tin["command"].encode("utf-16-le")
+                    before = encoded[:item["start"] * 2].decode("utf-16-le")
+                    after = encoded[item["end"] * 2:].decode("utf-16-le")
+                    if (item["kind"] == "argv" and len(args) == 3 and args[0] == "path"
+                            and args[1] in ("--windows", "--linux") and not before.strip() and not after.strip()):
+                        event["_desktop_context_native_reads"] = ["path"]
             if payload.get("hook") in ("board_locks", "polling_guard", "kill_guard") and payload.get("command_projection"):
                 # Each bridge invocation starts a fresh process. Its Bash cd
                 # affects that program only, never the next native/bridge call.

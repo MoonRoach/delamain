@@ -81,6 +81,126 @@ class PathTests(unittest.TestCase):
         self.assertEqual(result["tool_input"]["command"], "$result = hub handoff --stage review; [IO.File]::WriteAllText('/tmp/side-effect','x')")
 
 
+class NoCompactionPackageTests(unittest.TestCase):
+    def test_builder_preserves_precompact_registration_and_adds_native_handler(self):
+        spec = importlib.util.spec_from_file_location("desktop_builder", ROOT / "windows/build_desktop_plugin.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory(prefix="no-compaction-build-") as scratch:
+            package = Path(scratch) / "package"
+            receipt = builder.build(ROOT, package, {})
+            original = json.loads((ROOT / "hooks/codex-hooks.json").read_text())
+            built = json.loads((package / "hooks/codex-hooks.json").read_text())
+            self.assertEqual(set(original['hooks']), set(built['hooks']))
+            for event, groups in original['hooks'].items():
+                for group, packaged in zip(groups, built['hooks'][event], strict=True):
+                    self.assertEqual(group.get('matcher'), packaged.get('matcher'))
+                    for handler, native in zip(group['hooks'], packaged['hooks'], strict=True):
+                        self.assertEqual(handler['command'], native['command'])
+                        if event == 'PreCompact':
+                            self.assertIn('-Hook no_compaction', native['commandWindows'])
+                            self.assertNotIn('-HookArgs', native['commandWindows'])
+            self.assertEqual(built['hooks']['PreCompact'][0]['matcher'], '^(manual|auto)$')
+            self.assertEqual((ROOT / 'hooks/no_compaction.py').read_bytes(),
+                             (package / 'hooks/no_compaction.py').read_bytes())
+        self.assertIn(str(Path('hooks') / 'no_compaction.py'), receipt['core_hashes'])
+
+
+class NativeNoCompactionTests(unittest.TestCase):
+    """Run real PowerShell with no WSL on PATH and a failing transport control."""
+    @classmethod
+    def setUpClass(cls):
+        cls.shells = list(dict.fromkeys(shell for shell in
+            (shutil.which('powershell.exe'), shutil.which('pwsh.exe')) if shell))
+        if not cls.shells or (os.name != 'nt' and not shutil.which('wslpath')):
+            raise unittest.SkipTest('Windows PowerShell executable access is required')
+        # Under WSL this checkout is on a Windows drive; no installed copy is used.
+        cls.temp = tempfile.TemporaryDirectory(prefix='.no-compaction-native-', dir=ROOT)
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.scratch = Path(cls.temp.name)
+        shutil.copy2(ROOT / 'windows/desktop_hook.ps1', cls.scratch / 'desktop_hook.ps1')
+        (cls.scratch / 'desktop.ps1').write_text(
+            "[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'transport-called'), 'called'); exit 97\n")
+        cls.native = str(cls.scratch) if os.name == 'nt' else subprocess.check_output(
+            ['wslpath', '-w', str(cls.scratch)], text=True, cwd=ROOT).strip()
+        cls.quoted = cls.native.replace("'", "''")
+
+    def invoke(self, shell, hook, raw, *, wait_for_stdin_eof=True):
+        # Set paths inside the native child as WSL environment forwarding varies.
+        # The fresh directory contains no wsl.exe, config, Python or transcript.
+        source = ("$env:PATH='" + self.quoted + "'; "
+                  "$env:HOME='" + self.quoted + "'; $env:USERPROFILE=$env:HOME; "
+                  "$env:TEMP=$env:HOME; $env:TMP=$env:HOME; "
+                  "$env:AGENT_HUB_HOME=$env:HOME; $env:AGENT_HUB_CONTEXT_BUDGET='off'; "
+                  "if (Get-Command wsl.exe -ErrorAction SilentlyContinue) { throw 'WSL must be unavailable' }; "
+                  "& '" + self.quoted + "\\desktop_hook.ps1' -Hook '" + hook + "'; exit $LASTEXITCODE")
+        args = [shell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', source]
+        if not wait_for_stdin_eof:
+            run = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, encoding='utf-8', errors='replace', cwd=ROOT)
+            try:
+                code = run.wait(timeout=15)
+                return subprocess.CompletedProcess(args, code, run.stdout.read(), run.stderr.read())
+            finally:
+                if run.poll() is None:
+                    run.kill()
+                    run.wait()
+                run.stdin.close()
+                run.stdout.close()
+                run.stderr.close()
+        return subprocess.run(args,
+            input=raw, capture_output=True, encoding='utf-8', errors='replace', cwd=ROOT, timeout=15)
+
+    def test_veto_auto_manual_and_missing_input_without_wsl(self):
+        expected = subprocess.run([sys.executable, str(ROOT / 'hooks/no_compaction.py')],
+            capture_output=True, text=True, cwd=ROOT, timeout=5)
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        output = json.loads(expected.stdout)
+        self.assertEqual(set(output), {'continue', 'stopReason', 'systemMessage'})
+        self.assertIs(output['continue'], False)
+        self.assertEqual(output['stopReason'], 'Delamain forbids automatic and manual compaction. Save a checkpoint and follow the existing handoff policy.')
+        self.assertEqual(output['systemMessage'], 'Delamain blocked compaction. If the automatic context limit has been reached, this session may stop before an answer; continue from its checkpoint with a fresh coordinator for the same stage under existing authority. Repeating prompts in an overfull session will not help. Below that limit, normal prompts and tools can continue.')
+        marker = self.scratch / 'transport-called'
+        marker.unlink(missing_ok=True)
+        payloads = ['', '{}', 'null', 'invalid JSON']
+        for trigger in ('auto', 'manual'):
+            payloads.extend(json.dumps({'hook_event_name': 'PreCompact', 'trigger': trigger, **extra})
+                for extra in ({}, {'session_id': SID, 'transcript_path': 'Z:\\missing'},
+                              {'agent_id': 'child', 'agent_transcript_path': 'Z:\\missing'}))
+        for shell in self.shells:
+            for raw in payloads:
+                with self.subTest(shell=shell, payload=raw):
+                    run = self.invoke(shell, 'no_compaction', raw)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertEqual(run.stderr, '')
+                    self.assertEqual(json.loads(run.stdout), json.loads(expected.stdout))
+                    self.assertFalse(marker.exists(), 'veto must not invoke transport')
+
+    def test_veto_exits_before_stdin_eof_without_wsl(self):
+        expected = subprocess.run([sys.executable, str(ROOT / 'hooks/no_compaction.py')],
+            capture_output=True, text=True, cwd=ROOT, timeout=5)
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        marker = self.scratch / 'transport-called'
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                marker.unlink(missing_ok=True)
+                run = self.invoke(shell, 'no_compaction', '', wait_for_stdin_eof=False)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(run.stderr, '')
+                self.assertEqual(json.loads(run.stdout), json.loads(expected.stdout))
+                self.assertFalse(marker.exists(), 'veto must not invoke transport')
+
+    def test_unrelated_hook_keeps_existing_transport_and_exit(self):
+        marker = self.scratch / 'transport-called'
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                marker.unlink(missing_ok=True)
+                run = self.invoke(shell, 'questions', json.dumps({'hook_event_name': 'SessionStart'}))
+                self.assertEqual(run.returncode, 97, run.stderr)
+                self.assertEqual(run.stdout.strip(), '')
+                self.assertTrue(marker.exists(), 'unrelated hooks must still invoke transport')
+
+
 class CodexSelectionTests(unittest.TestCase):
     def select(self, args):
         config = {"LinuxHome": "/desktop-home", "LinuxCodex": "/linux/codex", "WindowsCodex": "C:\\codex.exe", "WindowsCodexHome": "C:\\native-home"}

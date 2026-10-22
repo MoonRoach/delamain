@@ -1,10 +1,21 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'kill_guard', 'handoff_size', 'context_budget')][string]$Hook,
+    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'kill_guard', 'handoff_size', 'context_budget', 'no_compaction')][string]$Hook,
     [string[]]$HookArgs = @()
 )
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+# PreCompact is selected by registration. Veto before reading input or invoking
+# WSL: no transcript, settings, identity or transport dependency may allow it.
+if ($Hook -eq 'no_compaction') {
+    @{
+        continue = $false
+        stopReason = 'Delamain forbids automatic and manual compaction. Save a checkpoint and follow the existing handoff policy.'
+        systemMessage = 'Delamain blocked compaction. If the automatic context limit has been reached, this session may stop before an answer; continue from its checkpoint with a fresh coordinator for the same stage under existing authority. Repeating prompts in an overfull session will not help. Below that limit, normal prompts and tools can continue.'
+    } | ConvertTo-Json -Compress
+    exit 0
+}
 
 function Get-LiteralValue($Element) {
     if ($Element -is [Management.Automation.Language.StringConstantExpressionAst]) { return [string]$Element.Value }

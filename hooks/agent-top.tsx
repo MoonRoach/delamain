@@ -394,7 +394,8 @@ function go($: Api, next: View): void {
 // ---------------------------------------------------------------- the command and its lifecycle
 
 const countsLine = (s: Snapshot | null): string =>
-  s ? `● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}` : 'no data yet'
+  s ? `● ${s.counts.live} ✓ ${s.counts.done} ✗ ${s.counts.error + s.counts.dead}` +
+    (s.counts.unknown ? ` ? ${s.counts.unknown}` : '') + (s.counts.stopped ? ` ■ ${s.counts.stopped}` : '') : 'no data yet'
 
 async function onceText($: Api, a: CommandArgs): Promise<string> {
   const c = await callCli($, onceArgs(a))

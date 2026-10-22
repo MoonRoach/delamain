@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;
+  the event writer resolves the configured root before its secure directory walk. Symlinks within
+  `.state/handoff-events` remain rejected. Transport and WARN controls retain their original temporary
+  paths and strict stderr assertions, including on macOS.
+
+- **Context-hook state and test diagnostics.** Repeated tools do not rewrite unchanged context-budget
+  state; real registration, policy, authority and BLOCK changes still persist. Windows transport controls
+  reject all child-hook stderr, including fail-safe `no decision` messages, and WARN permission controls
+  require a successful, silent hook instead of merely checking that its output lacks `deny`.
+
+- **Context denial does not wait for optional Git metadata.** A hard-barrier `PreToolUse` denial omits
+  optional predecessor-cwd enrichment, so slow Git cannot consume the hook deadline before the denial is
+  emitted. The actual successor command still resolves and validates the recorded repository and settings.
+  A slow-Git regression covers this path, and the transport tests report child-hook timeout diagnostics.
+
+- **Context-budget hook repairs.** Owner transfer directives are read incrementally, with a retryable
+  incomplete final JSONL record instead of a false transfer blocker. Cached stage membership avoids repeated
+  registry scans; changes to registrations still invalidate it. Stale state and lock files are pruned under
+  a directory guard while durable handoff obligations, negative owner authority and held locks are retained.
+  Fresh hubs awaiting their first usage record no longer receive a missing-usage checkpoint warning, and
+  `grilling_hold` has one definition. WARN/BLOCK controls cover both engines, and the successor-location
+  assertion again checks the complete expected instruction.
+
+- **Early durable hub handoff.** Registered Claude and Codex autopilot main hubs retain a handoff obligation
+  from first WARN across owner prompts and missing/decreased usage. WARN remains a soft advisory to transfer at
+  the next quiet point after already-active atomic merge, lock or message work; only BLOCK closes ordinary
+  recognized work. Once reached, the BLOCK gate survives missing/decreased usage until an explicit
+  threshold-policy or registration reset. Codex active-turn Stop continuation is limited to two reserved attempts with same-request progress, readiness, fresh usage and
+  measured headroom checks. Paused implementation stays paused through an authorized same-stage read-only
+  discussion transfer. Existing grilling holds retain their exceptions and suppress Stop continuation; the ceiling
+  still requires the owner's handoff decision. Redacted lifecycle diagnostics are best effort; the independent
+  compaction veto is unchanged.
+
+- **Soft context budgets preserve replies and require complete handoff.** Every registered autopilot hub prompt
+  above WARN repeats the acknowledgement and next-quiet-point handoff advisory, preserving pending input.
+  Complete handoff still requires one native reservation and verified takeover. Settings failures retain a truthful
+  checkpoint/reply instruction; unavailable usage is never reported as measured usage. The BLOCK work gate
+  permits narrow settings, authority and generated-handoff reads with trusted executable resolution and no
+  shell-assignment overrides. Native conversion/cmdlet reads require the inherited Desktop hook marker and
+  proven native origin; bridge Bash bodies cannot borrow those exceptions. A failed context-window enrichment
+  retains known usage, explicit thresholds and the existing missing-window defaults.
+  Only the three numeric budget thresholds accept private stage overrides
+  (environment > registered stage > hub home > unchanged defaults). The independent compaction veto remains.
+
+- **Visible Codex compaction recovery.** The unconditional compaction veto now includes
+  the same human-readable warning in Python and native Windows hook output. It explains
+  that the automatic context threshold can stop a turn before an answer and points to
+  checkpoint recovery with a fresh authorized coordinator for the same stage. Existing
+  compaction, scope and permission policy remains unchanged.
+
+- **Codex compaction veto.** Enabled, trusted `PreCompact` hooks stop both automatic and manual
+  compaction independently of context budgets, identifiers and transcripts. The Windows envelope
+  returns the veto before WSL transport. Enforcement requires runtime dispatch and trusted hooks;
+  existing checkpoint and handoff policy is preserved.
+
+- **Worktree base metadata and diagnostics.** The recorded/ref SHA resolves in the caller checkout,
+  and unborn caller HEAD is rejected before creation with a caller-specific diagnostic. The actual
+  HEAD checkout already worked in main. Regression controls now distinguish those cases and use
+  canonical paths for macOS-style temporary-root aliases.
+- **Codex handoff settings and repository validation.** Latest complete settings survive long rollouts;
+  unknown model/effort/sandbox/native approval fail before reservation rather than falling back to
+  defaults. Refusal describes the allowed checkpoint/stop recovery without compaction or guessed
+  permissions. Contradictory request retries fail, and native preparation verifies the recorded Git
+  repository/worktree before reserving a successor. Claude and shared handoff defaults are retained.
+- **Native observation lifecycle.** Birth serialization skew, inherited history and resumed/stopped
+  turns are handled without fabricating death. Event activity uses owned native timestamps rather
+  than file mtime. Unknown observations expire after one hour and remain explicitly unknown in
+  show-all; proven live process evidence still blocks handoff. Native children use native completion
+  waits; detached workers and journal events use the canonical journal waiter.
+
 - **The watchdog stops the background sessions of retired hubs (R7).** A hub that handed over or retired itself kept
   its `claude --bg` session alive, holding memory (ten such sessions were found on one machine, one of them still `busy`
   on a leftover `jwait`). Each tick now runs `claude stop` on an idle background session (status `idle`, state `done`, no
@@ -17,6 +87,7 @@
   is the limit-pace report. It never removes the session: `claude attach <id>` and `claude --bg --resume <id>` still reach
   the history. A dry run only prints the plan. The hub skill now says to `roles retire hub` and end the turn when the stage
   is finished, instead of asking the owner to stop the session.
+
 - **New skill `progress-report`: a one-page infographic status of a stage, phase or project.** Asked for “a status
   with an infographic”, a hub builds a page from the bundled template: the headline count by the scope's own definition
   of done (`done_means`: on production, merged and tagged, ticked in the phase checklist, accepted by the owner), the
@@ -90,7 +161,6 @@
   like the CLI. Tests never touch the real HOME, registry or any inherited `AGENT_HUB_*` directory
   (`tests/isolate.sh`, checked by `t_test_isolation.sh`).
   Found by @Cartograf666 in #76.
-
 ## 1.0.13 — 2026-10-15
 
 - **Agents start Claude Desktop's own CLI again on Desktop 2.1.29x.** Desktop now keeps its bundled CLI one level

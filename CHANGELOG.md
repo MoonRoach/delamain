@@ -9,6 +9,8 @@
   refusal names the path and says to commit there or take another branch
   (`--worktree <new-branch> --base origin/<branch>`).
 
+## 1.0.15 — 2026-10-22
+
 - **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;
   the event writer resolves the configured root before its secure directory walk. Symlinks within
   `.state/handoff-events` remain rejected. Transport and WARN controls retain their original temporary

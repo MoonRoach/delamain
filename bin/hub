@@ -783,7 +783,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
-        (lessons_digest_line(stage), 260, ""),
+        (lessons_digest_line(stage), 260 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 260 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
         (pace_digest(stage), 480, "agent-top --once"),
         (f"First jwait ({wait_procedure()}; --since = handoff time):\n"

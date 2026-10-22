@@ -125,7 +125,7 @@ $B/hub succeed --stage stage-a --handoff $C/on3.md --model opus --effort high --
 # 6. takeover digest: the lessons line, on or off
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/t1.out 2>&1; check $? 0 "takeover dry run with lessons.md"
 grep -qF "Lessons of earlier shifts — read before planning; at your handoff give a verdict on each that acts in your shift: $L (proposed 1, confirmed 1)" $R/t1.out; check $? 0 "…the digest line with the right counts"
-LINE=$(grep '^Lessons of earlier shifts' $R/t1.out | head -1); [ "$(printf %s "$LINE" | wc -c)" -le 260 ]; check $? 0 "…within 260 bytes"
+LINE=$(grep '^Lessons of earlier shifts' $R/t1.out | head -1); [ "$(printf %s "$LINE" | wc -c)" -le "$((260 + ${#L}))" ]; check $? 0 "…within 260 bytes besides the path"
 echo '{}' > $R/config.json   # setting off again
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/off-filled.md --dry-run > $R/t2.out 2>&1; check $? 0 "takeover dry run, setting off, lessons.md present"
 grep -qF "(proposed 1, confirmed 1)" $R/t2.out; check $? 0 "…the line is there whether or not the setting is on"

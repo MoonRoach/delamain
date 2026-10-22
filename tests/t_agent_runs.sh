@@ -115,10 +115,11 @@ echo base > $P/sub-source/draft.txt; git -C $P/sub-source add draft.txt
 $G -C $P/sub-source commit -q -m "submodule base"
 git -c protocol.file.allow=always -C $P/foreign-feat submodule add -q $P/sub-source vendor; check $? 0 "a local submodule fixture is added to the foreign worktree"
 $G -C $P/foreign-feat commit -q -am "add submodule"
-git -C $P/foreign-feat config submodule.vendor.ignore dirty
+git -C $P/foreign-feat config submodule.vendor.ignore all
 git -C $P/foreign-feat config diff.ignoreSubmodules all
 echo "submodule owner draft" > $P/foreign-feat/vendor/draft.txt
 git -C $P/foreign-feat status --porcelain --untracked-files=all > $P/sub-hidden.out; check $? 0 "ordinary status succeeds with submodule ignore settings"
+[ ! -s $P/sub-hidden.out ] || cat $P/sub-hidden.out
 [ ! -s $P/sub-hidden.out ]; check $? 0 "positive control: ordinary status hides the submodule draft"
 git -C $P/foreign-feat status --porcelain --untracked-files=all --ignore-submodules=none > $P/sub-visible.out; check $? 0 "explicit submodule inspection succeeds"
 [ -s $P/sub-visible.out ]; check $? 0 "…and reveals the same draft"

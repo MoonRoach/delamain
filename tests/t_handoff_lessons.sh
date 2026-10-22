@@ -213,4 +213,17 @@ $B/hub handoff --stage stage-a --finish --handoff $C/fence6.md > $R/k3.out 2> $R
 grep -qF "$WARN" $R/k3.err; check $? 1 "…without a false warning"
 $B/hub handoff --stage stage-a --finish --handoff $C/fence8.md > $R/k4.out 2> $R/k4.err; check $? 0 "a fenced § 8 heading inside § 7: --finish passes"
 grep -qF "$WARN" $R/k4.err; check $? 0 "…and the TODO after it is still seen"
+# 9e. a fence closes only on its own character and length: a ~~~ inside a ``` block, a ``` inside a ```` block
+cp $R/lessons.good $L
+printf '%s\n' '' '````markdown' '```' '## L-098 — a nested example' '- status: proposed' '```' '````' >> $L
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/k5.out 2>&1
+grep -qF "(proposed 1, confirmed 1)" $R/k5.out; check $? 0 "a \`\`\` block inside a \`\`\`\` one: its example entry is not counted"
+python3 - $C/on3-done.md $C/fence-mixed.md <<'PY2'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+i = t.index("## 7. Lessons")
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\n```markdown\n~~~\n```\nNew entries: TODO ids\n\n")
+PY2
+$B/hub handoff --stage stage-a --finish --handoff $C/fence-mixed.md > $R/k6.out 2> $R/k6.err; check $? 0 "a ~~~ inside a \`\`\` block of § 7: --finish passes"
+grep -qF "$WARN" $R/k6.err; check $? 0 "…and the TODO after the block is still seen"
 exit $fail

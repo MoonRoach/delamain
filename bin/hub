@@ -392,7 +392,7 @@ def todo_report(todos: list, width: int = 110) -> str:
 
 LESSON_HEAD_RE = re.compile(r"^## (L-\d{1,6})\b\s*(?:[—–-]+\s*)?(.*)$")  # a longer id is not an entry: it would flood § 7
 LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def lessons_enabled() -> bool:
@@ -405,15 +405,33 @@ def lessons_path(stage: str) -> Path:
 
 
 def outside_markup(text: str) -> list:
-    """[(line number, line)] of the lines that are neither in an HTML comment nor in a fenced code block (an example of
-    a heading or an entry there is not one); line numbers are those of `text`."""
-    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.DOTALL)
-    out, fenced = [], False
+    """[(line number, visible text)] of the lines outside fenced code blocks, with HTML comments blanked out (an example
+    of a heading or an entry there is not one); line numbers are those of `text`. One pass over the lines: a fence
+    closes only on the same character, at least as long; a comment may span lines."""
+    out, fence, in_comment = [], None, False
     for lineno, line in enumerate(text.splitlines(), 1):
-        if FENCE_RE.match(line):
-            fenced = not fenced
-        elif not fenced:
-            out.append((lineno, line))
+        if fence:
+            m = FENCE_RE.match(line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+                fence = None
+            continue
+        if not in_comment and (m := FENCE_RE.match(line)):
+            fence = m.group(1)
+            continue
+        visible, pos = [], 0
+        while pos <= len(line):
+            if in_comment:
+                end = line.find("-->", pos)
+                if end < 0:
+                    break
+                in_comment, pos = False, end + 3
+            else:
+                start = line.find("<!--", pos)
+                visible.append(line[pos:] if start < 0 else line[pos:start])
+                if start < 0:
+                    break
+                in_comment, pos = True, start + 4
+        out.append((lineno, "".join(visible)))
     return out
 
 

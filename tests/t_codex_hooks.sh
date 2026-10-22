@@ -1360,3 +1360,4 @@ if result.wasSuccessful():
         print('PASS Codex hook control')
 sys.exit(not result.wasSuccessful())
 PY
+python3 "$T/test_context_state_writes.py"

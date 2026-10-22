@@ -61,6 +61,7 @@ if __name__ == "__main__":  # fail-safe first, before anything that can fail: se
     except Exception:  # noqa: BLE001 — without it the hook is as it was
         pass
 
+import copy
 import json
 import fcntl
 import hashlib
@@ -799,13 +800,26 @@ def handle(data, hc, state_dir, key, writable=True):
         except Exception:  # noqa: BLE001 — marking is best effort
             pass
     state = load_state(state_dir, key)
+    saved_state = copy.deepcopy(state)
+
+    def save_if_changed():
+        nonlocal saved_state
+        # The session mutex covers this snapshot and every atomic replacement. Keep real mutations
+        # durable at their existing checkpoints, without fsync for repeated observations/cache hits.
+        if state == saved_state:
+            return True
+        if not save_state(state_dir, key, state):
+            return False
+        saved_state = copy.deepcopy(state)
+        return True
+
     sid = str(data.get("session_id") or "")
     hub_stage = None
     if auto and event == "UserPromptSubmit":
         hub_stage = registered_stage(ap, hc, sid, state)
         reconcile_registered_obligation(state, hub_stage, sid)
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
         if hub_stage and ap.owner_spoke(data.get("prompt")):
             # Owner input resets the automatic chain even when budget warnings are disabled.
             ap.reset_chain(hub_stage, "the owner spoke in the hub's session")
@@ -825,7 +839,7 @@ def handle(data, hc, state_dir, key, writable=True):
         hub_stage = registered_stage(ap, hc, sid, state)
         reconcile_registered_obligation(state, hub_stage, sid)
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
     hook_codex = bool(hub_stage and codex_hook_identity(data, ap, hc))
     if event == "Stop" and not hook_codex:
         print("{}")
@@ -844,12 +858,12 @@ def handle(data, hc, state_dir, key, writable=True):
     if tokens is not None:
         state["usage_seen"] = True
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
     transfer_blocked = False
     if hub_stage and event in ("UserPromptSubmit", "Stop"):
         transfer_blocked = explicit_transfer_blocker(data, path, state, ap.owner_spoke)
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
     due = bool(hub_stage and state.get("handoff_due") and state.get("stage") == hub_stage)
     if tokens is None and not due:
         if hub_stage and event == "UserPromptSubmit" and (state.get("usage_seen") or observation_error):
@@ -900,7 +914,7 @@ def handle(data, hc, state_dir, key, writable=True):
         reset_obligation(state)
         due = False
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
     metric_source = observation_source(path, skip_side) if tokens is not None else "unavailable"
     observation = dict(metric_source=metric_source, warn=warn, block=block)
     if tokens is not None:
@@ -915,7 +929,7 @@ def handle(data, hc, state_dir, key, writable=True):
         state.update(handoff_due=True, stage=hub_stage, predecessor=sid, due_since_tokens=tokens,
                      stop_continuations=0, progress_rank=0, no_progress_count=0, budget_policy=policy)
         due = True
-        if writable and save_state(state_dir, key, state):
+        if writable and save_if_changed():
             diagnostic(hc, data, hub_stage, "due_latched", due_since_tokens=tokens, reason="first_warn")
         else:
             writable = False
@@ -925,7 +939,7 @@ def handle(data, hc, state_dir, key, writable=True):
         # like the handoff obligation. The explicit policy reset above is the same reset boundary.
         state["block_due"] = True
         if writable:
-            writable = save_state(state_dir, key, state)
+            writable = save_if_changed()
     block_due = bool(due and state.get("block_due"))
     phase, request, blocked = "none", None, False
     progressed = False
@@ -942,7 +956,7 @@ def handle(data, hc, state_dir, key, writable=True):
             elif event in ("PostToolUse", "Stop"):
                 state["no_progress_count"] = min(255, state.get("no_progress_count", 0) + 1)
             if writable:
-                writable = save_state(state_dir, key, state)
+                writable = save_if_changed()
         except Exception as error:  # noqa: BLE001 — retain the work gate even when progress cannot be read
             blocked = True
             diagnostic(hc, data, hub_stage, "failure", reason="progress_unavailable", error_type=type(error).__name__)
@@ -971,7 +985,7 @@ def handle(data, hc, state_dir, key, writable=True):
             return
         state.update(bucket=bucket, tokens=tokens, grilling="grilling")
         if writable:
-            save_state(state_dir, key, state)
+            save_if_changed()
         emit(event, additionalContext=f"Context budget: {fmt(tokens)} tokens now, handoff threshold {fmt(warn)}. "
                                       + grilling_hold(gr, grill, ceiling_k=fmt(gr.ceiling(window)), auto=auto))
         return
@@ -979,7 +993,7 @@ def handle(data, hc, state_dir, key, writable=True):
     if state.get("grilling") != grilling_phase:
         state.update(bucket=-1, grilling=grilling_phase)
         if writable:
-            save_state(state_dir, key, state)
+            save_if_changed()
 
     def plan() -> str:
         # Settings enrichment must never erase the owner's response opportunity.
@@ -1102,7 +1116,7 @@ def handle(data, hc, state_dir, key, writable=True):
         if reason == "handoff_only":
             state["stop_continuations"] = count + 1
             state["continuation_rank"] = state.get("progress_rank", 0)
-            if writable and save_state(state_dir, key, state):
+            if writable and save_if_changed():
                 diagnostic(hc, data, hub_stage, "continuation_requested", reason=reason, phase=phase,
                            request_id=request, stop_continuations=count + 1, metric_age_seconds=age)
                 print(json.dumps({"decision": "block", "reason": CONTINUATION_MARKER + " " + plan()
@@ -1155,7 +1169,7 @@ def handle(data, hc, state_dir, key, writable=True):
                 return
             state.update(bucket=bucket, tokens=tokens)
             if writable:
-                save_state(state_dir, key, state)
+                save_if_changed()
             diagnostic(hc, data, hub_stage, "instruction_emitted", reason="handoff_due", phase=phase, request_id=request)
             emit(event, additionalContext=f"Context budget: {fmt(tokens)} tokens now. {plan()}")
             return
@@ -1163,7 +1177,7 @@ def handle(data, hc, state_dir, key, writable=True):
             # Re-arm only the informational bucket. The obligation and continuation counters survive.
             state["bucket"] = -1
             if writable:
-                save_state(state_dir, key, state)
+                save_if_changed()
             if event != "UserPromptSubmit" and not progressed:
                 return
         bucket = (tokens - warn) // step if tokens is not None and tokens >= warn else state.get("bucket", -1)
@@ -1171,7 +1185,7 @@ def handle(data, hc, state_dir, key, writable=True):
             return
         state.update(bucket=bucket)
         if writable:
-            save_state(state_dir, key, state)
+            save_if_changed()
         diagnostic(hc, data, hub_stage, "instruction_emitted", reason="handoff_due", phase=phase, request_id=request)
         observed = f"{fmt(tokens)} tokens now" if tokens is not None else "current usage is unavailable"
         emit(event, additionalContext=f"Context budget: {observed}, durable handoff due. {plan()}")
@@ -1181,13 +1195,13 @@ def handle(data, hc, state_dir, key, writable=True):
     if tokens < warn:
         if state.get("bucket", -1) >= 0:  # dropped below (compact / new chain): re-arm
             state.update(bucket=-1, tokens=tokens)
-            save_state(state_dir, key, state)
+            save_if_changed()
         return
     bucket = (tokens - warn) // step
     if bucket <= state.get("bucket", -1) and not (hub_stage and event == "UserPromptSubmit"):
         return
     state.update(bucket=bucket, tokens=tokens)
-    save_state(state_dir, key, state)
+    save_if_changed()
     extra = (f" The {fmt(block)} limit is already passed: {gated} pass only with a HANDOFF-*.md path or the "
              "marker handoff-ok." if tokens >= block
              else f" At {fmt(block)} new {gated} calls will be denied (except a handoff).")

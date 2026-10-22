@@ -591,8 +591,9 @@ grep -qF 'Your own effort could not be read here' $R/h5.out; check $? 0 "hook, w
 fresh d; HOOK_EFFORT=none CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=max cbh PostToolUse Bash | grep -qF -- '--model claude-opus-5-5 --effort max --permission-mode'; check $? 0 "hook, warn: no effort in the input — the hook's own environment answers"
 TR=$TR0
 for tool in Bash Agent SendMessage; do
-  cbh PreToolUse "$tool" '{"command":"ls","prompt":"ordinary work","message":"ordinary work"}' > $R/h3.out
-  grep -q '"deny"' $R/h3.out; check $? 1 "hook: warn permits ordinary $tool before block"
+  # PreToolUse permits by returning silently, without a JSON decision (context_budget.py).
+  cbh PreToolUse "$tool" '{"command":"ls","prompt":"ordinary work","message":"ordinary work"}' > $R/h3.out 2> $R/h3.err
+  check "$?:$(wc -c < $R/h3.out | tr -d ' '):$(wc -c < $R/h3.err | tr -d ' ')" "0:0:0" "hook: warn permits ordinary $tool before block (successful, silent)"
 done
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""

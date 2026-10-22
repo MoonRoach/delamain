@@ -63,8 +63,7 @@ class ContextReadProvenanceTests(unittest.TestCase):
         run = subprocess.run([sys.executable, str(ROOT / "windows/desktop_runtime.py"), encoded],
                              capture_output=True, text=True, cwd=self.home, env=self.env, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertNotIn("fail-open", run.stderr, run.stderr)
-        self.assertNotIn("gave up", run.stderr, run.stderr)
+        self.assertEqual(run.stderr, "", run.stderr)
         return json.loads(run.stdout) if run.stdout.strip() else {}
 
     def replacement(self, command, **fields):
@@ -72,6 +71,19 @@ class ContextReadProvenanceTests(unittest.TestCase):
 
     def assertDenied(self, out):
         self.assertEqual(out.get("hookSpecificOutput", {}).get("permissionDecision"), "deny")
+
+    def test_hook_helper_rejects_fail_safe_diagnostic_before_decision(self):
+        denied = {"hookSpecificOutput": {"permissionDecision": "deny"}}
+        for output in ({}, denied):
+            with self.subTest(output=output), patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(output), "")):
+                self.assertEqual(self.hook("fixture"), output)
+        diagnostic = "delamain: context_budget.py gave up after 3 s: no decision\n"
+        with patch.object(subprocess, "run", return_value=
+                subprocess.CompletedProcess([], 0, "{}", diagnostic)):
+            with self.assertRaises(AssertionError) as caught:
+                self.assertDenied(self.hook("fixture"))
+        self.assertIn(diagnostic.strip(), str(caught.exception))
 
     def test_standalone_literal_bridge_conversions_pass(self):
         for mode in ("--linux", "--windows"):

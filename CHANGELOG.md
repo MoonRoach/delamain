@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Context-hook state and test diagnostics.** Repeated tools do not rewrite unchanged context-budget
+  state; real registration, policy, authority and BLOCK changes still persist. Windows transport controls
+  reject all child-hook stderr, including fail-safe `no decision` messages, and WARN permission controls
+  require a successful, silent hook instead of merely checking that its output lacks `deny`.
+
 - **Context denial does not wait for optional Git metadata.** A hard-barrier `PreToolUse` denial omits
   optional predecessor-cwd enrichment, so slow Git cannot consume the hook deadline before the denial is
   emitted. The actual successor command still resolves and validates the recorded repository and settings.

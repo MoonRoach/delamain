@@ -110,19 +110,20 @@ $B/agent spawn --role fw3 --cwd $P/fw --model haiku --brief $W/b.md --worktree f
 grep -q "(reused)" $P/f5.out && [ "$(cat $P/fw/.worktrees/feat3/f.txt)" = unfinished ]; check $? 0 "…as it is, the change kept"
 wait_dead fw3
 # Local-only submodule fixture: ignore settings must not hide another session's drafts.
+git -C $P/fw worktree add -q -b feat-sub $P/foreign-sub main
 git init -q -b main $P/sub-source
 echo base > $P/sub-source/draft.txt; git -C $P/sub-source add draft.txt
 $G -C $P/sub-source commit -q -m "submodule base"
-git -c protocol.file.allow=always -C $P/foreign-feat submodule add -q $P/sub-source vendor; check $? 0 "a local submodule fixture is added to the foreign worktree"
-$G -C $P/foreign-feat commit -q -am "add submodule"
-git -C $P/foreign-feat config submodule.vendor.ignore all
-git -C $P/foreign-feat config diff.ignoreSubmodules all
-echo "submodule owner draft" > $P/foreign-feat/vendor/draft.txt
-git -C $P/foreign-feat status --porcelain --untracked-files=all > $P/sub-hidden.out; check $? 0 "ordinary status succeeds with submodule ignore settings"
+git -c protocol.file.allow=always -C $P/foreign-sub submodule add -q $P/sub-source vendor; check $? 0 "a local submodule fixture is added to the foreign worktree"
+$G -C $P/foreign-sub commit -q -am "add submodule"
+git -C $P/foreign-sub config submodule.vendor.ignore all
+git -C $P/foreign-sub config diff.ignoreSubmodules all
+echo "submodule owner draft" > $P/foreign-sub/vendor/draft.txt
+git -C $P/foreign-sub status --porcelain --untracked-files=all > $P/sub-hidden.out; check $? 0 "ordinary status succeeds with submodule ignore settings"
 [ ! -s $P/sub-hidden.out ] || cat $P/sub-hidden.out
 [ ! -s $P/sub-hidden.out ]; check $? 0 "positive control: ordinary status hides the submodule draft"
-git -C $P/foreign-feat status --porcelain --untracked-files=all --ignore-submodules=none > $P/sub-visible.out; check $? 0 "explicit submodule inspection succeeds"
+git -C $P/foreign-sub status --porcelain --untracked-files=all --ignore-submodules=none > $P/sub-visible.out; check $? 0 "explicit submodule inspection succeeds"
 [ -s $P/sub-visible.out ]; check $? 0 "…and reveals the same draft"
-$B/agent spawn --role fwsub --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f-sub.out 2>&1; check $? 2 "a foreign worktree with ignored submodule changes is refused"
-[ "$(cat $P/foreign-feat/vendor/draft.txt)" = "submodule owner draft" ] && [ ! -e $R/stage-a/agents/fwsub ]; check $? 0 "…the submodule draft is untouched and no agent started"
+$B/agent spawn --role fwsub --cwd $P/fw --model haiku --brief $W/b.md --worktree feat-sub > $P/f-sub.out 2>&1; check $? 2 "a foreign worktree with ignored submodule changes is refused"
+[ "$(cat $P/foreign-sub/vendor/draft.txt)" = "submodule owner draft" ] && [ ! -e $R/stage-a/agents/fwsub ]; check $? 0 "…the submodule draft is untouched and no agent started"
 exit $fail

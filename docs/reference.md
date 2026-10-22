@@ -752,7 +752,9 @@ Codex `Stop` active-turn continuation is bounded to two attempts, the second req
 see [readiness, freshness and authority checks](codex.md#full-access-and-hook-trust). Claude `Stop` is not registered.
 Optional bounded redacted diagnostics use `<hub home>/.state/handoff-events` for observations, due/gate decisions,
 canonical progress, continuation decisions, failures and verified takeover. Logger I/O failure never changes
-a reply, handoff or veto. These records do not establish per-session PreCompact dispatch; its independent
+a reply, handoff or veto. A configured hub root may use a symlink or have symlinked ancestors; the writer
+resolves that root before opening its storage. Links inside `.state/handoff-events` remain rejected.
+These records do not establish per-session PreCompact dispatch; its independent
 no-stdin veto is unchanged.
 
 

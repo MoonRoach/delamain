@@ -14,8 +14,7 @@ HUB3=33333333-3333-4333-8333-333333333333
 
 # a fresh hub home with stage-a, hub #1 registered, a handoff file and a work directory for the successor
 setup(){
-  # The diagnostic writer requires canonical roots (macOS /tmp and /var are symlinks).
-  new_home; R=$(cd "$AGENT_HUB_HOME" && pwd -P); export AGENT_HUB_HOME=$R FAKE_BG_LOG=$R/bg.log
+  new_home; R=$AGENT_HUB_HOME; export FAKE_BG_LOG=$R/bg.log
   $B/hub start --stage stage-a --session $HUB1 > $R/start.out 2>&1 || { echo "FAIL setup: hub start"; cat $R/start.out; fail=1; }
   H=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md
   printf '# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n\n## 0. First steps\n1. take over\n' > $H

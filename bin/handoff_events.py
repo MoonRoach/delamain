@@ -137,16 +137,25 @@ def _windows_directory(root):
             close(handle)
 
 
-@contextmanager
-def _directory(root):
+def _root_path(root):
     root = Path(root)
-    # A resolved absolute hub home is part of the public API contract.
     if not root.is_absolute() or '..' in root.parts:
         raise ValueError('absolute resolved root required')
     if os.name == 'nt':
         # Do not accept UNC/device namespaces or alternate data stream syntax.
         if not re.fullmatch(r'[A-Za-z]:\\', root.anchor) or any(':' in p or p.endswith((' ', '.')) for p in root.parts[1:]):
             raise ValueError('root namespace')
+    return root
+
+
+@contextmanager
+def _directory(root):
+    # The configured hub root is trusted, including aliases in its ancestors.
+    # Resolve it once, then pin the canonical path with no-follow opens. Aliases
+    # below that boundary (.state, handoff-events and files) remain forbidden.
+    # Validate both spellings so resolution cannot sanitize a forbidden namespace.
+    root = _root_path(os.path.realpath(_root_path(root)))
+    if os.name == 'nt':
         with _windows_directory(root) as location:
             yield location
         return

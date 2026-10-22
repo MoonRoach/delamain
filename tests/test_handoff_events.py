@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -201,18 +203,73 @@ class HandoffEventsTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest('host cannot create test symlinks')
 
-    def test_symlink_directories_including_ancestor(self):
+    def test_symlink_hub_root_and_ancestor(self):
         external = self.root / 'external'
         external.mkdir()
         alias = self.root / 'alias'
         self.symlink(alias, external, True)
-        self.assertFalse(self.emit(root=alias))
         child = external / 'child'
         child.mkdir()
-        self.assertFalse(self.emit(root=alias / 'child'))
+        for root in (external, alias, alias / 'child'):
+            with self.subTest(root=root):
+                self.assertTrue(self.emit(root=root))
+                path = root / '.state' / 'handoff-events' / 'session-123.jsonl'
+                self.assertEqual(json.loads(path.read_text().splitlines()[-1])['event'], 'observation')
+
+    @unittest.skipIf(os.name == 'nt', 'The context hook runs on POSIX/WSL')
+    def test_hook_diagnostic_is_quiet_through_root_aliases(self):
+        external = self.root / 'external'
+        external.mkdir()
+        (external / 'child').mkdir()
+        alias = self.root / 'alias'
+        self.symlink(alias, external, True)
+        plugin = Path(__file__).resolve().parents[1]
+        code = '''import sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path[:0] = [str(Path(sys.argv[1]) / 'hooks'), str(Path(sys.argv[1]) / 'bin')]
+from context_budget import diagnostic
+diagnostic(SimpleNamespace(root=lambda: Path(sys.argv[2])),
+           {'session_id': 'hook-session', 'hook_event_name': 'PostToolUse'},
+           'scratch-stage', 'observation', tokens=123)
+'''
+        for root in (external, alias, alias / 'child'):
+            with self.subTest(root=root):
+                run = subprocess.run([sys.executable, '-c', code, str(plugin), str(root)],
+                                     capture_output=True, text=True, timeout=10)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertEqual(run.stdout, '')
+                self.assertEqual(run.stderr, '')
+                path = root / '.state' / 'handoff-events' / 'hook-session.jsonl'
+                self.assertEqual(json.loads(path.read_text().splitlines()[-1])['tokens'], 123)
+
+    def test_root_alias_retarget_after_resolution_uses_pinned_destination(self):
+        original = self.root / 'original'
+        replacement = self.root / 'replacement'
+        original.mkdir()
+        replacement.mkdir()
+        alias = self.root / 'alias'
+        self.symlink(alias, original, True)
+        realpath = os.path.realpath
+
+        def retarget(root):
+            canonical = realpath(root)
+            alias.unlink()
+            alias.symlink_to(replacement, target_is_directory=True)
+            return canonical
+
+        with mock.patch.object(events.os.path, 'realpath', side_effect=retarget) as resolve:
+            self.assertTrue(self.emit(root=alias))
+            resolve.assert_called_once_with(alias)
+        self.assertTrue((original / '.state' / 'handoff-events' / 'session-123.jsonl').is_file())
+        self.assertEqual(list(replacement.iterdir()), [])
+
+    def test_symlink_state_directory(self):
+        external = self.root / 'external'
+        external.mkdir()
         self.symlink(self.root / '.state', external, True)
         self.assertFalse(self.emit())
-        self.assertEqual(list(external.iterdir()), [child])
+        self.assertEqual(list(external.iterdir()), [])
 
     def test_symlink_event_directory(self):
         (self.root / '.state').mkdir()

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;
+  the event writer resolves the configured root before its secure directory walk. Symlinks within
+  `.state/handoff-events` remain rejected. Transport and WARN controls retain their original temporary
+  paths and strict stderr assertions, including on macOS.
+
 - **Context-hook state and test diagnostics.** Repeated tools do not rewrite unchanged context-budget
   state; real registration, policy, authority and BLOCK changes still persist. Windows transport controls
   reject all child-hook stderr, including fail-safe `no decision` messages, and WARN permission controls

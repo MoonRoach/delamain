@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Optional "lessons of the shift" at a hub handoff.** With `AGENT_HUB_HANDOFF_LESSONS` on in the hub home (off by
+  default, hub-wide), `hub handoff` adds a § 7 that asks the hub for 0-3 lessons with evidence in the stage's
+  `lessons.md` (kept across handoffs, edited by hand) and for verdicts (`helped | hurt | no effect | confounded`) on
+  earlier ones; a `hurt` retires a lesson, a confirmed one can be proposed to the owner for `hub-rules.md` with
+  `ask add`. A § 7 still holding `TODO` is an ATTENTION line on `hub handoff --finish` and `hub succeed --handoff`,
+  never a refusal. The takeover digest points at `lessons.md` whenever the file exists. The draft keeps § 7 inside its
+  12 KB when other sections are cut. Procedure: `skills/handoff/references/lessons.md`.
+
 - **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;
   the event writer resolves the configured root before its secure directory walk. Symlinks within
   `.state/handoff-events` remain rejected. Transport and WARN controls retain their original temporary

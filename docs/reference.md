@@ -438,6 +438,7 @@ defect covers nothing and is shown as `INVALID` by
     ├── roles.json                    role → full session id, kind, tag; send counts; `host:` of the hub (takeover)
     ├── do-not-wake.json              optional: watchdog quiet — who, when, until, reason
     ├── questions.md                  owner-question register (ask)
+    ├── lessons.md                    optional: lessons of earlier shifts, kept by hand and kept across handoffs
     ├── auto-handoff.json             autopilot: automatic handoffs in a row, the successor last started
     ├── grill.json                    `hub grill`: a grilling session launched that has not joined yet
     ├── night-queue.md, night-log.md  optional night queue (nightq)
@@ -587,6 +588,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
 | `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. Limit-pace proposes an `ask add` for permission to use the other engine for this launch; the default runs the locked engine. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
+| `AGENT_HUB_HANDOFF_LESSONS` | `off` | `hub handoff` adds an optional § 7, "Lessons of this shift", and warns (never refuses) while it holds `TODO`; procedure in the [handoff skill](../skills/handoff/references/lessons.md), format in [Architecture](architecture.md#formats). A yes/no setting. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|GRILLED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |

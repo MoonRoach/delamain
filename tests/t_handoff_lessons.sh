@@ -1,0 +1,157 @@
+#!/bin/bash
+# Lessons of the shift (AGENT_HUB_HANDOFF_LESSONS, hub home only, off by default): with the setting on, `hub handoff` adds an
+# optional § 7 and `--finish` / `succeed --handoff` WARN (never refuse) while it holds TODO; <stage>/lessons.md is pointed at
+# by the takeover digest whenever it exists. Off, the draft is what it always was.
+. "$(dirname "$0")/lib.sh"
+new_home; R=$AGENT_HUB_HOME; HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
+export CLAUDE_BIN=$T/fake_claude_bg.py FAKE_AGENTS=none FAKE_BG_LOG=$R/bg.log   # never the real `claude`
+$B/hub start --stage stage-a --session $HUB1 > $R/start.out 2>&1; check $? 0 "setup: hub start"
+C=$R/stage-a/coordinator; L=$R/stage-a/lessons.md
+WARN='ATTENTION: § 7 (lessons) still holds TODO'
+# fill_012 SRC DST: TODO of § 0–2 replaced, the rest (§ 3–7) untouched
+fill_012() { python3 - "$1" "$2" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+out = []
+for p in re.split(r"(?m)^(?=## )", t):
+    m = re.match(r"## (\d)\.", p)
+    out.append(p.replace("TODO", "done:") if m and int(m.group(1)) <= 2 else p)
+open(sys.argv[2], "w", encoding="utf-8").write("".join(out))
+PY
+}
+
+# 1. off (the default)
+$B/hub handoff --stage stage-a --n 1 --out $C/off.md > $R/o1.out 2>&1; check $? 0 "off: the draft is written"
+grep -q '^## 7\.' $C/off.md; check $? 1 "off: no § 7"
+fill_012 $C/off.md $C/off-filled.md
+$B/hub handoff --stage stage-a --finish --handoff $C/off-filled.md > $R/o2.out 2> $R/o2.err; check $? 0 "off: --finish on a filled draft passes"
+grep -q 'lessons' $R/o2.err; check $? 1 "off: no lessons warning"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/off-filled.md --dry-run > $R/o3.out 2>&1; check $? 0 "off: takeover dry run"
+grep -q 'Lessons of earlier shifts' $R/o3.out; check $? 1 "off: no lessons line in the digest without a file"
+
+# 2. on, through the hub home's config.json: a JSON boolean and the word "on"
+echo '{"AGENT_HUB_HANDOFF_LESSONS": true}' > $R/config.json
+$B/hub handoff --stage stage-a --n 1 --out $C/on1.md > $R/n1.out 2>&1; check $? 0 "on (true): the draft is written"
+grep -q '^## 7\. Lessons of this shift' $C/on1.md && grep -q "$L" $C/on1.md; check $? 0 "on (true): § 7 with the real path of lessons.md"
+sed -n '/^## 7\./,$p' $C/on1.md | grep -q 'TODO ids (L-…)' && sed -n '/^## 7\./,$p' $C/on1.md | grep -q 'TODO "L-… helped'; check $? 0 "on: § 7 has its TODO"
+grep -q '^Open lessons to judge: none yet$' $C/on1.md; check $? 0 "on: no lessons file: \"none yet\""
+python3 - $C/on1.md <<'PY'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+assert t.index("## 6. Skills") < t.index("## 7. Lessons") < t.index("<!-- Last [hub-1] journal lines"), "order"
+PY
+check $? 0 "on: § 7 comes after § 6 and before the journal comment"
+echo '{"AGENT_HUB_HANDOFF_LESSONS": "on"}' > $R/config.json
+$B/hub handoff --stage stage-a --n 1 --out $C/on2.md > $R/n2.out 2>&1; check $? 0 "on (\"on\"): the draft is written"
+grep -q '^## 7\.' $C/on2.md; check $? 0 "on (\"on\"): § 7 is there"
+
+# 3. a lessons file of three entries: proposed, confirmed, retired
+cat > $L <<'MD'
+# Lessons — stage-a
+
+## L-001 — before merging a change that touches the lock board
+- status: proposed
+- by: hub-1, 2026-10-20
+- lesson: read lock list first.
+- evidence: journal 10:12 [hub-1]
+- confidence: low
+
+## L-002 — when a reviewer returns no findings in a minute
+- status: confirmed: 2026-10-21 hub-2
+- by: hub-1, 2026-10-20
+- lesson: check that it read the diff.
+- evidence: ask Q-A-004
+- confidence: medium
+- verdict: hub-2 2026-10-21 helped — journal 14:03 [hub-2]
+
+## L-003 — when a worker loops on one test
+- status: retired: 2026-10-22 hub-3 — hurt
+- by: hub-1, 2026-10-20
+- lesson: stop it after three runs.
+- evidence: journal 09:00 [hub-1]
+- confidence: high
+MD
+$B/hub handoff --stage stage-a --n 1 --out $C/on3.md > $R/n3.out 2>&1; check $? 0 "on, 3 lessons: the draft is written"
+OPEN=$(grep '^Open lessons to judge:' $C/on3.md)
+case "$OPEN" in *"L-001 before merging a change that touches the lock board"*"L-002 when a reviewer"*) r=0;; *) r=1;; esac; check $r 0 "on: lists the proposed and the confirmed lesson, in file order"
+case "$OPEN" in *L-003*|*"worker loops"*) r=1;; *) r=0;; esac; check $r 0 "on: …and not the retired one"
+{ for i in 1 2 3 4 5 6 7 8 9 10; do printf '## L-%03d — cue number %d\n- status: proposed\n- evidence: x\n\n' $((i+10)) $i; done; } >> $L
+$B/hub handoff --stage stage-a --n 1 --out $C/on4.md > $R/n4.out 2>&1
+grep '^Open lessons to judge:' $C/on4.md | grep -q '… 4 more$'; check $? 0 "on: more than 8 open lessons: the first 8, then \"… 4 more\""
+# back to a short file for the digest checks below
+cat > $L <<'MD'
+## L-001 — first
+- status: proposed
+- evidence: x
+
+## L-002 — second
+- status: confirmed: 2026-10-21 hub-2
+- evidence: x
+
+## L-003 — third
+- status: retired: 2026-10-22 hub-3 — hurt
+- evidence: x
+MD
+
+# 4. --finish: a warning, never a refusal
+fill_012 $C/on3.md $C/on3-filled.md
+$B/hub handoff --stage stage-a --finish --handoff $C/on3-filled.md > $R/f1.out 2> $R/f1.err; check $? 0 "on: § 0–2 filled, § 7 TODO: --finish exits 0"
+grep -qF "$WARN — write 0–3 lessons with evidence or \"none: <reason>\"" $R/f1.err; check $? 0 "…with the ATTENTION line on stderr"
+grep -q 'handoff ready' $R/f1.out; check $? 0 "…and the ready line"
+python3 - $C/on3-filled.md $C/on3-done.md <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+t = re.sub(r'(?m)^New entries in .*$', 'New entries: none: nothing came up.', t)
+t = re.sub(r'(?m)^Verdicts on lessons .*$', 'Verdicts: L-002 helped — journal 14:03 [hub-2]', t)
+open(sys.argv[2], "w", encoding="utf-8").write(t)
+PY
+$B/hub handoff --stage stage-a --finish --handoff $C/on3-done.md > $R/f2.out 2> $R/f2.err; check $? 0 "§ 7 filled: --finish passes"
+grep -q 'lessons' $R/f2.err; check $? 1 "…without a lessons warning"
+$B/hub handoff --stage stage-a --finish --handoff $C/off-filled.md > $R/f3.out 2> $R/f3.err; check $? 0 "a handoff without § 7 (setting turned on later): --finish passes"
+grep -q 'lessons' $R/f3.err; check $? 1 "…without a lessons warning"
+$B/hub handoff --stage stage-a --finish --handoff $C/on3.md > $R/f4.out 2> $R/f4.err; check $? 2 "negative: § 0–2 still TODO: --finish still exits 2"
+grep -q 'still hold [0-9]* TODO line' $R/f4.err; check $? 0 "…for § 0–2"
+$B/hub handoff --stage stage-a --finish --handoff $C/on3.md --allow-todo > $R/f5.out 2> $R/f5.err; check $? 0 "--allow-todo: exit 0"
+grep -q 'ATTENTION: --allow-todo' $R/f5.err && grep -qF "$WARN" $R/f5.err; check $? 0 "…both warnings"
+
+# 5. succeed shows the same warning
+$B/hub succeed --stage stage-a --handoff $C/on3-filled.md --model opus --effort high --dry-run --cwd $R > $R/s1.out 2> $R/s1.err; check $? 0 "succeed --dry-run on a draft with § 7 TODO: exit 0"
+grep -qF "$WARN" $R/s1.err; check $? 0 "…and the same warning"
+grep -q '^\[plan\] auto-handoff' $R/s1.out; check $? 0 "…and the plan"
+$B/hub succeed --stage stage-a --handoff $C/on3-done.md --model opus --effort high --dry-run --cwd $R > $R/s2.out 2> $R/s2.err; check $? 0 "succeed on a draft with § 7 filled: exit 0"
+grep -q 'lessons' $R/s2.err; check $? 1 "…without a warning"
+$B/hub succeed --stage stage-a --handoff $C/on3.md --model opus --effort high --dry-run --cwd $R > $R/s3.out 2> $R/s3.err; check $? 2 "negative: succeed on § 0–2 TODO still refuses"
+
+# 6. takeover digest: the lessons line, on or off
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/t1.out 2>&1; check $? 0 "takeover dry run with lessons.md"
+grep -qF "Lessons of earlier shifts — read before planning; at your handoff give a verdict on each that acts in your shift: $L (proposed 1, confirmed 1)" $R/t1.out; check $? 0 "…the digest line with the right counts"
+LINE=$(grep '^Lessons of earlier shifts' $R/t1.out | head -1); [ "$(printf %s "$LINE" | wc -c)" -le 260 ]; check $? 0 "…within 260 bytes"
+echo '{}' > $R/config.json   # setting off again
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/off-filled.md --dry-run > $R/t2.out 2>&1; check $? 0 "takeover dry run, setting off, lessons.md present"
+grep -qF "(proposed 1, confirmed 1)" $R/t2.out; check $? 0 "…the line is there whether or not the setting is on"
+
+# 7. a repository's .agent-hub/config.json cannot switch it (negative control)
+PROJ=$(mktemp -d); mkdir -p $PROJ/.git $PROJ/.agent-hub; echo '{"AGENT_HUB_HANDOFF_LESSONS": true}' > $PROJ/.agent-hub/config.json
+echo '{}' > $R/config.json   # the home does not set it
+( cd $PROJ && $B/hub handoff --stage stage-a --n 1 --out $C/proj.md > $R/p1.out 2> $R/p1.err ); check $? 0 "a repository's config: the draft is written"
+grep -q '^## 7\.' $C/proj.md; check $? 1 "…and § 7 is not written: the repository cannot switch the setting on"
+# the config layer says why when any setting is read from that repository (the handoff itself reads no repository key)
+( cd $PROJ && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore; hubcore.setting("AGENT_HUB_DEFAULT_EFFORT")' "$B" ) 2> $R/p2.err
+grep -q 'AGENT_HUB_HANDOFF_LESSONS is not a setting this file may set (hub-wide: set it in the hub home' $R/p2.err; check $? 0 "…and the config layer refuses it with the hub-wide warning"
+
+# 8. the 12 KB cut: a large register of facts forces it, § 7 and the journal comment survive whole
+echo '{"AGENT_HUB_HANDOFF_LESSONS": true}' > $R/config.json
+python3 - $R/stage-a/handoff-facts.sh <<'PY'
+import sys
+rows = "\n".join(f'echo "| Fact {i} | {"x" * 150} | `cmd {i}` |"' for i in range(120))
+open(sys.argv[1], "w").write("#!/bin/sh\n" + rows + "\n")
+PY
+chmod +x $R/stage-a/handoff-facts.sh
+for i in $(seq 1 30); do $B/ask add --stage stage-a --title "Question number $i with a long enough title to fill the digest line well" --by hub-1 > /dev/null 2>&1; done
+$B/hub handoff --stage stage-a --n 1 --out $C/big.md > $R/b1.out 2>&1; check $? 0 "big draft: written"
+SZ=$(wc -c < $C/big.md | tr -d ' '); [ "$SZ" -le 12288 ]; check $? 0 "…within 12 KB ($SZ bytes)"
+grep -q '…cut' $C/big.md; check $? 0 "control: the cut did happen"
+grep -q '^## 7\. Lessons of this shift' $C/big.md && grep -q '^Open lessons to judge: L-001 first; L-002 second$' $C/big.md; check $? 0 "…and § 7 survived whole"
+tail -n 3 $C/big.md | grep -q -- '-->'; check $? 0 "…and the journal comment is closed"
+$B/hub handoff --stage stage-a --finish --handoff $C/big.md --allow-todo > $R/b2.out 2> $R/b2.err; grep -qF "$WARN" $R/b2.err; check $? 0 "…and the cut draft still gets the § 7 warning"
+exit $fail

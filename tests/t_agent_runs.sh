@@ -73,4 +73,37 @@ $B/agent spawn --role nb --cwd $P/orph --model haiku --brief $W/b.md --worktree 
 wait_dead nb
 $B/agent spawn --role nb2 --cwd $P/orph --model haiku --brief $W/b.md --worktree brand-new2 --base HEAD > $P/o3.out 2>&1; check $? 1 "negative: --base HEAD from the unborn HEAD still says there are no commits"
 grep -q 'has no commits yet' $P/o3.out; check $? 0 "…naming the reason"
+
+# ---- 6. --worktree and an existing worktree of the branch: a foreign dirty one is not taken over
+G="git -c user.email=t@t -c user.name=t"
+git init -q -b main $P/fw; $G -C $P/fw commit -q --allow-empty -m "first commit"
+echo base > $P/fw/f.txt; git -C $P/fw add f.txt; $G -C $P/fw commit -q -m "f"
+git -C $P/fw branch feat; git -C $P/fw branch feat2; git -C $P/fw branch feat3
+git -C $P/fw worktree add -q $P/foreign-feat feat
+echo "owner draft" > $P/foreign-feat/f.txt
+$B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f1.out 2>&1; check $? 2 "a foreign worktree of the branch with an uncommitted change: spawn --worktree is refused"
+grep -q "$P/foreign-feat.*uncommitted changes and is not an agent worktree.*commit there, or pick another branch" $P/f1.out; check $? 0 "…naming the path, the reason and the way out"
+[ "$(cat $P/foreign-feat/f.txt)" = "owner draft" ] && [ ! -e $R/stage-a/agents/fw1 ] && [ ! -e $P/fw/.worktrees ]; check $? 0 "…the file is untouched, no agent and no worktree was created"
+git -C $P/foreign-feat add f.txt
+$B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f-staged.out 2>&1; check $? 2 "a foreign worktree with a staged change is refused too"
+$G -C $P/foreign-feat commit -q -m "draft"
+# A broken index makes status fail even though the committed files are clean.
+foreign_index=$(git -C $P/foreign-feat rev-parse --path-format=absolute --git-path index)
+cp "$foreign_index" "$P/foreign-index.saved"
+printf 'invalid index' > "$foreign_index"
+$B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f-status.out 2>&1; check $? 2 "a failed git status in a foreign worktree is refused"
+grep -q 'cannot be inspected.*not an agent worktree' $P/f-status.out && [ ! -e $R/stage-a/agents/fw1 ]; check $? 0 "…with the inspection failure named and no agent started"
+cp "$P/foreign-index.saved" "$foreign_index"
+$B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f2.out 2>&1; check $? 0 "positive control: after the change is committed the same worktree is reused"
+grep -q "worktree $P/foreign-feat on feat (reused)" $P/f2.out && grep -q 'foreign worktree' $P/f2.out; check $? 0 "…as the foreign worktree, with a note"
+wait_dead fw1
+git -C $P/fw worktree add -q $P/foreign-feat2 feat2; echo new > $P/foreign-feat2/untracked.txt
+$B/agent spawn --role fw2 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat2 > $P/f3.out 2>&1; check $? 2 "a foreign worktree with only an untracked file is refused"
+[ -e $P/foreign-feat2/untracked.txt ] && [ ! -e $R/stage-a/agents/fw2 ]; check $? 0 "…and nothing was started"
+$B/agent spawn --role fw3 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat3 > $P/f4.out 2>&1; check $? 0 "an agent worktree of the branch is created under .worktrees/"
+wait_dead fw3
+echo "unfinished" > $P/fw/.worktrees/feat3/f.txt
+$B/agent spawn --role fw3 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat3 > $P/f5.out 2>&1; check $? 0 "re-spawn into the agent's own .worktrees/ worktree with an uncommitted change is reused"
+grep -q "(reused)" $P/f5.out && [ "$(cat $P/fw/.worktrees/feat3/f.txt)" = unfinished ]; check $? 0 "…as it is, the change kept"
+wait_dead fw3
 exit $fail

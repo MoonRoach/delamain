@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`agent spawn --worktree` does not take over another session's dirty worktree.** An existing worktree of the
+  branch under `<repo>/.worktrees/` is reused as before (a re-spawn continues the work); one elsewhere (Claude Code's
+  `.claude/worktrees/…`, Codex's, any other path) is reused only when `git status --porcelain` is empty, with a
+  note, and is refused otherwise — also when `git status` fails — before anything is created or launched. The
+  refusal names the path and says to commit there or take another branch
+  (`--worktree <new-branch> --base origin/<branch>`).
+
 - **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;
   the event writer resolves the configured root before its secure directory walk. Symlinks within
   `.state/handoff-events` remain rejected. Transport and WARN controls retain their original temporary

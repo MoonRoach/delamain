@@ -95,7 +95,8 @@ $B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree f
 grep -q 'cannot be inspected.*not an agent worktree' $P/f-status.out && [ ! -e $R/stage-a/agents/fw1 ]; check $? 0 "…with the inspection failure named and no agent started"
 cp "$P/foreign-index.saved" "$foreign_index"
 $B/agent spawn --role fw1 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat > $P/f2.out 2>&1; check $? 0 "positive control: after the change is committed the same worktree is reused"
-grep -q "worktree $P/foreign-feat on feat (reused)" $P/f2.out && grep -q 'foreign worktree' $P/f2.out; check $? 0 "…as the foreign worktree, with a note"
+foreign_path=$(cd "$P/foreign-feat" && pwd -P)
+grep -Fq "worktree $foreign_path on feat (reused)" $P/f2.out && grep -q 'foreign worktree' $P/f2.out; check $? 0 "…as the foreign worktree, with a note"
 wait_dead fw1
 git -C $P/fw worktree add -q $P/foreign-feat2 feat2; echo new > $P/foreign-feat2/untracked.txt
 $B/agent spawn --role fw2 --cwd $P/fw --model haiku --brief $W/b.md --worktree feat2 > $P/f3.out 2>&1; check $? 2 "a foreign worktree with only an untracked file is refused"

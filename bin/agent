@@ -1324,8 +1324,10 @@ def main(argv: list) -> int:
                    help="Claude: the MCP servers of the agent — inherit (the user's config, plugins and claude.ai "
                         "connectors), none, or only those of MCP config files; default: $AGENT_HUB_SPAWN_MCP, else none")
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
-                   help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
-                        "on a new branch from origin's default branch (--base)")
+                   help="run in a worktree of BRANCH (default agent/<role>): reuse under <repo>/.worktrees/ even if dirty; "
+                        "elsewhere reuse only if clean, with a note; otherwise commit there or pick another branch "
+                        "(--worktree <new-branch> --base origin/<branch>). New worktrees go under <repo>/.worktrees/<BRANCH> "
+                        "from origin's default branch (--base)")
     s.add_argument("--base", metavar="REF", help="with --worktree: start a new branch from REF (default: origin's default "
                    "branch after a fetch; --base HEAD is the checked-out commit of --cwd)")
     s.add_argument("--tag")

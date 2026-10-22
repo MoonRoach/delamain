@@ -154,4 +154,63 @@ grep -q '…cut' $C/big.md; check $? 0 "control: the cut did happen"
 grep -q '^## 7\. Lessons of this shift' $C/big.md && grep -q '^Open lessons to judge: L-001 first; L-002 second$' $C/big.md; check $? 0 "…and § 7 survived whole"
 tail -n 3 $C/big.md | grep -q -- '-->'; check $? 0 "…and the journal comment is closed"
 $B/hub handoff --stage stage-a --finish --handoff $C/big.md --allow-todo > $R/b2.out 2> $R/b2.err; grep -qF "$WARN" $R/b2.err; check $? 0 "…and the cut draft still gets the § 7 warning"
+# 9. review edge cases: the cut inside a comment, a damaged lessons.md, a huge id, code blocks, counts per entry
+# 9a. the cut fell inside a comment of the front: it is closed before § 7, so a filled § 0–2 passes --finish and the TODO
+# of § 7 is still seen. The facts' size is stepped until the cut point lands inside one.
+for n in $(seq 40 4 140); do
+  python3 - $R/stage-a/handoff-facts.sh $n <<'PY2'
+import sys
+rows = "\n".join(f'echo "| Fact {i} | {"x" * 60} | `cmd {i}` |"' for i in range(int(sys.argv[2])))
+open(sys.argv[1], "w").write("#!/bin/sh\n" + rows + "\n")
+PY2
+  rm -f $C/cut-$n.md; $B/hub handoff --stage stage-a --n 1 --out $C/cut-$n.md > /dev/null 2>&1
+  python3 - $C/cut-$n.md <<'PY2' && { CUT=$C/cut-$n.md; break; }
+import sys
+t = open(sys.argv[1], encoding="utf-8").read(); front = t[:t.index("## 7. Lessons")]
+i = front.rfind("…cut")
+sys.exit(0 if i > 0 and front.rfind("<!--", 0, i) > front.rfind("-->", 0, i) else 1)
+PY2
+done
+[ -n "${CUT:-}" ]; check $? 0 "setup: a draft whose cut lands inside a comment (${CUT:-none})"
+if [ -n "${CUT:-}" ]; then
+  fill_012 $CUT $CUT.filled
+  $B/hub handoff --stage stage-a --finish --handoff $CUT.filled > $R/c1.out 2> $R/c1.err; check $? 0 "…filled § 0–2: --finish passes (the open comment was closed before § 7)"
+  grep -qF "$WARN" $R/c1.err; check $? 0 "…and § 7's TODO is still seen (a warning)"
+fi
+# 9b. a damaged lessons.md (not UTF-8) breaks neither the draft nor the takeover digest
+cp $L $R/lessons.good; printf '## L-009 \xff\xfe broken\n- status: proposed\n' >> $L
+rm -f $R/stage-a/handoff-facts.sh
+$B/hub handoff --stage stage-a --n 1 --out $C/bad.md > $R/d1.out 2>&1; check $? 0 "damaged lessons.md: the draft is written"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/d2.out 2>&1; check $? 0 "…and the takeover digest is built"
+grep -qF "(proposed 2, confirmed 1)" $R/d2.out; check $? 0 "…counting the readable entries"
+# 9c. a huge id is not an entry
+cp $R/lessons.good $L; { printf '## L-%s — flood\n- status: proposed\n' "$(printf '1%.0s' $(seq 1 3000))"; } >> $L
+$B/hub handoff --stage stage-a --n 1 --out $C/flood.md > $R/f1.out 2>&1; check $? 0 "huge id: the draft is written"
+grep -q 'L-1111' $C/flood.md; check $? 1 "…without the flooding entry"
+SZ=$(wc -c < $C/flood.md | tr -d ' '); [ "$SZ" -le 12288 ]; check $? 0 "…within 12 KB ($SZ bytes)"
+# 9d. code blocks: a heading or an entry inside a fence counts for nothing; counts are per entry, not per status line
+cp $R/lessons.good $L
+printf '%s\n' '' '```markdown' '## L-099 — an example entry' '- status: proposed' '```' >> $L
+python3 - $L <<'PY2'
+import sys
+p = sys.argv[1]; t = open(p, encoding="utf-8").read()
+t = t.replace("- status: proposed", "- status: proposed\n- status: confirmed: 2026-10-23 hub-2", 1)  # two status lines, one entry
+open(p, "w", encoding="utf-8").write(t)
+PY2
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/k1.out 2>&1; check $? 0 "fenced example: takeover dry run"
+grep -qF "(proposed 1, confirmed 1)" $R/k1.out; check $? 0 "…counts per entry, the fenced example and the second status line not counted"
+$B/hub handoff --stage stage-a --n 1 --out $C/fence.md > $R/k2.out 2>&1; grep -q 'L-099' $C/fence.md; check $? 1 "…and § 7 does not list the fenced example"
+python3 - $C/on3-done.md $C/fence6.md $C/fence8.md <<'PY2'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+i = t.index("## 7. Lessons")
+# § 6 quotes a § 7 heading in a code block: no warning comes from it (§ 7 itself is filled)
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "```\n## 7. Lessons\nTODO example\n```\n\n" + t[i:])
+# a fenced § 8 inside a § 7 that still holds TODO does not hide it
+open(sys.argv[3], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\n```\n## 8. Example\n```\nNew entries: TODO ids\n\n")
+PY2
+$B/hub handoff --stage stage-a --finish --handoff $C/fence6.md > $R/k3.out 2> $R/k3.err; check $? 0 "a fenced § 7 heading in § 6: --finish passes"
+grep -qF "$WARN" $R/k3.err; check $? 1 "…without a false warning"
+$B/hub handoff --stage stage-a --finish --handoff $C/fence8.md > $R/k4.out 2> $R/k4.err; check $? 0 "a fenced § 8 heading inside § 7: --finish passes"
+grep -qF "$WARN" $R/k4.err; check $? 0 "…and the TODO after it is still seen"
 exit $fail

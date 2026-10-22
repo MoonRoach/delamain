@@ -390,8 +390,9 @@ def todo_report(todos: list, width: int = 110) -> str:
         f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
 
 
-LESSON_HEAD_RE = re.compile(r"^## (L-\d+)\b\s*(?:[—–-]+\s*)?(.*)$")
+LESSON_HEAD_RE = re.compile(r"^## (L-\d{1,6})\b\s*(?:[—–-]+\s*)?(.*)$")  # a longer id is not an entry: it would flood § 7
 LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
 def lessons_enabled() -> bool:
@@ -403,15 +404,29 @@ def lessons_path(stage: str) -> Path:
     return hc.root() / stage / "lessons.md"
 
 
-def lessons_entries(stage: str) -> list:
-    """[(id, cue, status word)] of <stage>/lessons.md, in file order; [] when the file is absent or unreadable. The status
-    word is the first word of the entry's `- status:` line (proposed | confirmed | promoted | retired), "" when it has none."""
+def outside_markup(text: str) -> list:
+    """[(line number, line)] of the lines that are neither in an HTML comment nor in a fenced code block (an example of
+    a heading or an entry there is not one); line numbers are those of `text`."""
+    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.DOTALL)
+    out, fenced = [], False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if FENCE_RE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            out.append((lineno, line))
+    return out
+
+
+def lessons_entries(stage: str):
+    """[(id, cue, status word)] of <stage>/lessons.md, in file order; None when the file is absent or unreadable. The
+    status word is the first word of the entry's first `- status:` line (proposed | confirmed | promoted | retired), ""
+    when it has none. Bytes that are not UTF-8 are replaced: a damaged file must not stop a handoff or a takeover."""
     try:
-        text = lessons_path(stage).read_text(encoding="utf-8")
+        text = lessons_path(stage).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return []
+        return None
     out = []
-    for line in text.splitlines():
+    for _, line in outside_markup(text):
         if m := LESSON_HEAD_RE.match(line):
             out.append([m.group(1), m.group(2).strip(), ""])
         elif out and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
@@ -421,19 +436,17 @@ def lessons_entries(stage: str) -> list:
 
 def lessons_digest_line(stage: str) -> str:
     """The takeover digest's pointer to <stage>/lessons.md (whether or not the setting is on); "" when there is no file."""
-    path = lessons_path(stage)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    entries = lessons_entries(stage)
+    if entries is None:
         return ""
-    words = [m.group(1).lower() for line in text.splitlines() if (m := LESSON_STATUS_RE.match(line))]
+    words = [e[2] for e in entries]
     return ("Lessons of earlier shifts — read before planning; at your handoff give a verdict on each that acts in your "
-            f"shift: {path} (proposed {words.count('proposed')}, confirmed {words.count('confirmed')})")
+            f"shift: {lessons_path(stage)} (proposed {words.count('proposed')}, confirmed {words.count('confirmed')})")
 
 
 def lessons_section(stage: str) -> str:
     """§ 7 of a handoff draft, written only when the setting is on."""
-    open_ones = [e for e in lessons_entries(stage) if e[2] in ("proposed", "confirmed")]
+    open_ones = [e for e in lessons_entries(stage) or [] if e[2] in ("proposed", "confirmed")]
     listed = "; ".join(f"{i} {cue[:70]}" for i, cue, _ in open_ones[:8])
     if len(open_ones) > 8:
         listed += f"; … {len(open_ones) - 8} more"
@@ -447,11 +460,10 @@ Open lessons to judge: {listed or 'none yet'}
 
 
 def open_lessons_todos(text: str) -> list:
-    """TODO lines of § 7 of a handoff outside HTML comments ([] without a § 7). The "Open lessons to judge" line quotes
-    the lessons file, not the hub's own writing, so it is not one."""
-    text = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.DOTALL)
+    """TODO lines of § 7 of a handoff outside HTML comments and code blocks ([] without a § 7). The "Open lessons to
+    judge" line quotes the lessons file, not the hub's own writing, so it is not one."""
     found, current = [], None
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in outside_markup(text):
         if m := re.match(r"## (\d+)\.", line):
             current = int(m.group(1))
         if current == 7 and re.search(r"\bTODO\b", line) and not line.startswith("Open lessons to judge"):
@@ -1662,7 +1674,10 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
     if len(body.encode("utf-8")) > 12 * 1024:
         if lessons:  # the cut falls on the front of the draft: § 7 and the journal comment after it are kept whole
             room = 12 * 1024 - 200 - len((lessons + tail).encode("utf-8"))
-            body = cut(body[:-len(lessons + tail)], room, "journal and lock/roles/agent status") + "\n\n" + lessons + tail
+            front = cut(body[:-len(lessons + tail)], room, "journal and lock/roles/agent status")
+            if front.rfind("<!--") > front.rfind("-->"):  # the cut fell inside a comment: close it before § 7
+                front += "\n-->"
+            body = front + "\n\n" + lessons + tail
         else:
             body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
     hc.atomic_write(out, body)

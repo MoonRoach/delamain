@@ -576,7 +576,10 @@ mk_dhub sdr; FX jline sdr 16 "[exec-1] DONE a line for the dry run"
 WD2=$R/w-sdr; (cd "$WD2" && FAKE_HOLD=60 "$B/agent" spawn --stage sdr --role w1 --cwd "$WD2" --model haiku --brief "$WD2/b.md" > "$WD2/spawn-w1.out" 2>&1)
 PD=$(python3 -c "import json;print(json.load(open('$R/sdr/agents/w1/meta.json'))['pid'])"); kill -KILL -- -$PD; for i in $(seq 1 40); do kill -0 $PD 2>/dev/null || break; sleep 0.25; done
 $B/ask add --stage sdr --blocks x --default "plan it" --due 2020-01-01T10:00 "overdue in the dry run" > /dev/null
-before=$(snap "$R"); WD run --dry-run --stage sdr > "$R/dry.out" 2>&1; check $? 0 "dry run: exits 0"; after=$(snap "$R")
+n0=$(nl "$R/claude.log"); before=$(snap "$R"); WD run --dry-run --stage sdr > "$R/dry.out" 2>&1; check $? 0 "dry run: exits 0"
+# R7 reads `claude agents --json` even in a dry run: the fake logs that call, and only reads are allowed to show up there
+check "$(tail -n +$((n0 + 1)) "$R/claude.log" | python3 -c 'import json,sys; print(sum(json.loads(l)["argv"][:1] != ["agents"] for l in sys.stdin if l.strip()))')" 0 "dry run: the only claude calls are reads (agents --json)"
+head -n "$n0" "$R/claude.log" > "$R/claude.log.tmp"; mv "$R/claude.log.tmp" "$R/claude.log"; after=$(snap "$R")
 check "$after" "$before" "dry run: not one file of the home changed (journal, state, markers, agents, notifications)"
 grep -q "^\[plan\] sdr: would write \`EXIT w1: killed (no result)\`" "$R/dry.out"; check $? 0 "dry run: plans the EXIT line (R1)"
 grep -q "^\[plan\] sdr: journal: @hub OVERDUE .* default: plan it" "$R/dry.out"; check $? 0 "dry run: plans the overdue line (R2)"

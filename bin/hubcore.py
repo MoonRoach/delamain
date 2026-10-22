@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -122,9 +123,9 @@ BOOL_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_DESKTOP_CLI_HANDOFF")
 # repository must not set any of it; one job serves one hub home, so every tool sharing the home must agree.
 HUB_WIDE_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_EVERY", "AGENT_HUB_WATCHDOG_WAKE_AFTER",
                   "AGENT_HUB_WATCHDOG_BACKOFF_MAX", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
-                  "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
+                  "AGENT_HUB_WATCHDOG_REAP", "AGENT_HUB_NOTIFY_LOCAL", "AGENT_HUB_NOTIFY_CMD", "AGENT_HUB_SPAWN_HOLD_LOAD", "AGENT_HUB_SPAWN_HOLD")
 BOOL_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB_WATCHDOG_API_ERROR",
-              "AGENT_HUB_NOTIFY_LOCAL")
+              "AGENT_HUB_WATCHDOG_REAP", "AGENT_HUB_NOTIFY_LOCAL")
 # Settings whose config.json value may be a JSON list or object; setting() returns it as a JSON string and
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
@@ -516,6 +517,46 @@ def known_homes() -> list:
         if labels[i] and labels.count(labels[i]) > 1:  # two checkouts called alike: the paths tell them apart
             labels[i] = _tilde(repo or path)
     return [KnownHome(p, labels[i], layer, repo) for i, (p, layer, repo) in enumerate(seen.values())]
+
+
+def known_home_paths_strict() -> list:
+    """The paths of every hub home on this machine, for a caller that must not miss one (the watchdog's R7); known_homes()
+    stays as it is for agent-top. The same sources (the resolved home first, even when it does not exist yet, then
+    ~/agent-hub, the legacy home, $AGENT_HUB_HOME and the registry of homes), but each path is looked at with stat():
+    "does not exist" leaves a path out, any other failure (a parent that cannot be searched, a loop; Path.is_dir() answers
+    False to every OSError) raises OSError, and a registry that cannot be read or has an entry of the wrong shape raises
+    Failure. Deduplicated by real path."""
+    cands = [(home().path, True), (user_home(), False), (legacy_home(), False)]
+    raw = os.environ.get(HOME_KEY)
+    if raw:
+        cands.append((Path(raw).expanduser().absolute(), False))
+    missing = object()  # only an absent registry says "no registered homes"; a file that holds `null` is not a registry
+    try:
+        data = json.loads(registry_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = missing
+    except (OSError, ValueError) as e:
+        raise Failure(f"the registry of homes cannot be read ({type(e).__name__}): {registry_path()}") from None
+    if data is not missing:
+        ents = data.get("homes") if isinstance(data, dict) else None
+        if not isinstance(ents, list) or not all(isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] for e in ents):
+            raise Failure(f"not a registry of homes: {registry_path()}")
+        cands += [(Path(e["path"]), False) for e in ents]
+    out, seen = [], set()
+    for path, always in cands:
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            if not always:
+                continue
+            st = None
+        if st is not None and not stat.S_ISDIR(st.st_mode) and not always:
+            continue
+        real = _real(path)
+        if real not in seen:
+            seen.add(real)
+            out.append(path)
+    return out
 
 
 def stage_in_known_homes(stage: str) -> list:

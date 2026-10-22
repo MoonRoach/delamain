@@ -111,7 +111,9 @@ target state is already there is skipped as "already done", so a re-run finishes
      session that is not busy is stopped (`claude stop <id>`, bounded; its history stays, `claude rm` is never run) and
      the output, the digest and the journal start line say so. A busy one, a Desktop session (archive it in Desktop; a
      Desktop hub does it with mcp__ccd_session_mgmt__archive_session), a terminal session, the session that runs the
-     takeover and a stop that failed keep running: one ATTENTION line, also in the digest, names it and how to stop it.
+     takeover and a stop that failed keep running: one ATTENTION line, also in the digest, names it and how to stop it
+     (the watchdog's R7 stops a retired hub's background session that stays quiet; while this command runs it keeps
+     <stage>/.takeover-<pid>.json naming the sessions it concerns, which R7 never stops).
      A CLI that does not answer is silent. A takeover by the registered hub's own number — the same shift taken again —
      writes "re-took shift #N (replaces <id8>), handoff by #M" and keeps one link in a lock's reason, not the nest of
      the earlier takeovers.
@@ -1069,13 +1071,44 @@ def cmd_start(a) -> int:
     return cmd_takeover(a)
 
 
-def cmd_takeover(a) -> int:
+TAKEOVER_MARKER = ".takeover-{pid}.json"  # bin/watchdog (R7) reads <stage>/.takeover-*.json
+
+
+@contextlib.contextmanager
+def takeover_marker(a):
+    """While a takeover or a start runs, <stage>/.takeover-<pid>.json names the sessions it concerns: the one that runs
+    the command (the host's own id) and the one it registers (--session). The watchdog's R7 never stops a session named
+    there, so a retired hub that takes the shift again and is quiet for a while (a long project step) is not stopped under
+    its own command. Best effort: a marker that cannot be written changes nothing; a dry run writes none."""
+    path = None
+    if not getattr(a, "dry_run", False):
+        try:
+            d = hc.root() / hc.check_stage(a.stage)
+            ids = sorted({x for x in (hc.session_id(), (a.session or "").strip()) if x and x != "self"})
+            if d.is_dir() and ids:
+                path = d / TAKEOVER_MARKER.format(pid=os.getpid())
+                hc.atomic_write(path, json.dumps({"pid": os.getpid(), "at": hc.now().isoformat(timespec="seconds"),
+                                                  "sessions": ids}) + "\n")
+        except (OSError, hc.Failure, hc.UsageError):
+            path = None
     try:
-        return locked_takeover(a)
-    except OSError as e:
-        if getattr(a, "desktop_request", None):
-            raise hc.Failure(f"desktop stage-home access/takeover failed: {e}; takeover is not verified") from None
-        raise
+        yield
+    finally:
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def cmd_takeover(a) -> int:
+    with takeover_marker(a):
+        try:
+            return locked_takeover(a)
+        except OSError as e:
+            if getattr(a, "desktop_request", None):
+                raise hc.Failure(f"desktop stage-home access/takeover failed: {e}; takeover is not verified") from None
+            raise
 
 
 def native_refresh_candidate(pending, current, session, n) -> bool:

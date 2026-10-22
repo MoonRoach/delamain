@@ -58,6 +58,7 @@ session runs; locks are not released. Flags and the rest: `references/stage-life
 Closing a stage whose hub is no longer needed (the owner decides; without it, ask): `hub close --stage <S> --why "<one line>"`
 (`--dry-run` first; exit 2 while an agent runs or a question waits, `--force` only on the owner's word). Read
 `references/stage-lifecycle.md` (*Closing a stage*) before running it.
+When the stage's work is finished and the owner has no more tasks for it, run `roles retire hub --note "<why>"` and end the turn: the watchdog (R7) stops the background session once it is idle and quiet (a busy one is only reported to the log: finish or cancel your background commands before you end the turn), so do not ask the owner to `claude stop` it.
 
 ## Waiting
 

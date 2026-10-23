@@ -4,6 +4,7 @@ import copy
 import contextlib
 import io
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import sys
@@ -225,8 +226,7 @@ class ObservationControls(state_controls.ContextStateWrites):
 
 
     def test_real_deny_and_stop_bypass_estimator_with_exact_stdout_state_writes(self):
-        # A failing sentinel stands in for arbitrary replay latency. Zero calls
-        # also proves a slow/blocking estimator cannot hold either gate response.
+        # Direct bypass is separate from the concurrent observer-lock control below.
         for event, tokens in (("PreToolUse", 550000), ("Stop", 350000)):
             with self.subTest(event=event):
                 os.environ[KEY] = "off"
@@ -262,6 +262,124 @@ class ObservationControls(state_controls.ContextStateWrites):
                         self.assertEqual(self.state()["stop_continuations"], 1)
                     samples.append((raw, self.record.read_bytes(), writes.call_count))
                 self.assertEqual(samples[0], samples[1])
+
+    def test_main_gates_finish_while_optional_observer_io_is_held(self):
+        # Fork only owned fixture processes: actual main(), actual file mutex,
+        # and an indefinite observer barrier released only after a gate finishes.
+        ctx = multiprocessing.get_context("fork")
+
+        def invoke(event):
+            data = dict(session_id="own-session", cwd=str(self.cwd), hook_event_name=event,
+                        transcript_path=str(self.transcript), tool_name="Bash",
+                        tool_input={"command": "echo ordinary-work"}, tool_use_id="call",
+                        tool_response="tail", last_assistant_message=context_budget.READY_MARKER)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), patch("sys.stdin", io.StringIO(json.dumps(data))), \
+                 patch.object(self.hc, "atomic_write", wraps=self.hc.atomic_write) as writes, \
+                 patch.object(context_budget, "metric_age", return_value=1.0):
+                context_budget.main()
+            return output.getvalue(), self.record.read_bytes(), writes.call_count
+
+        for event, tokens in (("PreToolUse", 550000), ("Stop", 350000)):
+            for phase in ("estimate", "eligibility", "registry", "resolve", "diagnostic"):
+                with self.subTest(event=event, phase=phase):
+                    os.environ[KEY] = "off"
+                    self.rollout(tokens)
+                    self.record.unlink(missing_ok=True)
+                    self.hook(event="UserPromptSubmit", prompt="owner")
+                    initial = self.record.read_bytes()
+                    baseline_observer = invoke("PostToolUse")
+                    baseline_gate = invoke(event)
+                    decision = json.loads(baseline_gate[0])
+                    if event == "PreToolUse":
+                        self.assertTrue(self.denied(decision))
+                    else:
+                        self.assertEqual(decision["decision"], "block")
+                        self.assertTrue(decision["reason"].startswith(context_budget.CONTINUATION_MARKER))
+                    self.record.write_bytes(initial)
+                    os.environ[KEY] = "on"
+                    entered, release, policy_done, gate_started = (ctx.Event() for _ in range(4))
+                    observer_recv, observer_send = ctx.Pipe(duplex=False)
+                    gate_recv, gate_send = ctx.Pipe(duplex=False)
+                    children = []
+
+                    def hold():
+                        entered.set()
+                        release.wait()
+
+                    def observer():
+                        provider = context_budget.handle_provider_policy
+                        setting = self.hc.setting
+                        resolve = context_budget.resolve_transcript
+                        estimate = accounting.estimate
+                        diagnostic = context_budget.diagnostic
+                        ap = context_budget.autopilot()
+                        registry = ap.hub_stage_of
+
+                        def policy(*args, **kwargs):
+                            result = provider(*args, **kwargs)
+                            policy_done.set()
+                            return result
+
+                        def optional(fn, selected):
+                            def call(*args, **kwargs):
+                                if selected(*args, **kwargs):
+                                    hold()
+                                return fn(*args, **kwargs)
+                            return call
+
+                        with patch.object(context_budget, "handle_provider_policy", side_effect=policy), \
+                             patch.object(self.hc, "setting", side_effect=optional(setting,
+                                 lambda name, *a, **kw: phase == "eligibility" and name == KEY)), \
+                             patch.object(ap, "hub_stage_of", side_effect=optional(registry,
+                                 lambda *a, **kw: phase == "registry" and policy_done.is_set())), \
+                             patch.object(context_budget, "resolve_transcript", side_effect=optional(resolve,
+                                 lambda *a, **kw: phase == "resolve" and policy_done.is_set())), \
+                             patch.object(accounting, "estimate", side_effect=optional(estimate,
+                                 lambda *a, **kw: phase == "estimate")), \
+                             patch.object(context_budget, "diagnostic", side_effect=optional(diagnostic,
+                                 lambda *a, **kw: phase == "diagnostic" and "estimate_state" in kw)):
+                            observer_send.send(invoke("PostToolUse"))
+
+                    def gate():
+                        gate_started.set()
+                        gate_send.send(invoke(event))
+
+                    try:
+                        child = ctx.Process(target=observer)
+                        children.append(child)
+                        child.start()
+                        self.assertTrue(entered.wait(5), "observer did not reach owned IO barrier")
+                        self.assertTrue(policy_done.is_set(), "optional IO preceded provider policy")
+                        self.assertEqual(self.record.read_bytes(), baseline_observer[1])
+                        child = ctx.Process(target=gate)
+                        children.append(child)
+                        child.start()
+                        self.assertTrue(gate_started.wait(5), "gate child did not start")
+                        self.assertTrue(gate_recv.poll(5), "gate waited for optional observer IO")
+                        self.assertEqual(gate_recv.recv(), baseline_gate)
+                        self.assertFalse(release.is_set())
+                        self.assertTrue(children[0].is_alive(), "observer escaped owned IO barrier")
+                        release.set()
+                        self.assertTrue(observer_recv.poll(5), "observer did not finish after release")
+                        observed = observer_recv.recv()
+                        self.assertEqual(self.policy_output(json.loads(observed[0])),
+                                         json.loads(baseline_observer[0]) if baseline_observer[0].strip() else {})
+                        self.assertEqual(observed[1], baseline_gate[1], "observer rewrote later gate state")
+                        self.assertEqual(observed[2], baseline_observer[2])
+                        for child in children:
+                            child.join(5)
+                            self.assertEqual(child.exitcode, 0)
+                    finally:
+                        release.set()
+                        for child in children:
+                            child.join(5)
+                            if child.is_alive():
+                                child.terminate()
+                                child.join(5)
+                            self.assertFalse(child.is_alive(), "owned probe child was not joined")
+                        for connection in (observer_recv, observer_send, gate_recv, gate_send):
+                            connection.close()
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ import shlex
 import shutil
 import sys
 import time
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -780,10 +780,9 @@ def main() -> None:
         key = hashlib.sha256(key.encode()).hexdigest()
     raw_state = hc.setting("AGENT_HUB_STATE_DIR")
     state_dir = (Path(raw_state).expanduser() if raw_state else hc.root() / ".state") / "context-budget"
-    # Serialize read/modify/reserve with atomic replacement. Never hold the stage mutex across a hook.
+    # Serialize only provider-policy read/modify/reserve, never optional observation IO.
     try:
-        with budget_mutex(hc, state_dir, key):
-            handle(data, hc, state_dir, key)
+        handle(data, hc, state_dir, key, policy_mutex=budget_mutex(hc, state_dir, key))
     except OSError as error:
         diagnostic(hc, data, None, "failure", reason="state_io", error_type=type(error).__name__)
         if event != "Stop":
@@ -819,26 +818,28 @@ def context_estimate_advisory(data, hc, path):
         return ""
 
 
-def handle(data, hc, state_dir, key, writable=True):
-    """Enrich prompt/post-tool advisories only; gates never wait for estimation."""
+def handle(data, hc, state_dir, key, writable=True, policy_mutex=None):
+    """Finish atomic policy before any optional eligibility, replay or diagnostic IO."""
+    output = io.StringIO()
+    try:
+        with policy_mutex if policy_mutex is not None else nullcontext(), redirect_stdout(output):
+            handle_provider_policy(data, hc, state_dir, key, writable)
+    except BaseException:
+        print(output.getvalue(), end="")
+        raise
+    original = output.getvalue()
     event = data.get("hook_event_name")
     if event not in ("UserPromptSubmit", "PostToolUse"):
-        return handle_provider_policy(data, hc, state_dir, key, writable)
+        print(original, end="")
+        return
     try:
         enabled = (not data.get("agent_id") and
                    (hc.setting("AGENT_HUB_CODEX_CONTEXT_ESTIMATE") or "off").strip().lower() in ("on", "true", "1", "yes"))
     except Exception:
         enabled = False
     if not enabled:
-        return handle_provider_policy(data, hc, state_dir, key, writable)
-    output = io.StringIO()
-    try:
-        with redirect_stdout(output):
-            handle_provider_policy(data, hc, state_dir, key, writable)
-    except BaseException:
-        print(output.getvalue(), end="")
-        raise
-    original = output.getvalue()
+        print(original, end="")
+        return
     enriched = original
     try:
         note = context_estimate_advisory(data, hc, resolve_transcript(data)[0])

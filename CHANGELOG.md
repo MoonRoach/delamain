@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.17 — 2026-10-23
+
 - **Handoff lessons cannot be waved away.** With `AGENT_HUB_HANDOFF_LESSONS` on, a § 7 that names neither a lesson
   id nor `none: <reason>` (a "lessons module not used" line copied from an earlier handoff, seen on a live stage on
   23.10), or a handoff without § 7 at all, is an ATTENTION line on `hub handoff --finish`, `hub succeed --handoff` and,

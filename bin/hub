@@ -137,9 +137,10 @@ handoff --finish is the last step of writing one: it checks the draft (--handoff
 (exit 2, the lines listed) while § 0–2 — the successor's first steps, the state, the queue — still hold TODO;
 --allow-todo lets it through and says what stays open. `hub succeed --handoff` makes the same check before it starts
 a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
-With AGENT_HUB_HANDOFF_LESSONS on (hub home), the draft also has an optional § 7, "Lessons of this shift" (entries of
-<stage>/lessons.md, verdicts on earlier ones); a § 7 still holding TODO is an ATTENTION line on --finish and
-`succeed --handoff`, never a refusal, and the takeover digest points at lessons.md whenever the file exists.
+With AGENT_HUB_HANDOFF_LESSONS on (hub home), the draft also has a § 7, "Lessons of this shift" (entries of
+<stage>/lessons.md, verdicts on earlier ones); a § 7 that is missing, still holds TODO or names neither a lesson id
+nor "none: <reason>" is an ATTENTION line on --finish, `succeed --handoff` and takeover, never a refusal, and the
+takeover digest points at lessons.md whenever the file exists.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd (default: the
@@ -469,7 +470,10 @@ def lessons_section(stage: str) -> str:
     if len(open_ones) > 8:
         listed += f"; … {len(open_ones) - 8} more"
     return f"""## 7. Lessons of this shift
-<!-- Optional module (AGENT_HUB_HANDOFF_LESSONS). Procedure: the handoff skill, references/lessons.md. -->
+<!-- AGENT_HUB_HANDOFF_LESSONS is on in this hub home: § 7 is required here, not an unused module. -->
+The lessons module is ON in this hub home: look back at your shift before handing over (procedure: the handoff
+skill, references/lessons.md). For each open lesson below that acted in your shift, append a `- verdict:` line to it in
+lessons.md; then write 0–3 new entries there, each with evidence. "No lesson" is a valid answer, a skipped look is not.
 New entries in `{lessons_path(stage)}`: TODO ids (L-…), or "none: <reason>".
 Verdicts on lessons that acted this shift: TODO "L-… helped|hurt|no effect|confounded — evidence", or "none".
 Open lessons to judge: {listed or 'none yet'}
@@ -489,9 +493,55 @@ def open_lessons_todos(text: str) -> list:
     return found
 
 
+LESSON_ID_RE = re.compile(r"\bL-\d{1,6}\b")
+LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
+NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
+MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")
+
+
+def lesson_answer(line: str) -> bool:
+    """Whether one line of § 7 answers it: a lesson id, or `none:` with a reason on the same line that is not a
+    placeholder (`none: n/a`, `none: TBD`, a bare `none:`)."""
+    if LESSON_ID_RE.search(line):
+        return True
+    m = LESSON_NONE_RE.search(line)
+    return bool(m) and m.group(1).strip().strip(".").strip().lower() not in NONE_PLACEHOLDERS
+
+
+def lessons_problem(text: str) -> str:
+    """What is wrong with § 7 of a handoff while the setting is on, "" when nothing: no § 7 at all (the handoff was not
+    written from this version's draft), TODO still in it, or no answer in it — neither a lesson id nor "none: <reason>"
+    (a line such as "module not used" copied from an older handoff is not one). The "Open lessons to judge" line
+    quotes the lessons file, so it answers nothing."""
+    lines, current, seen = [], None, False
+    for _, line in outside_markup(text):
+        if m := re.match(r"## (\d+)\.", line):
+            current = int(m.group(1))
+            seen = seen or current == 7
+            continue
+        if current == 7 and not MD_PREFIX_RE.sub("", line).startswith("Open lessons to judge"):  # quoted or indented too
+            lines.append(line)
+    if not seen:
+        return "the handoff has no § 7 (lessons) — it was not written from `hub handoff`'s draft"
+    if open_lessons_todos(text):
+        return "§ 7 (lessons) still holds TODO"
+    if not any(lesson_answer(line) for line in lines):
+        return "§ 7 (lessons) names no lesson id (L-…) and no \"none: <reason>\" — the module is on, so a look back is due"
+    return ""
+
+
+def lessons_attention(text: str) -> str:
+    """The ATTENTION line of `--finish` / `succeed --handoff` for § 7, "" when the setting is off or § 7 is answered."""
+    if not lessons_enabled():
+        return ""
+    problem = lessons_problem(text)
+    return f'ATTENTION: {problem} — write 0–3 lessons with evidence or "none: <reason>"' if problem else ""
+
+
 def check_handoff_todos(handoff, allow: bool) -> None:
     """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open.
-    Whatever the verdict, a § 7 (lessons) that still holds TODO is only a warning, and only while the setting is on."""
+    Whatever the verdict, a § 7 (lessons) that is missing, still holds TODO or answers nothing is only a warning, and
+    only while the setting is on."""
     try:
         text = Path(handoff).read_text(encoding="utf-8")
     except OSError as e:
@@ -503,9 +553,8 @@ def check_handoff_todos(handoff, allow: bool) -> None:
                                 f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
         print(f"ATTENTION: --allow-todo: {len(todos)} TODO line(s) in § 0–2 of {handoff} stay open — the successor "
               f"will rebuild that state from the journal:\n{todo_report(todos)}", file=sys.stderr)
-    if lessons_enabled() and open_lessons_todos(text):
-        print('ATTENTION: § 7 (lessons) still holds TODO — write 0–3 lessons with evidence or "none: <reason>"',
-              file=sys.stderr)
+    if attention := lessons_attention(text):
+        print(attention, file=sys.stderr)
 
 
 def find_local_by_cli(cli_sid: str):
@@ -1331,6 +1380,9 @@ def _cmd_takeover(a) -> int:
         warns.append(f"the handoff {handoff.name} still has {len(todos)} TODO line(s) in § 0–2 (its author did not finish "
                      f"it): rebuild that state from the journal, `ask list` and `lock list` before trusting it — first "
                      f"at line {todos[0][0]}: {todos[0][1][:90]}")
+    if handoff and lessons_enabled() and (problem := lessons_problem(handoff.read_text(encoding="utf-8"))):
+        warns.append(f"the handoff {handoff.name}: {problem}. If its author still runs, ask it to fill § 7 before it "
+                     "ends: the lessons of its shift are lost with its context")
     if engines.selected() != "codex":
         idle = hc.idle_compaction_warning(Path.cwd())
         if idle:

@@ -137,6 +137,9 @@ handoff --finish is the last step of writing one: it checks the draft (--handoff
 (exit 2, the lines listed) while § 0–2 — the successor's first steps, the state, the queue — still hold TODO;
 --allow-todo lets it through and says what stays open. `hub succeed --handoff` makes the same check before it starts
 a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
+With AGENT_HUB_HANDOFF_LESSONS on (hub home), the draft also has an optional § 7, "Lessons of this shift" (entries of
+<stage>/lessons.md, verdicts on earlier ones); a § 7 still holding TODO is an ATTENTION line on --finish and
+`succeed --handoff`, never a refusal, and the takeover digest points at lessons.md whenever the file exists.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd (default: the
@@ -387,20 +390,122 @@ def todo_report(todos: list, width: int = 110) -> str:
         f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
 
 
-def check_handoff_todos(handoff, allow: bool) -> None:
-    """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open."""
+LESSON_HEAD_RE = re.compile(r"^## (L-\d{1,6})\b\s*(?:[—–-]+\s*)?(.*)$")  # a longer id is not an entry: it would flood § 7
+LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def lessons_enabled() -> bool:
+    """AGENT_HUB_HANDOFF_LESSONS (hub home only): the optional § 7 of a handoff, "lessons of this shift"."""
+    return hc.truthy(hc.setting("AGENT_HUB_HANDOFF_LESSONS"))
+
+
+def lessons_path(stage: str) -> Path:
+    return hc.root() / stage / "lessons.md"
+
+
+def outside_markup(text: str) -> list:
+    """[(line number, visible text)] of the lines outside fenced code blocks, with HTML comments blanked out (an example
+    of a heading or an entry there is not one); line numbers are those of `text`. One pass over the lines: a fence
+    closes only on the same character, at least as long; a comment may span lines."""
+    out, fence, in_comment = [], None, False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if fence:
+            m = FENCE_RE.match(line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+                fence = None
+            continue
+        if not in_comment and (m := FENCE_RE.match(line)):
+            fence = m.group(1)
+            continue
+        visible, pos = [], 0
+        while pos <= len(line):
+            if in_comment:
+                end = line.find("-->", pos)
+                if end < 0:
+                    break
+                in_comment, pos = False, end + 3
+            else:
+                start = line.find("<!--", pos)
+                visible.append(line[pos:] if start < 0 else line[pos:start])
+                if start < 0:
+                    break
+                in_comment, pos = True, start + 4
+        out.append((lineno, "".join(visible)))
+    return out
+
+
+def lessons_entries(stage: str):
+    """[(id, cue, status word)] of <stage>/lessons.md, in file order; None when the file is absent or unreadable. The
+    status word is the first word of the entry's first `- status:` line (proposed | confirmed | promoted | retired), ""
+    when it has none. Bytes that are not UTF-8 are replaced: a damaged file must not stop a handoff or a takeover."""
     try:
-        todos = open_todos(Path(handoff).read_text(encoding="utf-8"))
+        text = lessons_path(stage).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    out = []
+    for _, line in outside_markup(text):
+        if m := LESSON_HEAD_RE.match(line):
+            out.append([m.group(1), m.group(2).strip(), ""])
+        elif out and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
+            out[-1][2] = m.group(1).lower()
+    return [tuple(e) for e in out]
+
+
+def lessons_digest_line(stage: str) -> str:
+    """The takeover digest's pointer to <stage>/lessons.md (whether or not the setting is on); "" when there is no file."""
+    entries = lessons_entries(stage)
+    if entries is None:
+        return ""
+    words = [e[2] for e in entries]
+    return ("Lessons of earlier shifts — read before planning; at your handoff give a verdict on each that acts in your "
+            f"shift: {lessons_path(stage)} (proposed {words.count('proposed')}, confirmed {words.count('confirmed')})")
+
+
+def lessons_section(stage: str) -> str:
+    """§ 7 of a handoff draft, written only when the setting is on."""
+    open_ones = [e for e in lessons_entries(stage) or [] if e[2] in ("proposed", "confirmed")]
+    listed = "; ".join(f"{i} {cue[:70]}" for i, cue, _ in open_ones[:8])
+    if len(open_ones) > 8:
+        listed += f"; … {len(open_ones) - 8} more"
+    return f"""## 7. Lessons of this shift
+<!-- Optional module (AGENT_HUB_HANDOFF_LESSONS). Procedure: the handoff skill, references/lessons.md. -->
+New entries in `{lessons_path(stage)}`: TODO ids (L-…), or "none: <reason>".
+Verdicts on lessons that acted this shift: TODO "L-… helped|hurt|no effect|confounded — evidence", or "none".
+Open lessons to judge: {listed or 'none yet'}
+
+"""
+
+
+def open_lessons_todos(text: str) -> list:
+    """TODO lines of § 7 of a handoff outside HTML comments and code blocks ([] without a § 7). The "Open lessons to
+    judge" line quotes the lessons file, not the hub's own writing, so it is not one."""
+    found, current = [], None
+    for lineno, line in outside_markup(text):
+        if m := re.match(r"## (\d+)\.", line):
+            current = int(m.group(1))
+        if current == 7 and re.search(r"\bTODO\b", line) and not line.startswith("Open lessons to judge"):
+            found.append((lineno, line.strip()))
+    return found
+
+
+def check_handoff_todos(handoff, allow: bool) -> None:
+    """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open.
+    Whatever the verdict, a § 7 (lessons) that still holds TODO is only a warning, and only while the setting is on."""
+    try:
+        text = Path(handoff).read_text(encoding="utf-8")
     except OSError as e:
         raise hc.Failure(f"cannot read the handoff {handoff}: {e}") from None
-    if not todos:
-        return
-    if allow:
+    todos = open_todos(text)
+    if todos:
+        if not allow:
+            raise hc.UsageError(f"{handoff}: § 0–2 still hold {len(todos)} TODO line(s) — the successor starts from them, so "
+                                f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
         print(f"ATTENTION: --allow-todo: {len(todos)} TODO line(s) in § 0–2 of {handoff} stay open — the successor "
               f"will rebuild that state from the journal:\n{todo_report(todos)}", file=sys.stderr)
-        return
-    raise hc.UsageError(f"{handoff}: § 0–2 still hold {len(todos)} TODO line(s) — the successor starts from them, so "
-                        f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
+    if lessons_enabled() and open_lessons_todos(text):
+        print('ATTENTION: § 7 (lessons) still holds TODO — write 0–3 lessons with evidence or "none: <reason>"',
+              file=sys.stderr)
 
 
 def find_local_by_cli(cli_sid: str):
@@ -710,6 +815,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
+        (lessons_digest_line(stage), 260 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 260 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
         (pace_digest(stage), 480, "agent-top --once"),
         (f"First jwait ({wait_procedure()}; --since = handoff time):\n"
@@ -1576,13 +1682,22 @@ TODO: questions asked in chat without a record — `ask add` first, then their i
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.
 
-<!-- Last [{tag}] journal lines (for reference, delete when filling in):
+"""
+    tail = f"""<!-- Last [{tag}] journal lines (for reference, delete when filling in):
 {chr(10).join(own_lines[-6:]) or '—'}
 -->
 """
-    size = len(body.encode("utf-8"))
-    if size > 12 * 1024:
-        body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
+    lessons = lessons_section(stage) if lessons_enabled() else ""
+    body += lessons + tail
+    if len(body.encode("utf-8")) > 12 * 1024:
+        if lessons:  # the cut falls on the front of the draft: § 7 and the journal comment after it are kept whole
+            room = 12 * 1024 - 200 - len((lessons + tail).encode("utf-8"))
+            front = cut(body[:-len(lessons + tail)], room, "journal and lock/roles/agent status")
+            if front.rfind("<!--") > front.rfind("-->"):  # the cut fell inside a comment: close it before § 7
+                front += "\n-->"
+            body = front + "\n\n" + lessons + tail
+        else:
+            body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
     hc.atomic_write(out, body)
     print(f"draft: {out} ({len(body.encode('utf-8'))} bytes); TODO to fill: "
           f"{body.count('TODO')}. Nothing released: the successor takes the locks with `hub takeover`.")

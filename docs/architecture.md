@@ -146,6 +146,19 @@ Status words the hub waits for: `MERGED`, `STOP`, `DONE`, `BLOCKED`, `QUESTION`,
 prints `AWAITING ANSWER`. `@tag` addresses a line to a role. A tag `T/sub` is a sub-tag of `T`: the caller's own tag
 and its sub-tags never wake its own `jwait`.
 
+**Lesson entry** (`<stage>/lessons.md`, written by hand by the hub when `AGENT_HUB_HANDOFF_LESSONS` is on; kept across
+handoffs; procedure and rules in `skills/handoff/references/lessons.md`):
+
+```markdown
+## L-001 — when the successor reviews a change that touches migrations
+- status: proposed        (proposed | confirmed: DATE hub-N | promoted: <file> DATE (ask id) | retired: DATE hub-N — reason)
+- by: hub-3, 2026-10-22
+- lesson: one or two sentences, an instruction the next hub can follow
+- evidence: the moment it rests on — a journal line (time + tag), an MR/PR, an ask id, a session id
+- confidence: low | medium | high
+- verdict: hub-4 2026-10-23 helped — evidence     (appended by later shifts; repeatable)
+```
+
 **Question register entry** (`questions.md`, kept by `ask`):
 
 ```markdown

@@ -145,6 +145,10 @@ JSON_KEYS += ("AGENT_HUB_STAGE_ENGINES",)
 # The bundled Antigravity reviewer (bin/agy-review): which agy to run, its model and the quota floor. Hub home only: a
 # repository must not choose the executable the hub starts.
 HUB_WIDE_KEYS += ("AGENT_HUB_AGY_BIN", "AGENT_HUB_AGY_REVIEW_MODEL", "AGENT_HUB_AGY_REVIEW_MIN_LEFT")
+# Lessons of the shift (`hub handoff` § 7, skills/handoff/references/lessons.md): the user's own discipline, so a cloned
+# repository must not switch it; hub home only.
+HUB_WIDE_KEYS += ("AGENT_HUB_HANDOFF_LESSONS",)
+BOOL_KEYS += ("AGENT_HUB_HANDOFF_LESSONS",)
 
 
 # ---------------------------------------------------------------- the hub home

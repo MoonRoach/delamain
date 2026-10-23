@@ -65,13 +65,14 @@ import copy
 import json
 import fcntl
 import hashlib
+import io
 import os
 import re
 import shlex
 import shutil
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -789,7 +790,71 @@ def main() -> None:
             handle(data, hc, state_dir, key, writable=False)
 
 
+def context_estimate_advisory(data, hc, path):
+    """Opt-in enrichment only: no budget/authority/state input comes from here."""
+    if data.get("agent_id"):
+        return ""
+    eligible = False
+    try:
+        if (hc.setting("AGENT_HUB_CODEX_CONTEXT_ESTIMATE") or "off").strip().lower() not in ("on", "true", "1", "yes"):
+            return ""
+        ap = autopilot()
+        stage = ap.hub_stage_of(str(data.get("session_id") or "")) if ap else None
+        if not stage or not codex_hook_identity(data, ap, hc):
+            return ""
+        eligible = True
+        from codex_context_accounting import estimate
+        fields = estimate(path, data.get("session_id"), data if data.get("hook_event_name") == "PostToolUse" else None)
+        diagnostic(hc, data, stage, "observation", **fields)
+        if fields["estimate_state"] == "unknown":
+            return " Experimental Codex context estimate: unknown (" + fields["estimate_reason"] + ")."
+        return (f" Experimental Codex context estimate for persisted history: "
+                f"{fields['estimate_lower_tokens']:,}–{fields['estimate_upper_tokens']:,} tokens "
+                "(heuristic range, not guaranteed tokenizer bounds or measured provider usage). "
+                "This observation does not change handoff policy or establish headroom.")
+    except Exception:  # observational failures must not suppress provider policy
+        if eligible:
+            diagnostic(hc, data, stage, "observation", estimate_state="unknown", estimate_reason="unreadable_history")
+            return " Experimental Codex context estimate: unknown (unreadable_history)."
+        return ""
+
+
 def handle(data, hc, state_dir, key, writable=True):
+    """Enrich prompt/post-tool advisories only; gates never wait for estimation."""
+    event = data.get("hook_event_name")
+    if event not in ("UserPromptSubmit", "PostToolUse"):
+        return handle_provider_policy(data, hc, state_dir, key, writable)
+    try:
+        enabled = (not data.get("agent_id") and
+                   (hc.setting("AGENT_HUB_CODEX_CONTEXT_ESTIMATE") or "off").strip().lower() in ("on", "true", "1", "yes"))
+    except Exception:
+        enabled = False
+    if not enabled:
+        return handle_provider_policy(data, hc, state_dir, key, writable)
+    output = io.StringIO()
+    try:
+        with redirect_stdout(output):
+            handle_provider_policy(data, hc, state_dir, key, writable)
+    except BaseException:
+        print(output.getvalue(), end="")
+        raise
+    original = output.getvalue()
+    enriched = original
+    try:
+        note = context_estimate_advisory(data, hc, resolve_transcript(data)[0])
+        if note:
+            message = json.loads(original) if original.strip() else {
+                "hookSpecificOutput": {"hookEventName": event, "additionalContext": "Context observation:"}}
+            fields = message.get("hookSpecificOutput", {})
+            if isinstance(fields.get("additionalContext"), str):
+                fields["additionalContext"] += note
+                enriched = json.dumps(message, ensure_ascii=False) + "\n"
+    except Exception:  # Never lose a provider denial/instruction to optional enrichment.
+        pass
+    print(enriched, end="")
+
+
+def handle_provider_policy(data, hc, state_dir, key, writable=True):
     event = data.get("hook_event_name") or ""
     ap = autopilot()
     auto = bool(ap) and ap.enabled() and not data.get("agent_id")

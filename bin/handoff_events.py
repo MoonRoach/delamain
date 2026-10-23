@@ -34,6 +34,13 @@ REASONS = frozenset({
     'stop_active', 'settings_blocked', 'handoff_only', 'exact_takeover', 'explicit_blocker',
 })
 ENUM_FIELDS = {
+    'estimate_state': frozenset({'estimated', 'unknown'}),
+    'estimate_reason': frozenset({
+        'server_reasoning_unknown', 'server_reasoning_and_boundary_unknown',
+        'unsupported_format', 'output_truncation_unknown', 'scan_limit', 'record_limit',
+        'incomplete_history', 'compacted_history', 'ownership_unknown',
+        'pending_output_unknown', 'unreadable_history', 'snapshot_changed', 'stale_usage',
+    }),
     'metric_source': frozenset({'provider_last_usage', 'claude_input_usage', 'unavailable'}),
     'phase': frozenset({'prepared', 'dispatching', 'submitted', 'bound', 'taking-over',
                         'taken-over', 'uncertain', 'checkpoint', 'none'}),
@@ -47,6 +54,8 @@ ENUM_FIELDS = {
 NUMERIC_FIELDS = frozenset({
     'tokens', 'window', 'warn', 'block', 'due_since_tokens', 'no_progress_count',
     'stop_continuations', 'metric_age_seconds',
+    'estimate_lower_tokens', 'estimate_upper_tokens', 'estimate_provider_tokens',
+    'estimate_local_tail_tokens', 'estimate_prior_reasoning_tokens',
 })
 _ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,95}', re.ASCII)
 _TIMESTAMP = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z', re.ASCII)

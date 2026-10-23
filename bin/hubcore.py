@@ -61,7 +61,7 @@ HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
-                "AGENT_HUB_BG_WAIT_CEILING_MS")
+                "AGENT_HUB_BG_WAIT_CEILING_MS", "AGENT_HUB_HANDOFF_UNKNOWN_POLICY")
 PROJECT_KEYS += ("AGENT_HUB_ENGINE", "CODEX_BIN", "AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_CODEX_DEFAULT_MODEL",
                  "AGENT_HUB_CODEX_PERMISSION_MODE", "AGENT_HUB_CODEX_HOOK_TRUST")
 # Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
@@ -90,7 +90,7 @@ MAX_JWAIT_FOR_S = 24 * 3600  # a longer value is a typo, and a huge one overflow
 # user's, never instead (bin/subagent_rules.py evaluates both).
 HUB_WIDE_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_CONTEXT_WARN", "AGENT_HUB_CONTEXT_WARN_STEP",
                   "AGENT_HUB_CONTEXT_BLOCK", "AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_CONTEXT_ESCAPE",
-                  "AGENT_HUB_CONTEXT_TODO",
+                  "AGENT_HUB_CONTEXT_TODO", "AGENT_HUB_CODEX_CONTEXT_ESTIMATE",
                   "AGENT_HUB_DELEGATION", "AGENT_HUB_DELEGATION_DEFAULT", "AGENT_HUB_DELEGATION_LEVELS",
                   "AGENT_HUB_DELEGATION_COMMON", "AGENT_HUB_DELEGATION_RULES",
                   "AGENT_HUB_STATE_DIR")
@@ -110,7 +110,8 @@ HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_H
 # The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
 # not switch it off, so it is the hub home's (and the environment's) to set.
 HUB_WIDE_KEYS += ("AGENT_HUB_SCAN_GUARD", "AGENT_HUB_SCAN_ESCAPE")
-BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION", "AGENT_HUB_SCAN_GUARD")
+BOOL_KEYS += ("AGENT_HUB_CONTEXT_BUDGET", "AGENT_HUB_POLL_GUARD", "AGENT_HUB_DELEGATION", "AGENT_HUB_SCAN_GUARD",
+              "AGENT_HUB_CODEX_CONTEXT_ESTIMATE")
 # Autopilot (bin/autopilot.py): hub home only — a cloned repository must not start background sessions or choose their
 # permission mode.
 HUB_WIDE_KEYS += ("AGENT_HUB_AUTO_HANDOFF", "AGENT_HUB_AUTO_HANDOFF_CHAIN", "AGENT_HUB_SUCCESSOR_MODEL",

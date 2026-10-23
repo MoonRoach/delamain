@@ -72,8 +72,10 @@ Desktop Code tab:
 ## Native subagent status and waiting
 
 Native Codex subagents have no detached worker PID. Silence in a rollout is not proof that a child died.
-Unknown observations expire from default discovery and handoff blocking after one hour without owned
-birth/activity evidence; show-all keeps them unknown and marks them expired, without a success or death event.
+Unknown observations expire from default discovery after one hour without owned birth/activity evidence;
+show-all keeps them unknown and marks them expired, without a success or death event. They also stop blocking
+handoff by default; `AGENT_HUB_HANDOFF_UNKNOWN_POLICY=block` retains expired Codex unknown children as handoff
+blockers without changing discovery or status (see [configuration](reference.md#configuration)).
 Confirmed live process evidence still blocks handoff. When native clocks are missing, file freshness supplies
 the expiry fallback only, not displayed activity; touching a file cannot renew an owned native activity clock.
 A deliberately interrupted turn is stopped, not a successful result or a runtime failure. A resumed turn

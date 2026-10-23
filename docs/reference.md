@@ -589,6 +589,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
 | `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. Limit-pace proposes an `ask add` for permission to use the other engine for this launch; the default runs the locked engine. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
+| `AGENT_HUB_HANDOFF_UNKNOWN_POLICY` | `expire` | `expire` or `block`: whether expired Codex unknown children remain handoff blockers. Environment > registered project/worktree config > hub home > default; see the handoff policy below. |
 | `AGENT_HUB_HANDOFF_LESSONS` | `off` | `hub handoff` adds an optional § 7, "Lessons of this shift", and warns (never refuses) while it holds `TODO`; procedure in the [handoff skill](../skills/handoff/references/lessons.md), format in [Architecture](architecture.md#formats). A yes/no setting. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|GRILLED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
@@ -598,6 +599,14 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_OWNER_DIGEST_AFTER` | `3h` | Owner's silence after which the hub opens its reply with `ask inbox`: `ask inbox --if-quiet` prints nothing while the owner's latest recorded answer (an answered question, a standing permission, an approved plan, in any stage's register) is newer than this, and the digest otherwise. A duration such as `90m` or `6h`, at most `30d`; anything else warns and falls back to `3h`. Hub-wide. |
 | `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
+
+For `hub handoff`, `expire` preserves the existing one-hour expiry of Codex unknown observations; `block` keeps
+expired unknown children as handoff blockers. Proven live children still block under either value; proven terminal
+children do not. This setting changes neither global discovery TTL/status nor Claude age filtering. Resolution
+uses the hub's registered project/worktree even after the command's working directory changes; an invalid value
+or an unreadable recorded project refuses truthfully before a draft is written. The existing explicit
+`--allow-live-subagents` override records the blocking children in the draft's TODO for a lost/relaunched decision;
+it grants no new permission. See `bin/hub handoff --help` for the existing check, override and finish semantics.
 
 ### Configuration layers
 
@@ -917,6 +926,7 @@ The environment still wins for every key, so whatever sets environment variables
 
 | Setting | Default | Where | Meaning |
 |---|---|---|---|
+| `AGENT_HUB_CODEX_CONTEXT_ESTIMATE` | `off` | hub home only | `off` or `on`: experimental, separate advisory context range for a registered Codex main hub, never a subagent. Environment overrides hub home; repository and stage config cannot enable it. See the estimate contract below. |
 | `AGENT_HUB_CONTEXT_BUDGET` | `on` | hub home only | `off` (or JSON `false`) disables the context-budget hook. |
 | `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` | hub home; private stage override for registered autopilot hub | First warning, then one more every step; every owner prompt above warn receives the hub's acknowledgement/handoff instruction. |
 | `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home; private stage override for registered autopilot hub | From here the tools below are denied; prompts remain response opportunities. |
@@ -948,6 +958,18 @@ The environment still wins for every key, so whatever sets environment variables
 | `AGENT_HUB_DELEGATION_COMMON` | one sentence | hub home only | Appended to every level's policy. |
 | `AGENT_HUB_DELEGATION_RULES` | level 0 denies `Agent`, `Task`, `Workflow` | hub home only | Rule list, evaluated while the dial is on (may test `level`). |
 | `AGENT_HUB_EFFORT_RULES` | none | repo **and** home | Rule list or shorthand for every subagent launch: the `Agent`/`Task` tool and `agent spawn`. The user's set (environment, else hub home) and the repository's are evaluated separately and any deny wins: a repository can add restrictions, never loosen yours. |
+
+With `AGENT_HUB_CODEX_CONTEXT_ESTIMATE=on`, a native-heuristic **estimated context range** appears separately in
+the advisory and as counts/enums in redacted diagnostics. It is a hint only: provider usage remains the measured
+metric, and the estimate never changes WARN/BLOCK, Stop headroom, continuation, authority, the no-compaction
+boundary or handoff state. No continuation changes are included. The estimator uses Codex's internal rollout
+schema and accounting inspected in `0.162.0-alpha.17.2` and `0.163.0-alpha.11`; the range is neither a guaranteed tokenizer
+bound nor a new measured metric, and future schema compatibility is not certified.
+
+Only one owned local rollout is read, with a bounded scan. Unsupported or new history types, compaction,
+rewrite, fork, ownership mismatch, or incomplete, malformed or over-budget input yield **unknown**, never zero.
+Diagnostics contain no transcript bodies, tool arguments, paths or opaque text. Estimation runs only for user
+prompts and post-tool advisories, never on the blocking or Stop-continuation path.
 
 Only these three numeric context thresholds accept `<hub home>/<registered stage>/config.json` overrides in the
 context-budget hook: environment, then stage, then home, then the existing default. Invalid values fall through

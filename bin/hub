@@ -132,7 +132,10 @@ Before writing the draft, handoff looks for sub-agents (the Agent tool) that are
 own session — --session, else the registered hub's, and the session running the command if that is another one. A
 sub-agent dies with its parent session and the successor cannot message it. If any is live it lists them (id,
 description, age) and the three ways out, and exits 2; with --allow-live-subagents it writes the draft with the list in
-its TODO section.
+its TODO section. AGENT_HUB_HANDOFF_UNKNOWN_POLICY=expire (default) preserves discovery's one-hour lifetime for
+Codex unknown observations; block retains expired Codex unknowns as handoff blockers. Resolution is environment,
+registered project/worktree, hub home, then expire; invalid values or an unavailable registered project refuse
+before writing a draft. Live and proven terminal evidence and Claude age filtering keep their existing meaning.
 handoff --finish is the last step of writing one: it checks the draft (--handoff, else the stage's latest) and refuses
 (exit 2, the lines listed) while § 0–2 — the successor's first steps, the state, the queue — still hold TODO;
 --allow-todo lets it through and says what stays open. `hub succeed --handoff` makes the same check before it starts
@@ -1505,15 +1508,76 @@ def hub_sessions(stage: str, given: str, me: dict) -> list:
     return out
 
 
-def live_subagents(cli: str, rec: dict) -> list:
-    """Sub-agents of `cli` that run or have an unexpired unknown observation. The session that runs this command
+def handoff_unknown_policy(stage: str) -> str:
+    """Resolve the handoff gate from registered project provenance, even after cwd drift.
+    Read this enum strictly: ignoring an invalid value could silently weaken the gate.
+    """
+    key = "AGENT_HUB_HANDOFF_UNKNOWN_POLICY"
+    record_path = hc.root() / stage / hc.STAGE_FILE
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError("not a JSON object")
+    except FileNotFoundError:
+        record = {}
+    except (OSError, ValueError) as e:
+        raise hc.UsageError(f"cannot resolve handoff policy: {record_path}: {e}") from None
+    cwd = None
+    if not record.get("no_project"):
+        hub_rec = hc.roles_load(stage)["roles"].get("hub") or {}
+        # Native app registration records cwd; older/CLI registrations use worktree.
+        registered_cwd = hub_rec.get("cwd") or hub_rec.get("worktree")
+        project_repo = hc.stage_project(stage)
+        registered_repo = hc.main_tree(registered_cwd) if registered_cwd else None
+        if (record.get("repo") and project_repo is None
+                or registered_cwd and (registered_repo is None
+                                       or project_repo is not None and not hc._same(registered_repo, project_repo))):
+            raise hc.UsageError("cannot resolve handoff policy from the stage's registered project/cwd/worktree; "
+                                "restore that path or correct the project registration before handing over")
+        cwd = Path(registered_cwd) if registered_cwd else project_repo
+        if cwd is None:
+            cwd = Path.cwd()  # legacy stages with no project registration
+    project = hc.project_dir(cwd) if cwd is not None else None
+    paths = ([project / hc.CONFIG_DIRNAME / "config.json"] if project else []) + [hc.root() / "config.json"]
+    if key in os.environ:
+        policy = os.environ[key]
+    else:
+        policy = "expire"
+        for path in paths:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("not a JSON object")
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError) as e:
+                raise hc.UsageError(f"cannot resolve handoff policy: {path}: {e}") from None
+            if key in data:
+                policy = data[key]
+                break
+    if policy not in ("expire", "block"):
+        raise hc.UsageError(f"{key} must be expire or block, got {policy!r}")
+    return policy
+
+
+def live_subagents(cli: str, rec: dict, unknown_policy: str = "expire") -> list:
+    """Sub-agents of `cli` that run or have a blocking unknown observation. The session that runs this command
     is alive by definition; any other is judged by its process (bin/subagents.py)."""
     if cli == hc.session_id():
         alive = True
     else:
         table = subagents.process_table()
         alive = subagents.parent_alive(rec, cli, table, subagents.live_sessions(table))
-    return [s for s in subagents.Finder().of_session(cli, alive, time.time()) if s.unresolved]
+    finder, now = subagents.Finder(), time.time()
+    found = [s for s in finder.of_session(cli, alive, now) if s.unresolved]
+    if unknown_policy == "block":
+        # Only recover expired Codex unknowns: show-all must not broaden Claude's
+        # existing age filtering, or turn terminal observations into blockers.
+        seen = {(s.aid, s.log) for s in found}
+        found += [s for s in finder.of_session(cli, alive, now, show_all=True)
+                  if s.meta.get("engine") == "codex" and s.state == "unknown" and s.expired
+                  and (s.aid, s.log) not in seen]
+    return found
 
 
 def subagent_rows(subs: list, session: str = "") -> list:
@@ -1549,6 +1613,7 @@ def cmd_handoff(a) -> int:
     grill = grilling.active_stage(stage)
     if grill and autopilot.enabled() and not a.owner_asked and not grill.get("ceiling"):
         raise hc.UsageError(grilling.refusal("handoff", stage, grill))
+    unknown_policy = handoff_unknown_policy(stage)
     n = a.n or handoff_number(stage)
     tag = f"hub-{n}"
     name, succ = hub_name(stage, n), hub_name(stage, n + 1)
@@ -1564,7 +1629,7 @@ def cmd_handoff(a) -> int:
         print("delamain: no hub session known (roles `hub`, or --session): its sub-agents were not checked",
               file=sys.stderr)
     for cli, hub_rec in sessions:
-        live_rows += subagent_rows(live_subagents(cli, hub_rec), cli if len(sessions) > 1 else "")
+        live_rows += subagent_rows(live_subagents(cli, hub_rec, unknown_policy), cli if len(sessions) > 1 else "")
     if live_rows and not a.allow_live_subagents:
         print(f"hub handoff: {len(live_rows)} sub-agent(s) of the hub's session "
               f"{' and '.join(c[:8] for c, _ in sessions)} still running or have unknown process state; the successor "
@@ -1579,7 +1644,7 @@ def cmd_handoff(a) -> int:
     if live_rows:
         live_note = ("\n- TODO: sub-agents of this session still running at handoff or have unknown process state; the successor cannot "
                      "message them; for each say \"relaunched as `agent spawn` role …\" or \"lost: …\":\n"
-                     + "\n".join(f"  - {r}" for r in live_rows[:12]) + (f"\n  - … and {len(live_rows) - 12} more" if len(live_rows) > 12 else ""))
+                     + "\n".join(f"  - {r}" for r in live_rows))
     work = hc.work_dir(stage)
     q = nightq_read(stage)
     b = board_module()

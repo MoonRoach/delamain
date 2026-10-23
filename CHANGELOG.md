@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Opt-in handoff policy for unknown Codex children.** `AGENT_HUB_HANDOFF_UNKNOWN_POLICY=block` keeps expired
+  unknown children as handoff blockers; the default `expire` preserves expiry. Settings follow the registered
+  project even after directory changes; discovery, status and Claude filtering stay unchanged.
+- **Experimental Codex context hint.** `AGENT_HUB_CODEX_CONTEXT_ESTIMATE=on` adds a separate native-heuristic
+  estimated range for registered Codex main hubs, with redacted diagnostics and unknown results for unsupported
+  history. Off by default; it never replaces provider usage or changes handoff policy or continuation.
+
 ## 1.0.16 — 2026-10-23
 
 - **Optional "lessons of the shift" at a hub handoff.** With `AGENT_HUB_HANDOFF_LESSONS` on in the hub home (off by

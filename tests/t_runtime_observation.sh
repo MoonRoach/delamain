@@ -137,12 +137,20 @@ real_clock = hub['live_subagents'].__globals__['time'].time
 hub['live_subagents'].__globals__['time'].time = lambda: later
 try:
     assert not hub['live_subagents'](parent, {'engine': 'codex'})
+    blocked = hub['live_subagents'](parent, {'engine': 'codex'}, 'block')
+    assert len(blocked) == 1 and blocked[0].aid == child and blocked[0].expired
+    assert blocked[0].state == 'unknown' and not blocked[0].unresolved
+    assert finder.codex_session(child, None, later) is None, 'policy must not change discovery TTL'
     registry = dict(engine='codex', kind='headless', pid=os.getpid(), process_token='revision-core-live')
     actual_table = subagents.process_table()
     assert actual_table and os.getpid() in actual_table
     registry['process_token'] = actual_table[os.getpid()]
     assert subagents.parent_alive(registry, parent, actual_table, {}) is True
-    assert any(s.aid == child and s.alive for s in hub['live_subagents'](parent, registry))
+    for policy in ('expire', 'block'):
+        live_children = hub['live_subagents'](parent, registry, policy)
+        assert len(live_children) == 1 and live_children[0].aid == child and live_children[0].alive
+    dead_registry = dict(registry, pid=99999999)
+    assert not hub['live_subagents'](parent, dead_registry, 'block'), 'proven dead cannot block'
 finally:
     hub['live_subagents'].__globals__['time'].time = real_clock
 # Brand-new owned activity reopens the same unknown observation after expiration.
@@ -169,6 +177,8 @@ with path.open('a') as f:
 os.utime(path, (fixed_mtime, fixed_mtime))
 done = finder.codex_session(child, None, now)
 assert done and done.state == 'done' and done.mtime == fixed_mtime
+for policy in ('expire', 'block'):
+    assert not hub['live_subagents'](parent, {'engine': 'codex'}, policy), 'terminal child cannot block'
 assert done.last_event_ts == base+15 and done.age(now) == now-(base+15)
 row = coll._subagent('stage-a', 'hub', {}, done, now)
 assert row['last_event_at'] == stamp(base+15).split('.')[0]+'+00:00'
@@ -240,4 +250,168 @@ assert row['last_event_at'] is not None
 claude = subagents.Sub('fixture', path, {}, base+15, None, 'live', True)
 assert claude.age(now) == now-(base+15)
 print('PASS payload birth, fail-safe ownership, inherited/late terminal filtering, fixed-mtime growth, cache/polling, unknown/stopped and exec/Claude clocks')
+PY
+
+# Public handoff commands use isolated registered repositories and synthetic
+# native children; no worker, model, or session is launched.
+python3 - "$B" "$AGENT_HUB_HOME" <<'PY'
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+binpath, root = map(Path, sys.argv[1:])
+key = 'AGENT_HUB_HANDOFF_UNKNOWN_POLICY'
+parent = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+stage = root/'policy-stage'; stage.mkdir()
+repo = root/'project'; repo.mkdir()
+subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '--allow-empty', '-qm', 'fixture'], check=True)
+project_config = repo/'.agent-hub'; project_config.mkdir()
+worktree = root/'registered-worktree'
+subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-qb', 'fixture', str(worktree)], check=True,
+               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+wt_config = worktree/'.agent-hub'; wt_config.mkdir()
+drift = root/'drift'; drift.mkdir()
+subprocess.run(['git', 'init', '-q', str(drift)], check=True)
+(drift/'.agent-hub').mkdir()
+(drift/'.agent-hub'/'config.json').write_text(json.dumps({key: 'expire'}))
+def config(path, value):
+    path.write_text(json.dumps({} if value is None else {key: value}))
+def register(repo_path=repo, tree_path=worktree, no_project=False, path_key="cwd"):
+    (stage/'stage.json').write_text(json.dumps({'no_project': True} if no_project else {'repo': str(repo_path)}))
+    (stage/'roles.json').write_text(json.dumps({'roles': {'hub': {
+        'cli_session_id': parent, 'session': parent, 'tag': 'hub-1', 'title': 'Hub policy-stage #1',
+        'kind': 'cli', 'host': 'codex-app', 'engine': 'codex', path_key: str(tree_path)}}}))
+register()
+sessions = root/'codex'/'sessions'
+old = (dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=2)).isoformat()
+children = []
+for n in range(15):
+    sid = f'bbbbbbbb-bbbb-4bbb-8bbb-{n:012d}'; children.append(sid)
+    events = [dict(type='session_meta', timestamp=old, payload=dict(id=sid, timestamp=old, source={
+        'subagent': {'thread_spawn': {'parent_thread_id': parent, 'agent_path': '/root/fixture'}}})),
+        dict(type='event_msg', timestamp=old, payload=dict(type='task_started', turn_id='fixture', started_at=dt.datetime.fromisoformat(old).timestamp()))]
+    (sessions/f'rollout-{sid}.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events))
+claude_root = root/'claude'
+claude_dir = claude_root/'projects'/'fixture'/parent/'subagents'; claude_dir.mkdir(parents=True)
+(claude_dir/'agent-old.meta.json').write_text('{}')
+(claude_dir/'agent-old.jsonl').write_text('{}\n')
+old_time = dt.datetime.fromisoformat(old).timestamp()
+os.utime(claude_dir/'agent-old.jsonl', (old_time, old_time))
+# Deterministic process evidence, without inspecting real worker/session state.
+fakebin = root/'fakebin'; fakebin.mkdir()
+(fakebin/'ps').write_text('#!/bin/sh\nprintf "1 fixture-init\\n"\n')
+(fakebin/'ps').chmod(0o755)
+env = dict(os.environ, CLAUDE_CONFIG_DIR=str(claude_root), PATH=str(fakebin)+os.pathsep+os.environ['PATH'])
+for name in (key, 'CODEX_THREAD_ID', 'CLAUDE_CODE_SESSION_ID', 'AGENT_SESSION_ID'):
+    env.pop(name, None)
+config(project_config/'config.json', None)
+config(wt_config/'config.json', None)
+config(root/'config.json', None)
+counter = 0
+def handoff(label, expected, override=False, extra_env=None, cwd=drift):
+    global counter
+    counter += 1
+    out = root/f'draft-{counter}.md'
+    args = [str(binpath/'hub'), 'handoff', '--stage', 'policy-stage', '--session', parent, '--out', str(out)]
+    if override:
+        args.append('--allow-live-subagents')
+    result = subprocess.run(args, cwd=cwd, env=dict(env, **(extra_env or {})), text=True, capture_output=True)
+    print(f'{label}: exit={result.returncode} expected={expected}')
+    print(result.stdout, end=''); print(result.stderr, end='')
+    assert result.returncode == expected, label
+    assert out.exists() == (expected == 0), label + ': draft creation'
+    return out.read_text() if out.exists() else result.stderr
+handoff('default expire preserves TTL', 0)
+config(root/'config.json', 'block')
+handoff('home block', 2)
+config(wt_config/'config.json', 'expire')
+handoff('registered worktree overrides home', 0)
+config(project_config/'config.json', 'expire')
+config(wt_config/'config.json', 'block')
+assert 'worktree' not in json.loads((stage/'roles.json').read_text())['roles']['hub']
+text = handoff('native cwd-only worktree block survives other-repository cwd drift', 2)
+assert all(sid in text for sid in children) and 'old  ' not in text
+register(path_key='worktree')
+handoff('legacy worktree-only record retains custom worktree block', 2)
+register()
+# cwd wins if a compatible legacy field is also present.
+roles = json.loads((stage/'roles.json').read_text())
+roles['roles']['hub']['worktree'] = str(repo)
+(stage/'roles.json').write_text(json.dumps(roles))
+handoff('native cwd takes precedence over legacy worktree/main-project expire', 2)
+register()
+handoff('environment expire overrides project block', 0, extra_env={key: 'expire'})
+text = handoff('explicit override preserves all child evidence', 0, override=True)
+assert all(sid in text for sid in children) and 'unknown;' in text and 'lost:' in text
+config(wt_config/'config.json', 'expire')
+handoff('environment block overrides project expire', 2, extra_env={key: 'block'})
+for invalid in ('typo', '', 'BLOCK', True, [], 1, {'policy': 'block'}):
+    config(wt_config/'config.json', invalid)
+    text = handoff(f'invalid project value {invalid!r}', 2, override=True)
+    assert key+' must be expire or block' in text
+(wt_config/'config.json').write_text(json.dumps({key: None}))
+text = handoff('null project policy refuses', 2)
+assert key+' must be expire or block' in text
+config(wt_config/'config.json', 'typo')
+handoff('environment expire takes precedence over invalid project setting', 0, extra_env={key: 'expire'})
+config(wt_config/'config.json', 'block')
+handoff('registered block survives outside-repository cwd drift', 2, cwd=root)
+for invalid in ('typo', ''):
+    text = handoff(f'invalid environment value {invalid!r}', 2, extra_env={key: invalid})
+    assert key+' must be expire or block' in text
+# A worktree without its own config inherits the main checkout's config.
+(wt_config/'config.json').unlink(); wt_config.rmdir()
+handoff('registered main project expire fallback', 0)
+config(project_config/'config.json', 'block')
+handoff('registered main project block fallback', 2)
+register(tree_path=root/'lost-worktree')
+text = handoff('lost native registered cwd refuses despite available main project', 2,
+               override=True, extra_env={key: 'expire'})
+assert 'cannot resolve handoff policy' in text
+roles = json.loads((stage/'roles.json').read_text())
+roles['roles']['hub']['worktree'] = str(worktree)
+(stage/'roles.json').write_text(json.dumps(roles))
+text = handoff('lost native cwd cannot fall back to available legacy worktree', 2,
+               override=True, extra_env={key: 'expire'})
+assert 'cannot resolve handoff policy' in text
+register(tree_path=drift)
+text = handoff('native cwd in another project refuses', 2)
+assert 'cannot resolve handoff policy' in text
+register(repo_path=root/'lost-project', tree_path=worktree)
+text = handoff('lost registered project refuses despite existing role worktree', 2)
+assert 'cannot resolve handoff policy' in text
+register(repo_path=root/'lost-project', tree_path=root/'lost-worktree')
+text = handoff('lost registered project refuses even with override and env expire', 2,
+               override=True, extra_env={key: 'expire'})
+assert 'cannot resolve handoff policy' in text
+register()
+(stage/'stage.json').write_text('[]')
+text = handoff('malformed project registration refuses', 2)
+assert 'cannot resolve handoff policy' in text
+register(no_project=True)
+config(drift/'.agent-hub'/'config.json', 'block')
+config(root/'config.json', 'typo')
+text = handoff('invalid home policy refuses', 2)
+assert key+' must be expire or block' in text
+config(root/'config.json', 'expire')
+handoff('explicit no-project uses home, ignoring drift and stale role project', 0)
+register()
+# Recent Claude children still block under both policies; old ones stay filtered.
+(claude_dir/'agent-recent.meta.json').write_text('{}')
+(claude_dir/'agent-recent.jsonl').write_text('{}\n')
+for policy in ('expire', 'block'):
+    text = handoff('recent Claude blocks under '+policy, 2, extra_env={key: policy})
+    assert 'recent' in text and 'old  ' not in text
+(claude_dir/'agent-recent.meta.json').unlink()
+for sid in children:
+    with (sessions/f'rollout-{sid}.jsonl').open('a') as f:
+        f.write(json.dumps(dict(type='event_msg', timestamp=old, payload=dict(
+            type='task_complete', turn_id='fixture', last_agent_message='done')))+'\n')
+handoff('proven terminal children do not block', 0, extra_env={key: 'block'})
+print('PASS public handoff policy, precedence, cwd drift, invalid/lost source, override evidence, terminal and Claude controls')
 PY

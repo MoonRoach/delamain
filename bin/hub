@@ -493,7 +493,19 @@ def open_lessons_todos(text: str) -> list:
     return found
 
 
-LESSON_ANSWER_RE = re.compile(r"\bL-\d{1,6}\b|\bnone:\s*(?!<reason>)\S", re.IGNORECASE)
+LESSON_ID_RE = re.compile(r"\bL-\d{1,6}\b")
+LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
+NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
+MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")
+
+
+def lesson_answer(line: str) -> bool:
+    """Whether one line of § 7 answers it: a lesson id, or `none:` with a reason on the same line that is not a
+    placeholder (`none: n/a`, `none: TBD`, a bare `none:`)."""
+    if LESSON_ID_RE.search(line):
+        return True
+    m = LESSON_NONE_RE.search(line)
+    return bool(m) and m.group(1).strip().strip(".").strip().lower() not in NONE_PLACEHOLDERS
 
 
 def lessons_problem(text: str) -> str:
@@ -507,13 +519,13 @@ def lessons_problem(text: str) -> str:
             current = int(m.group(1))
             seen = seen or current == 7
             continue
-        if current == 7 and not line.startswith("Open lessons to judge"):
+        if current == 7 and not MD_PREFIX_RE.sub("", line).startswith("Open lessons to judge"):  # quoted or indented too
             lines.append(line)
     if not seen:
         return "the handoff has no § 7 (lessons) — it was not written from `hub handoff`'s draft"
     if open_lessons_todos(text):
         return "§ 7 (lessons) still holds TODO"
-    if not LESSON_ANSWER_RE.search("\n".join(lines)):
+    if not any(lesson_answer(line) for line in lines):
         return "§ 7 (lessons) names no lesson id (L-…) and no \"none: <reason>\" — the module is on, so a look back is due"
     return ""
 

@@ -247,4 +247,17 @@ $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-r
 grep -q 'ATTENTION: the handoff on3-done.md' $R/x5.out; check $? 1 "control: an answered § 7 gives no takeover warning"
 grep -q 'lessons module is ON in this hub home' $C/on1.md; check $? 0 "the draft's § 7 says the module is on and what to do"
 grep -qi 'optional module' $C/on1.md && sed -n '/^## 7\./,$p' $C/on1.md | grep -qi 'optional module'; check $? 1 "…and no longer calls itself an optional module"
+# 10b. placeholders are not answers: none: n/a, none: TBD, a bare none:, a quoted copy of the "Open lessons" line
+for v in 'New entries: none: n/a' 'New entries: none: TBD.' 'New entries: none:
+Verdicts: none' 'None recorded: not used.
+> Open lessons to judge: L-001 first' 'None recorded.
+   Open lessons to judge: L-001 first'; do
+  python3 - $C/on3-done.md $C/ph.md "$v" <<'PY2'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read(); i = t.index("## 7. Lessons")
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\n" + sys.argv[3] + "\n")
+PY2
+  $B/hub handoff --stage stage-a --finish --handoff $C/ph.md > $R/ph.out 2> $R/ph.err
+  grep -qF "$DISMISS" $R/ph.err; check $? 0 "placeholder answer warns: $(printf %s "$v" | head -1)"
+done
 exit $fail

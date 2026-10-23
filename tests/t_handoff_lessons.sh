@@ -107,8 +107,8 @@ open(sys.argv[2], "w", encoding="utf-8").write(t)
 PY
 $B/hub handoff --stage stage-a --finish --handoff $C/on3-done.md > $R/f2.out 2> $R/f2.err; check $? 0 "§ 7 filled: --finish passes"
 grep -q 'lessons' $R/f2.err; check $? 1 "…without a lessons warning"
-$B/hub handoff --stage stage-a --finish --handoff $C/off-filled.md > $R/f3.out 2> $R/f3.err; check $? 0 "a handoff without § 7 (setting turned on later): --finish passes"
-grep -q 'lessons' $R/f3.err; check $? 1 "…without a lessons warning"
+$B/hub handoff --stage stage-a --finish --handoff $C/off-filled.md > $R/f3.out 2> $R/f3.err; check $? 0 "a handoff without § 7 while the setting is on: --finish passes"
+grep -qF 'ATTENTION: the handoff has no § 7 (lessons)' $R/f3.err; check $? 0 "…but warns: it was not written from this draft"
 $B/hub handoff --stage stage-a --finish --handoff $C/on3.md > $R/f4.out 2> $R/f4.err; check $? 2 "negative: § 0–2 still TODO: --finish still exits 2"
 grep -q 'still hold [0-9]* TODO line' $R/f4.err; check $? 0 "…for § 0–2"
 $B/hub handoff --stage stage-a --finish --handoff $C/on3.md --allow-todo > $R/f5.out 2> $R/f5.err; check $? 0 "--allow-todo: exit 0"
@@ -226,4 +226,25 @@ open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this sh
 PY2
 $B/hub handoff --stage stage-a --finish --handoff $C/fence-mixed.md > $R/k6.out 2> $R/k6.err; check $? 0 "a ~~~ inside a \`\`\` block of § 7: --finish passes"
 grep -qF "$WARN" $R/k6.err; check $? 0 "…and the TODO after the block is still seen"
+# 10. a § 7 that answers nothing (personal-finance 23.10: "None recorded: lessons module not used", copied on by the next
+# shift) warns at --finish, at succeed and at the successor's takeover; ids or "none: <reason>" are answers
+python3 - $C/on3-done.md $C/dismiss.md <<'PY2'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+i = t.index("## 7. Lessons")
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\nNone recorded: lessons module not used in this repo.\n")
+PY2
+DISMISS='ATTENTION: § 7 (lessons) names no lesson id (L-…) and no "none: <reason>"'
+$B/hub handoff --stage stage-a --finish --handoff $C/dismiss.md > $R/x1.out 2> $R/x1.err; check $? 0 "a dismissive § 7: --finish passes"
+grep -qF "$DISMISS" $R/x1.err; check $? 0 "…and warns that § 7 answers nothing"
+$B/hub succeed --stage stage-a --handoff $C/dismiss.md --model opus --effort high --dry-run --cwd $R > $R/x2.out 2> $R/x2.err; check $? 0 "succeed on it: exit 0"
+grep -qF "$DISMISS" $R/x2.err; check $? 0 "…with the same warning"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/dismiss.md --dry-run > $R/x3.out 2>&1; check $? 0 "takeover from it (dry run)"
+grep -qF "ATTENTION: the handoff dismiss.md: § 7 (lessons) names no lesson id" $R/x3.out && grep -q 'ask it to fill § 7 before it ends' $R/x3.out; check $? 0 "…warns the successor and says what to do"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/off-filled.md --dry-run > $R/x4.out 2>&1
+grep -qF "ATTENTION: the handoff off-filled.md: the handoff has no § 7 (lessons)" $R/x4.out; check $? 0 "takeover from a handoff without § 7 warns too"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/x5.out 2>&1
+grep -q 'ATTENTION: the handoff on3-done.md' $R/x5.out; check $? 1 "control: an answered § 7 gives no takeover warning"
+grep -q 'lessons module is ON in this hub home' $C/on1.md; check $? 0 "the draft's § 7 says the module is on and what to do"
+grep -qi 'optional module' $C/on1.md && sed -n '/^## 7\./,$p' $C/on1.md | grep -qi 'optional module'; check $? 1 "…and no longer calls itself an optional module"
 exit $fail

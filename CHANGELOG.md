@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Handoff lessons cannot be waved away.** With `AGENT_HUB_HANDOFF_LESSONS` on, a § 7 that names neither a lesson
+  id nor `none: <reason>` (a "lessons module not used" line copied from an earlier handoff, seen on a live stage on
+  23.10), or a handoff without § 7 at all, is an ATTENTION line on `hub handoff --finish`, `hub succeed --handoff` and,
+  new, the successor's `hub takeover`, which tells it to ask a still-running author to fill § 7. The draft's § 7 now
+  says the module is on and what to do, instead of calling itself an optional module, so a hub whose session still
+  carries an older handoff skill follows it too. Still a warning, never a refusal.
+
 ## 1.0.16 — 2026-10-23
 
 - **Optional "lessons of the shift" at a hub handoff.** With `AGENT_HUB_HANDOFF_LESSONS` on in the hub home (off by

@@ -12,8 +12,10 @@ what you would tell the next hub about how to work, with the moment it rests on.
    `verdict:` line (below). A lesson that did not come up gets none.
 3. Write 0–3 new entries. "No lesson" is a valid answer: write `none: <reason>` in § 7. A lesson without `evidence`
    is not written.
-4. Fill § 7 of the draft: the new ids (or `none: <reason>`) and the verdicts (or `none`). `hub handoff --finish` only
-   warns while § 7 holds `TODO`; it never refuses for it.
+4. Fill § 7 of the draft: the new ids (or `none: <reason>`) and the verdicts (or `none`). Never carry § 7 over from an
+   earlier handoff, and never answer "module not used": with the setting on, the look back is due every shift.
+   `hub handoff --finish`, `hub succeed --handoff` and the successor's `hub takeover` warn — never refuse — when § 7
+   is missing, still holds `TODO`, or names neither a lesson id nor `none: <reason>`.
 
 ## Entry format
 

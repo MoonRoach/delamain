@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.16 — 2026-10-23
+
 - **Optional "lessons of the shift" at a hub handoff.** With `AGENT_HUB_HANDOFF_LESSONS` on in the hub home (off by
   default, hub-wide), `hub handoff` adds a § 7 that asks the hub for 0-3 lessons with evidence in the stage's
   `lessons.md` (kept across handoffs, edited by hand) and for verdicts (`helped | hurt | no effect | confounded`) on

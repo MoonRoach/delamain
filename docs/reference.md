@@ -118,8 +118,8 @@ agent-top                                     # live console; agent-top --once f
 # 4. message it — alive: into its inbox; finished: the session resumes with the message
 agent send builder "after the tests pass, open the PR"
 
-# 5. wait for its status line without polling (run in the background from Claude)
-jwait --journal --tag hub-1 --tag hub --hub-events --for 50m
+# 5. wait for its status line without polling (from Claude: the command of one Monitor; Codex: --for 50m)
+jwait --journal --tag hub-1 --tag hub --hub-events --stream
 
 # 6. stop it
 agent stop builder
@@ -594,7 +594,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|GRILLED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_GRILL_JOIN_MIN` | `30` | Minutes a `hub grill` launch that has not run `hub grill join` blocks another launch of the stage (a Desktop start or a Codex thread may still come up); after that, or with `--again`, a new launch replaces it. `AGENT_HUB_GRILL_LINK_WAIT_S` (90) bounds how long `hub grill` waits for a background session's Remote Control link. |
-| `AGENT_HUB_JWAIT_FOR` | `50m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `50m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `50m`). The default stays inside the one-hour prompt cache and ends before the ~54 minutes after which Claude Code 2.1.299+ compacts an idle conversation, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
+| `AGENT_HUB_JWAIT_FOR` | `50m` | How long one `jwait` waits when it is given neither `--for`, `--until` nor `--stream` (a stream waits 29m, inside a Monitor's 30-minute cap), and the `--for` of a Codex hub's digest `jwait` command: a duration such as `50m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `50m`). The default stays inside the one-hour prompt cache and ends before the ~54 minutes after which Claude Code 2.1.299+ compacts an idle conversation, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
 | `AGENT_HUB_OWNER_DIGEST_AFTER` | `3h` | Owner's silence after which the hub opens its reply with `ask inbox`: `ask inbox --if-quiet` prints nothing while the owner's latest recorded answer (an answered question, a standing permission, an approved plan, in any stage's register) is newer than this, and the digest otherwise. A duration such as `90m` or `6h`, at most `30d`; anything else warns and falls back to `3h`. Hub-wide. |
 | `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
@@ -918,8 +918,8 @@ The environment still wins for every key, so whatever sets environment variables
 | Setting | Default | Where | Meaning |
 |---|---|---|---|
 | `AGENT_HUB_CONTEXT_BUDGET` | `on` | hub home only | `off` (or JSON `false`) disables the context-budget hook. |
-| `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` | hub home; private stage override for registered autopilot hub | First warning, then one more every step; every owner prompt above warn receives the hub's acknowledgement/handoff instruction. |
-| `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home; private stage override for registered autopilot hub | From here the tools below are denied; prompts remain response opportunities. |
+| `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` (60 %, 10 % of a known window; a registered hub: at most `180000`, `40000`) | hub home; private stage override for registered autopilot hub | First warning, then one more every step; every owner prompt above warn receives the hub's acknowledgement/handoff instruction. |
+| `AGENT_HUB_CONTEXT_BLOCK` | `500000` (85 % of a known window; a registered hub: at most `300000`) | hub home; private stage override for registered autopilot hub | From here the tools below are denied; prompts remain response opportunities. |
 | `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
 | `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
 | `AGENT_HUB_CONTEXT_TODO` | points at `delamain:handoff` | hub home only | The "what to do" sentence of both messages. |

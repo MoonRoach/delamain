@@ -776,9 +776,12 @@ def roles_digest(stage: str) -> str:
 
 
 def jwait_command(stage: str, tag: str, since=None) -> str:
+    """The hub's digest waiter. A Claude hub streams it under one Monitor (a wake is one call that already carries the
+    lines, no re-arm); a Codex hub runs it to its first batch."""
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
+    wait = "--stream" if hc.host_engine() != "codex" else f"--for {hc.jwait_for()}"
     return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --hub-events "
-            f"{since_opt}--for {hc.jwait_for()} --note \"scheduled round\"")
+            f"{since_opt}{wait} --note \"scheduled round\"")
 
 
 def hub_notes_line(stage: str) -> str:
@@ -799,7 +802,7 @@ def wait_procedure() -> str:
     """Wait advice for the host writing this digest or handoff."""
     if hc.host_engine() == "codex":
         return "Codex: use a yielded shell session and its continuation tool; keep each wait at most 60 s"
-    return "Claude: Bash `run_in_background: true`"
+    return "Claude: the command of one Monitor, timeout_ms 1800000; re-arm it when its ALARM ends the stream"
 
 
 def watchdog_digest(stage: str) -> str:

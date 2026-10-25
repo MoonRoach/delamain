@@ -99,18 +99,18 @@ grep -q '^5\. A grilling with the owner was in progress' $R/ceil.md; check $? 0 
 succeed > $R/c4.out 2>&1; check "$?:$(grep -c 'context ceiling is reached: write the handoff and ask the owner' $R/c4.out)" "2:1" "ceiling: \`hub succeed\` still refuses without the owner's word"
 succeed --owner-asked > $R/c5.out 2>&1; check $? 0 "ceiling: …and passes with --owner-asked"
 unset AGENT_HUB_GRILLING_CEILING
-# A configured ceiling can be lower than both ordinary budget thresholds.
+# A configured ceiling can be lower than both ordinary budget thresholds (a hub's warn is capped at 180k).
 setup; usage 1000; skill mattpocock-skills:grilling > /dev/null
-export AGENT_HUB_GRILLING_CEILING=180000
-usage 190000
+export AGENT_HUB_GRILLING_CEILING=120000
+usage 130000
 cbh UserPromptSubmit > $R/low-ceiling.out
-grep -q 'The context ceiling 180k is reached mid-grilling' $R/low-ceiling.out && grep -q 'with --owner-asked added' $R/low-ceiling.out
+grep -q 'The context ceiling 120k is reached mid-grilling' $R/low-ceiling.out && grep -q 'with --owner-asked added' $R/low-ceiling.out
 check $? 0 "ceiling below warn/block: the owner is told immediately, with the owner-only handoff procedure"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1])).get("ceiling")' "$(MK)"; check $? 0 "ceiling below warn/block: recorded in the mark"
 CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub handoff --stage stage-a --out $R/low-ceiling.md > $R/low-handoff.out 2>&1
 check $? 0 "ceiling below warn/block: preparing the handoff passes immediately"
 cbh PreToolUse Bash "$(bash_in 'git status')" > $R/low-gate.out
-grep -q '"deny"' $R/low-gate.out && grep -q 'at or above the 180k grilling ceiling' $R/low-gate.out
+grep -q '"deny"' $R/low-gate.out && grep -q 'at or above the 120k grilling ceiling' $R/low-gate.out
 check $? 0 "ceiling below warn/block: the ceiling gate uses its own threshold"
 cbh UserPromptSubmit > $R/low-repeat.out; check "$(wc -c < $R/low-repeat.out | tr -d ' ')" 0 "ceiling below warn/block: the warning is not repeated in the same bucket"
 unset AGENT_HUB_GRILLING_CEILING

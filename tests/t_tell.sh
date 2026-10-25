@@ -21,6 +21,9 @@ grep -q 'name     Hub stage-a #16' $O/t1.out; check $? 0 "…and the name from c
 # 2. --question
 FAKE_AGENTS=prev FAKE_PREV_SID=$HUBC tell tc-core --question "merge or wait?" > $O/t2.out 2>&1; check $? 0 "--question exits 0"
 grep -q '\[tc-dolya-hub-4\] @hub QUESTION merge or wait?$' $JC; check $? 0 "--question: @hub QUESTION …"
+FAKE_AGENTS=prev FAKE_PREV_SID=$HUBC tell tc-core --urgent "stop the merge" > $O/t2u.out 2>&1; check $? 0 "--urgent exits 0"
+grep -q '\[tc-dolya-hub-4\] @hub URGENT stop the merge$' $JC; check $? 0 "--urgent: @hub URGENT …"
+tell tc-core --urgent --question "both" > $O/t2v.out 2>&1; check $? 2 "negative: --urgent with --question is a usage error"
 # 3. --role: a headless holder reads its inbox, so tell hands the text to agent send (which journals) and writes no line of its own
 W=$O/w; mkdir -p $W; echo "brief: wait" > $W/b.md
 FAKE_HOLD=0 HUB_TAG=hub-test $B/agent spawn --stage tc-core --role steward --cwd $W --model haiku --brief $W/b.md > $O/spawn.out 2>&1; check $? 0 "spawn a headless steward (fake CLI)"

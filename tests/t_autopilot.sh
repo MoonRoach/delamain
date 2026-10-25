@@ -561,6 +561,8 @@ $B/hub takeover --stage stage-a --session $HUB3 --n 2 --handoff $H > /dev/null 2
 # ================================================================== the hook
 setup
 TR=$R/tr.jsonl
+# The procedure below is written against the plugin's general thresholds (300k/500k); a hub's own cap has its test after it.
+export AGENT_HUB_CONTEXT_WARN=300000 AGENT_HUB_CONTEXT_BLOCK=500000 AGENT_HUB_CONTEXT_WARN_STEP=50000
 usage(){ python3 -c 'import json,sys; print(json.dumps({"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":int(sys.argv[1])}}}))' "$1" >> $TR; }
 # HOOK_EFFORT: the effort.level the CLI puts into the hook input (default high; "none" = the input carries none)
 cbh(){ python3 -c 'import json,sys; d={"hook_event_name":sys.argv[1],"session_id":sys.argv[5],"transcript_path":sys.argv[2],"tool_name":sys.argv[3],"tool_input":json.loads(sys.argv[4]),"permission_mode":"acceptEdits","cwd":"/repo/x","prompt":sys.argv[6]}
@@ -595,6 +597,19 @@ for tool in Bash Agent SendMessage; do
   cbh PreToolUse "$tool" '{"command":"ls","prompt":"ordinary work","message":"ordinary work"}' > $R/h3.out 2> $R/h3.err
   check "$?:$(wc -c < $R/h3.out | tr -d ' '):$(wc -c < $R/h3.err | tr -d ' ')" "0:0:0" "hook: warn permits ordinary $tool before block (successful, silent)"
 done
+# a registered hub's own defaults are capped (180k warn, 300k block) whatever the window; the general ones are not
+( unset AGENT_HUB_CONTEXT_WARN AGENT_HUB_CONTEXT_BLOCK AGENT_HUB_CONTEXT_WARN_STEP
+  TR=$R/tr-cap-a.jsonl; rm -f $TR; usage 1000; cbh PostToolUse Bash > /dev/null; usage 170000; cbh PostToolUse Bash ) > $R/cap1.out
+check "$(wc -c < $R/cap1.out | tr -d ' ')" 0 "hub cap: 170k is below a hub's warn (silent)"
+( unset AGENT_HUB_CONTEXT_WARN AGENT_HUB_CONTEXT_BLOCK AGENT_HUB_CONTEXT_WARN_STEP
+  TR=$R/tr-cap-b.jsonl; rm -f $TR; usage 1000; cbh PostToolUse Bash > /dev/null; usage 190000; cbh PostToolUse Bash ) > $R/cap2.out
+grep -qF 'Autopilot is on' $R/cap2.out; check $? 0 "hub cap: 190k crosses a hub's warn (180k, not the general 300k)"
+( unset AGENT_HUB_CONTEXT_WARN AGENT_HUB_CONTEXT_BLOCK AGENT_HUB_CONTEXT_WARN_STEP
+  TR=$R/tr-cap-c.jsonl; rm -f $TR; usage 1000; cbh PostToolUse Bash > /dev/null; usage 310000; cbh PreToolUse Bash '{"command":"git status"}' ) > $R/cap3.out
+grep -q '"deny"' $R/cap3.out; check $? 0 "hub cap: 310k is past a hub's block (300k)"
+( unset AGENT_HUB_CONTEXT_BLOCK AGENT_HUB_CONTEXT_WARN_STEP; export AGENT_HUB_CONTEXT_WARN=250000
+  TR=$R/tr-cap-d.jsonl; rm -f $TR; usage 1000; cbh PostToolUse Bash > /dev/null; usage 190000; cbh PostToolUse Bash ) > $R/cap4.out
+check "$(wc -c < $R/cap4.out | tr -d ' ')" 0 "hub cap: a configured warn still wins over the cap"
 usage 510000
 cbh PreToolUse Bash '{"command":"git status"}' | grep -q '"deny".*Hand over now'; check $? 0 "hook, block: Bash denied with \"hand over now\""
 cbh PreToolUse Edit '{"file_path":"/x/notes.md"}' | grep -q '"deny"'; check $? 0 "hook, block: Edit of another file denied"

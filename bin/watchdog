@@ -1437,19 +1437,47 @@ def descendants(pid, procs: dict) -> list:
     return sorted(out)
 
 
+# The shells a session runs its work in. Claude Code starts every Bash call and background task as a shell (`/bin/zsh -c
+# source <snapshot> && … eval '<command>' && pwd -P >| <file>`, never exec'd away thanks to the trailing `pwd`; the shell is
+# the user's, or CLAUDE_CODE_SHELL), and its stdio MCP servers (`npm exec …`, `node …`, `uvx …`) and LSP servers directly,
+# for the life of the session. A command that runs `exec` itself replaces its shell and is no longer seen as work.
+SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "ash", "busybox"})
+
+
+def is_shell(cmd: str) -> bool:
+    """Whether a `ps -o comm=` value is a shell: its basename, or that of its first word (macOS shows argv[0], a path that
+    may hold a space, or `npm exec …` for a process that set its title; Linux the 15-character name), without a login
+    shell's leading '-' and a version suffix (`bash-5.2`)."""
+    names = {os.path.basename(cmd.strip())}
+    if cmd.split():
+        names.add(os.path.basename(cmd.split()[0]))
+    return any(re.sub(r"-[0-9][0-9.]*$", "", n.lstrip("-")) in SHELLS for n in names)
+
+
+def work_children(pid, procs: dict) -> list:
+    """[(pid, command)] of the processes that are work of the session `pid`: each direct child that is a shell (see SHELLS)
+    and everything below it, in pid order. A direct child that is no shell is an MCP or LSP server the session keeps for its
+    whole life, and its subtree is its own; counting it would make every session with an MCP server unstoppable."""
+    out = []
+    for p, (ppid, _, cmd) in procs.items():
+        if ppid == pid and is_shell(cmd):
+            out += [(p, cmd)] + descendants(p, procs)
+    return sorted(out)
+
+
 def busy_reason(row: dict, procs: dict) -> str:
     """Why the session of a row may be working or waiting, "" when nothing says so. Only an `idle` status with a `done`
     state is quiet: busy, working, blocked, waiting, running, a missing or any other value protects the session, and so does
-    ANY live process below its own, whatever it is and however deep (a Bash call, a background task, a Python or Node child, a
-    `sleep`: R7 cannot tell a working child from an MCP server, so every child counts). A pid that is not in the table is
-    unknown, and protects as well."""
+    a live shell among the direct children of its process, whatever runs in it (a Bash call, a background task, a
+    leftover `jwait`). Its MCP servers do not (see work_children). A pid that is not in the table is unknown, and protects
+    as well."""
     status, state = row.get("status"), row.get("state")
     if status != "idle" or state != "done":
         return f"{status or '?'}/{state or '?'}"
     pid = row.get("pid")
     if pid not in procs:
         return "not in the process table"
-    below = descendants(pid, procs)
+    below = work_children(pid, procs)
     if below:
         return f"running a child process ({os.path.basename(below[0][1]).lstrip('-')}" + (f" and {len(below) - 1} more" if len(below) > 1 else "") + ")"
     return ""
@@ -1473,7 +1501,7 @@ def stop_blocker(cli, row: dict, cwd, need: dt.timedelta, now: dt.datetime):
        table of processes that must be read completely);
     2. the last look, in this order: a fresh `claude agents --json` (not the tick's cache, and up to 30 s slow) that lists
        exactly one row with that id, still a running background session with the same full sessionId and the same process,
-       `idle` and `done`; a fresh process table in which that process has no descendant at all; the activity once more (the
+       `idle` and `done`; a fresh process table in which that process has no shell child (see busy_reason); the activity once more (the
        owner may have resumed the session meanwhile); the registries once more (a role set, a successor or a takeover
        started while the listing was being made); and, last of all, AGENT_HUB_WATCHDOG_REAP (the environment and the strictly
        read config.json).
@@ -1543,7 +1571,7 @@ def report_busy(tick: Tick, stage: str, ident: str, why: str, quiet: dt.timedelt
 def rule_r7(tick: Tick) -> None:
     """Stop (never remove) the background session of a retired hub that is live nowhere on the machine, once it has been quiet
     for the wake-after time (at least 15 minutes) and only when it is idle: a busy, blocked or otherwise not idle session, or
-    one with any live descendant process, is reported once a day and left to the owner. Everything unknown (a file that is not
+    one with a live shell child (a command in flight), is reported once a day and left to the owner. Everything unknown (a file that is not
     what it should be, a process table that is not read completely, a setting not understood) stops nothing. The registries of
     every home, the listing, the process table and the own setting are read again right before each stop (see stop_blocker)."""
     try:

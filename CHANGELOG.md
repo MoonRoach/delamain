@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The watchdog stops retired hubs that keep MCP servers.** R7 counted every live descendant of a session's process as
+  work, and every Claude session keeps its MCP servers as children, so a retired hub with context7 or chrome-devtools was
+  only reported, never stopped (two such hubs of one stage held their servers for days). Now only a shell among the direct
+  children protects the session (Claude Code runs every Bash call and background task in one); a direct child that is
+  no shell (an MCP or LSP server) does not count, nor does anything below it. A background command that runs `exec`
+  itself replaces its shell and is no longer seen as work.
+
 ## 1.0.17 — 2026-10-23
 
 - **Handoff lessons cannot be waved away.** With `AGENT_HUB_HANDOFF_LESSONS` on, a § 7 that names neither a lesson

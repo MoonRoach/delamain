@@ -110,6 +110,12 @@ grep -q "\[cli\] @hub-3 (session resumed, pid [0-9]*) \[agent-hub watchdog\] sd:
 check $? 0 "R3 detached: the hub got the wake text (digest jwait --since, one waiter, quiet)"
 grep -q "\[delamain watchdog\]" "$(J sd)"; check $? 1 "rename: the wake prefix written now is the former name, not the new form (a hub on an older plugin copy reads only it)"
 tick > /dev/null; check "$(runs sd)" 2 "R3 safety: a second tick in the same episode wakes no second time"
+# R3 held: another stage's hub addressing @hub waits for the stream deadline (30 min), then wakes a hub without a waiter
+mkdir -p "$R/sh-peer"; mk_dhub sh
+FX jline sh 16 "[sh-peer-hub-4] @hub fyi my side is merged"
+tick > /dev/null; check "$(runs sh)" 1 "R3 held negative: a 16-min-old line from another stage's hub does not wake"
+mk_dhub sh2; FX jline sh2 31 "[sh-peer-hub-4] @hub fyi my side is merged"
+tick > /dev/null; check "$(runs sh2)" 2 "R3 held: the same line 31 min old wakes a hub that has no waiter (late, not lost)"
 
 # R3 detached negatives: nothing is resumed
 neg_detached(){  # NAME MINUTES-OLD LINE [SETUP-COMMAND]: one stage, one waiting-line situation, the hub must stay asleep

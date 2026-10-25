@@ -12,9 +12,7 @@
     longer wakes it: `jwait` prints it with the next batch that does, or at the deadline, under `HELD`, and a
     waiter killed before that leaves it for the next one. Status words, QUESTION, URGENT, FAILED, TIMEOUT and
     CONFLICT still wake; `tell --urgent` writes URGENT, and a pace crossing to `exhaust` carries it too. The watchdog
-    counts only waking lines as waiting for the hub.
-  - A registered hub's context-budget defaults are capped at 180K warn, 40K step and 300K block, whatever the model's
-    window (60 % of a 1M window was 600K). A value set in the hub home's config still wins.
+    wakes a hub that has no waiter for a held line only after 30 minutes.
 
 ## 1.0.17 — 2026-10-23
 

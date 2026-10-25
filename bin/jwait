@@ -260,7 +260,7 @@ class Filter:
         hits = [t for t in self.tags if hc.tag_is(tag, t) or hc.mentions(text, t, self.stage)]
         if not hits:
             return None
-        if hits == ["hub"] and self.passive_sender(tag) and not HELD_WAKE_RE.search(text):
+        if set(hits) == {"hub"} and self.passive_sender(tag) and not HELD_WAKE_RE.search(text):
             return "held"
         return "wake"
 
@@ -435,6 +435,7 @@ def main(argv: list) -> int:
     # day later than the latest day the caller has read (midnight rollover) and lines from --since.
     # Lines that appear after the start are always news. --file sources never baseline: a script
     # may have asked its question before jwait started.
+    start_day = start.date().isoformat()
     known_days = [k.rsplit(":", 1)[1] for k in state if k.startswith(f"journal:{stage}:")]
     latest_known = max(known_days) if known_days else None
     seen_now: dict = {}  # sid -> set of keys seen this run
@@ -461,8 +462,8 @@ def main(argv: list) -> int:
         if not src.is_journal or src.sid in state or not initial:
             return True
         day = src.sid.rsplit(":", 1)[1]
-        if latest_known and day > latest_known:
-            return True
+        if (latest_known and day > latest_known) or day > start_day:
+            return True  # a day after the latest one read, or one that began while this run waited (midnight)
         if since_hit(src, text):
             return True
         baselined[0] += 1
@@ -542,7 +543,11 @@ def main(argv: list) -> int:
                 if not args.stream:
                     return 0
                 first_match_at = None
-                continue
+                if t < deadline:
+                    continue
+                # a stream past its deadline ends with the ALARM even while lines keep coming: the hub re-arms on it
+                print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
+                return 3
             if t >= deadline:
                 finish(bool(held))
                 warn_baseline()

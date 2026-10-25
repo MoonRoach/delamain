@@ -311,5 +311,16 @@ HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-e
 check $rc 3 "--stream ends at the deadline"
 check "$(grep -c '^NEW: 1 lines' $O/o16.out)" 2 "--stream printed two batches"
 grep -q 'first-batch' $O/o16.out && grep -q 'second-batch' $O/o16.out && grep -q '^ALARM r16' $O/o16.out; check $? 0 "…with both lines and the ALARM"
+# a stream past its deadline ends with the ALARM even while lines keep coming
+( armed $O/o17.out; for i in $(seq 1 24); do $B/jlog --tag builder "DONE busy-$i" >/dev/null; sleep 0.5; done ) & bp=$!
+t0=$(date +%s)
+HUB_TAG=hub-16 bounded 30 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --stream --settle 1 --for 4s --note r17 --caller s17 > $O/o17.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 )); wait $bp
+check "$rc:$(grep -c '^ALARM r17' $O/o17.out)" "3:1" "--stream ends at the deadline under a steady stream of lines"
+[ $el -le 9 ]; check $? 0 "…within a settle of it (${el}s)"
+# a repeated `hub` tag (a hub registered with the tag `hub` itself) still holds
+( armed $O/o18.out; $B/jlog --tag stage-b-hub-3 "@hub FYI repeated tag" >/dev/null ) &
+$B/jwait --journal --stage stage-a --tag hub --tag hub --hub-events --settle 1 --for 4s --note r18 --caller s18 > $O/o18.out 2>&1; rc=$?
+check $rc 3 "a repeated --tag hub: another hub's plain line is still held"
 check "$(waited 29 AGENT_HUB_JWAIT_FOR=50m -- --journal --caller d1 --stage stage-a --stream)" ok "--stream without --for waits 29 minutes, not the setting"
 exit $fail

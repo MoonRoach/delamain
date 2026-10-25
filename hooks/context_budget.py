@@ -40,7 +40,6 @@ overrides, with precedence environment > stage > home > default; docs/reference.
   AGENT_HUB_CONTEXT_BUDGET       on | off (default on)
   AGENT_HUB_CONTEXT_WARN         300000      AGENT_HUB_CONTEXT_WARN_STEP  50000
   AGENT_HUB_CONTEXT_BLOCK        500000      AGENT_HUB_CONTEXT_BLOCK_TOOLS ["Agent", "Task", "SendMessage"]
-  (with a known window: 60 %, 10 % and 85 % of it; a registered hub's defaults are capped at 180000, 40000, 300000)
   AGENT_HUB_CONTEXT_ESCAPE       regex, default HANDOFF-<name>.md or handoff-ok
   AGENT_HUB_CONTEXT_TODO         the "what to do" sentence of both messages
   AGENT_HUB_STATE_DIR            state directory (default <hub home>/.state); this hook uses <state>/context-budget/
@@ -82,11 +81,6 @@ CHUNK = 1 << 20
 MAX_SCAN = 64 << 20  # give up (silently) after reading this much from the tail
 PRUNE_AFTER_DAYS = 30
 DEFAULTS = {"warn": 300_000, "step": 50_000, "block": 500_000}
-# A registered hub's defaults never go above these, whatever the window: a hub is woken many times an hour and every wake
-# re-reads its whole context, so its bill grows with the context it carries, not with the work (santinel hubs on 25.10:
-# 200–370K per wake, 30–45M cached tokens read per hub in an evening). A handoff costs one cold start of ~80K; carrying
-# 300K instead of ~130K on average costs more within a few dozen wakes. Below the 200K of idle compaction, too.
-HUB_CAP = {"warn": 180_000, "step": 40_000, "block": 300_000}
 DEFAULT_TOOLS = ["Agent", "Task", "SendMessage"]
 DEFAULT_ESCAPE = r"HANDOFF-[^\s/\\'\"`]*\.md|handoff-ok"
 AUTOPILOT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit", "apply_patch")
@@ -887,8 +881,6 @@ def handle(data, hc, state_dir, key, writable=True):
         window = None
     defaults = ({"warn": max(1, int(window * .60)), "block": max(1, int(window * .85)),
                  "step": max(1, int(window * .10))} if window else DEFAULTS)
-    if hub_stage:
-        defaults = {k: min(v, HUB_CAP[k]) for k, v in defaults.items()}
     warn = budget_setting(hc, "AGENT_HUB_CONTEXT_WARN", defaults["warn"], hub_stage)
     block = budget_setting(hc, "AGENT_HUB_CONTEXT_BLOCK", defaults["block"], hub_stage)
     step = budget_setting(hc, "AGENT_HUB_CONTEXT_WARN_STEP", defaults["step"], hub_stage)

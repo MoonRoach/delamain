@@ -918,8 +918,8 @@ The environment still wins for every key, so whatever sets environment variables
 | Setting | Default | Where | Meaning |
 |---|---|---|---|
 | `AGENT_HUB_CONTEXT_BUDGET` | `on` | hub home only | `off` (or JSON `false`) disables the context-budget hook. |
-| `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` (60 %, 10 % of a known window; a registered hub: at most `180000`, `40000`) | hub home; private stage override for registered autopilot hub | First warning, then one more every step; every owner prompt above warn receives the hub's acknowledgement/handoff instruction. |
-| `AGENT_HUB_CONTEXT_BLOCK` | `500000` (85 % of a known window; a registered hub: at most `300000`) | hub home; private stage override for registered autopilot hub | From here the tools below are denied; prompts remain response opportunities. |
+| `AGENT_HUB_CONTEXT_WARN`, `AGENT_HUB_CONTEXT_WARN_STEP` | `300000`, `50000` | hub home; private stage override for registered autopilot hub | First warning, then one more every step; every owner prompt above warn receives the hub's acknowledgement/handoff instruction. |
+| `AGENT_HUB_CONTEXT_BLOCK` | `500000` | hub home; private stage override for registered autopilot hub | From here the tools below are denied; prompts remain response opportunities. |
 | `AGENT_HUB_CONTEXT_BLOCK_TOOLS` | `["Agent", "Task", "SendMessage"]` | hub home only | Tools denied past the block threshold. |
 | `AGENT_HUB_CONTEXT_ESCAPE` | `HANDOFF-<name>.md` or `handoff-ok` | hub home only | Regex; a tool input matching it anywhere passes (handing over). Deliberately loose: the block is a nudge that leaves a trace in the transcript, not a lock — a prompt that merely cites a handoff file passes. |
 | `AGENT_HUB_CONTEXT_TODO` | points at `delamain:handoff` | hub home only | The "what to do" sentence of both messages. |

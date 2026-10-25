@@ -594,10 +594,13 @@ def claude_rows(tick: Tick):
 
 # ---------------------------------------------------------------- what waits for the hub
 
+HELD_WAKE_AFTER = dt.timedelta(minutes=30)  # jwait's stream deadline (29m) and its settle
+
+
 def waiting_lines(tick: Tick, stage: str, rec: dict) -> list:
     """[(stamp, key, text)] of the journal lines the hub's own digest `jwait` would deliver (jwait.hub_filter), that no
     `jwait` of the hub has consumed (its seen-state, under either of its caller names), stamped after the hub took
-    over and at least WAKE_AFTER ago."""
+    over and at least WAKE_AFTER ago (a held line: at least HELD_WAKE_AFTER)."""
     jw = tool("jwait")
     flt = jw.hub_filter(stage, rec.get("tag") or "hub")
     states = [jw.load_state(c) for c in callers_of(rec)]
@@ -612,11 +615,15 @@ def waiting_lines(tick: Tick, stage: str, rec: dict) -> list:
             seen |= set((s.get(sid) or {}).get("seen", []))
         for key, text in jw.Source(sid, hc.journal_path(stage, day), "journal", True).poll():
             parsed = hc.parse_journal_line(text)
-            if key in seen or not parsed or not flt.accepts(text):
+            kind = flt.classify(text) if parsed and key not in seen else None
+            if not kind:
                 continue
             hh, mm = map(int, parsed[0].split(":"))
             stamp = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ)
-            if (set_at and stamp < set_at) or tick.now - stamp < tick.wake_after:
+            # a held line (another stage's hub, the pacer) never wakes a waiting hub; one without a waiter gets it
+            # after the stream deadline a waiter would have printed it at, so a plain `tell` is late, never lost
+            after = max(tick.wake_after, HELD_WAKE_AFTER) if kind == "held" else tick.wake_after
+            if (set_at and stamp < set_at) or tick.now - stamp < after:
                 continue
             out.append((stamp, key, text))
     return sorted(out)

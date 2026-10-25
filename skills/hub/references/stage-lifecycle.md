@@ -92,16 +92,24 @@ are under *Choosing how to launch work* in `SKILL.md` and [launch-and-executors.
 ## Waiting, in full
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (50m by
-  default, `AGENT_HUB_JWAIT_FOR`). The prompt cache lives one hour: a wake after a longer sleep re-writes the whole
-  context into it, so a longer wait costs more than it saves. The Bash `timeout` stays at or above `--for`. Its
-  completion notification wakes the coordinator.
+- **Claude Code:** the digest's `jwait … --stream` as the command of one `Monitor` with `timeout_ms: 1800000`. Every
+  batch is a Monitor event whose text carries the lines, so a wake is one model call over the context: no output file
+  to read, no waiter to re-arm. A background Bash `jwait` costs two (its notification carries only the command, the
+  lines sit in a file). The stream ends with `ALARM` at its deadline (29 minutes by default, inside the Monitor's
+  30-minute cap and the one-hour prompt cache); then start one new Monitor. A Claude hub that cannot use Monitor runs
+  the old form: Bash `run_in_background: true`, `timeout: 3600000`, `--for 50m` (`AGENT_HUB_JWAIT_FOR`).
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 50m` —
+- `jwait --journal --tag hub-<N> --tag hub --hub-events --stream` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. `--for` defaults to 50m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
+  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. Without `--stream`, `--for`
+  defaults to 50m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm).
+  Held lines: a line that reaches you only as `@hub` and is signed by another stage's hub (`tell`) or by `[pace]` does
+  not wake you; it comes with the next batch, or at the deadline, under `HELD (did not wake you)`. It wakes like any
+  line with a status word, QUESTION, URGENT (`tell --urgent`), FAILED, TIMEOUT or CONFLICT. On 25.10 such lines were
+  a third of the santinel hubs' wakes, each a model call over a 200–370K context. A `--match` on another hub's
+  signature (`\[dolya-hub-[0-9]+\] @hub`) undoes this: do not add one. Called with
   `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is

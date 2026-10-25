@@ -65,7 +65,7 @@ if case in ('all', 'host', *host_cases):
         r = call(bins/'hub','takeover','--stage','stage-a','--session',new,'--dry-run',extra=extra,cwd=cwd)
         assert r.returncode == 0, (name,r.stdout,r.stderr)
         digest = r.stdout[r.stdout.index('DIGEST'):]
-        expected = 'yielded shell session' if host=='codex' else 'Bash `run_in_background: true`'
+        expected = 'yielded shell session' if host=='codex' else 'the command of one Monitor'
         assert expected in digest, (f'{name}: takeover digest must follow actual host, not executor default',digest)
         assert ('yielded shell session' in digest) == (host=='codex'), (name,digest)
         if host == 'claude':

@@ -2,10 +2,12 @@
 """Wait for new lines in the stage journal and/or log files; print them as one block and exit.
 
 The only waiter a hub needs. Run it as ONE command with Bash `run_in_background: true`;
-the harness wakes you when it exits. Never re-arm Monitor or cron for the journal.
+the harness wakes you when it exits. In Claude Code a hub runs it with --stream as the command of ONE Monitor instead:
+each batch is a Monitor event whose text carries the lines, so a wake costs one model call and needs no re-arm.
 
   jwait --journal [--stage stage-a] [--file PATH ...] [--hub-events] [--match REGEX ...] [--tag T ...]
         [--exclude-tag T ...] [--settle 20] [--until HH:MM[:SS] | --for 6h] [--note "…"] [--since HH:MM|ISO]
+        [--stream]
   jwait --until 20:23 --note "check the nightly import"   # pure alarm, no source
   jwait --until 20:23:30 --note "…"                        # to the second; so does --until 2026-10-04T20:23:30
 
@@ -16,6 +18,11 @@ Filters (a line is delivered when ANY positive filter matches; no positive filte
   --match REGEX   Python regex searched in the line (repeatable; adds to --hub-events)
   --tag T         line written with tag T or a sub-tag T/…, or addressed "@T" or "@<this stage>-T"
                   (the stage-qualified signature of another stage's hub, jlog's `core-c-hub-30`) (repeatable)
+Held lines (deliver without waking): a line that passes the filters only by being addressed to the hub (`--tag hub`)
+                  and is signed by another stage's hub (`[dolya-hub-35] @hub …`, as `tell` writes) or by the limit
+                  pacer (`[pace] @hub LIMIT …`) does not wake: it is printed with the next batch that does, or at the
+                  deadline, under "HELD". It wakes like any line when it also matches a status word (--hub-events),
+                  FAILED, TIMEOUT, CONFLICT or URGENT (`tell --urgent`), or a --match pattern.
 Exclusions (always win):
   --exclude-tag T drops lines written with tag T and its sub-tags T/… (repeatable). The caller's
                   own tag ($HUB_TAG or the registry) is excluded by default, in both forms: T and
@@ -38,6 +45,8 @@ With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.jso
 waiter is not woken).
 With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
+--stream: after each batch, print it and keep waiting until the deadline (default --for 29m: a Monitor lives at most
+30 minutes); a batch is one Monitor event, the deadline ALARM ends the stream.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -64,6 +73,10 @@ DEAD_POLL_S = 10.0  # how often --journal looks for a headless agent whose proce
 DEFAULT_FOR = hc.DEFAULT_JWAIT_FOR  # the built-in; main() reads hc.jwait_for() ($AGENT_HUB_JWAIT_FOR)
 MAX_OUT_LINES = 200
 MAX_LINE_CHARS = 1200
+STREAM_FOR = "29m"  # a Claude Code Monitor is killed after 30 minutes; the ALARM comes first
+# Words that make a held line (another stage's hub, the pacer) wake after all, besides the status words.
+HELD_WAKE_RE = re.compile(r"\b(FAILED|TIMEOUT|CONFLICT|URGENT)\b")
+HELD_TAGS = ("pace",)  # limit_pace's tag: an `@hub LIMIT …` crossing is context for the next launch, not a decision now
 
 
 def line_key(line: str, occurrence: int) -> str:
@@ -229,15 +242,42 @@ class Filter:
                 self.exclude.append(f"{own}-{own_tag}")
 
     def accepts(self, text: str) -> bool:
+        """Whether the line wakes the caller (a held line does not; see classify)."""
+        return self.classify(text) == "wake"
+
+    def classify(self, text: str):
+        """"wake", "held" (delivered with the next waking batch, never waking by itself) or None (not for the caller).
+        A line that only matched as addressed to `hub` and is signed by another stage's hub or by the pacer is held,
+        unless it carries a word that asks for a decision now (HELD_WAKE_RE)."""
         parsed = hc.parse_journal_line(text)
         tag = parsed[1] if parsed else ""
         if tag and any(hc.tag_is(tag, x) for x in self.exclude):
-            return False
+            return None
         if not self.patterns and not self.tags:
-            return True
+            return "wake"
         if any(p.search(text) for p in self.patterns):
+            return "wake"
+        hits = [t for t in self.tags if hc.tag_is(tag, t) or hc.mentions(text, t, self.stage)]
+        if not hits:
+            return None
+        if set(hits) == {"hub"} and self.passive_sender(tag) and not HELD_WAKE_RE.search(text):
+            return "held"
+        return "wake"
+
+    def passive_sender(self, tag: str) -> bool:
+        """The pacer, or a hub of another stage signing `<stage>-hub[-N]` in this journal (a known stage, not ours)."""
+        if not tag:
+            return False
+        first = tag.split()[0]
+        if any(hc.tag_is(first, t) for t in HELD_TAGS):
             return True
-        return any(hc.tag_is(tag, t) or hc.mentions(text, t, self.stage) for t in self.tags)
+        m = re.fullmatch(r"(.+)-hub(?:-\d+)?", first)
+        if not m or m.group(1) == self.stage or not hc.STAGE_RE.fullmatch(m.group(1)):
+            return False
+        try:
+            return (hc.root() / m.group(1)).is_dir()
+        except OSError:
+            return False
 
 
 def hub_filter(stage: str, tag: str) -> Filter:
@@ -367,6 +407,7 @@ def main(argv: list) -> int:
     g.add_argument("--for", dest="for_", default=None, help="deadline as a duration: 30m, 6h")
     p.add_argument("--note", default="", help="alarm text")
     p.add_argument("--since", default=None, help="on the initial read, deliver journal lines from HH:MM or an ISO time on")
+    p.add_argument("--stream", action="store_true", help="print each batch and keep waiting until the deadline (Monitor)")
     args = p.parse_args(argv)
 
     stage = hc.check_stage(args.stage or hc.default_stage())
@@ -377,7 +418,7 @@ def main(argv: list) -> int:
     if args.until:
         deadline = hc.parse_deadline(args.until, start)
     else:
-        deadline = start + hc.parse_duration(args.for_ or hc.jwait_for())
+        deadline = start + hc.parse_duration(args.for_ or (STREAM_FOR if args.stream else hc.jwait_for()))
     has_source = args.journal or bool(args.file)
     if not has_source and not (args.until or args.for_):
         raise hc.UsageError("no source (--journal/--file) and no deadline (--until/--for)")
@@ -394,11 +435,13 @@ def main(argv: list) -> int:
     # day later than the latest day the caller has read (midnight rollover) and lines from --since.
     # Lines that appear after the start are always news. --file sources never baseline: a script
     # may have asked its question before jwait started.
+    start_day = start.date().isoformat()
     known_days = [k.rsplit(":", 1)[1] for k in state if k.startswith(f"journal:{stage}:")]
     latest_known = max(known_days) if known_days else None
     seen_now: dict = {}  # sid -> set of keys seen this run
     baselined = [0]
     matched: list = []
+    held: list = []  # (sid, key, label, text) of held lines not yet delivered: not saved as seen until printed
     first_match_at = None
 
     def all_sources():
@@ -419,8 +462,8 @@ def main(argv: list) -> int:
         if not src.is_journal or src.sid in state or not initial:
             return True
         day = src.sid.rsplit(":", 1)[1]
-        if latest_known and day > latest_known:
-            return True
+        if (latest_known and day > latest_known) or day > start_day:
+            return True  # a day after the latest one read, or one that began while this run waited (midnight)
         if since_hit(src, text):
             return True
         baselined[0] += 1
@@ -438,19 +481,36 @@ def main(argv: list) -> int:
                 seen_run.add(key)
                 if dup or not is_news(src, text, initial):
                     continue
-                if flt.accepts(text):
+                kind = flt.classify(text)
+                if kind == "held":
+                    held.append((src.sid, key, src.label, text))
+                elif kind == "wake":
                     matched.append((src.label, text))
                     if first_match_at is None:
                         first_match_at = time.monotonic()
 
-    def finish() -> None:
+    def finish(delivered_held: bool) -> None:
+        """Save what was seen; held lines count as seen only once printed (a killed waiter delivers them next time)."""
+        pending: dict = {}
+        if not delivered_held:
+            for sid, key, _, _ in held:
+                pending.setdefault(sid, set()).add(key)
         updates = {}
         for src in all_sources():
-            seen = seen_now.get(src.sid, set())
+            seen = seen_now.get(src.sid, set()) - pending.get(src.sid, set())
             if seen or src.present:
                 updates[src.sid] = (seen, src.present)
         if updates:
             save_state(caller, updates)
+
+    def deliver() -> None:
+        finish(True)
+        warn_baseline()
+        print_block(matched, [(label, text) for _, _, label, text in held])
+        sys.stdout.flush()
+        matched.clear()
+        held.clear()
+        baselined[0] = 0
 
     def warn_baseline() -> None:
         if baselined[0]:
@@ -479,13 +539,20 @@ def main(argv: list) -> int:
             t = hc.now()
             settled = first_match_at is not None and time.monotonic() - first_match_at >= args.settle
             if settled or (matched and t >= deadline):
-                finish()
-                warn_baseline()
-                print_block(matched)
-                return 0
+                deliver()
+                if not args.stream:
+                    return 0
+                first_match_at = None
+                if t < deadline:
+                    continue
+                # a stream past its deadline ends with the ALARM even while lines keep coming: the hub re-arms on it
+                print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
+                return 3
             if t >= deadline:
-                finish()
+                finish(bool(held))
                 warn_baseline()
+                if held:
+                    print_held([(label, text) for _, _, label, text in held])
                 print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
                 return 3
             time.sleep(POLL_S)
@@ -500,12 +567,23 @@ def fmt_deadline(t) -> str:
     return f"{t:%d.%m %H:%M:%S}" if t.second else f"{t:%d.%m %H:%M}"
 
 
-def print_block(matched: list) -> None:
-    labels = {lab for lab, _ in matched}
+def print_block(matched: list, held: list = ()) -> None:
     print(f"NEW: {len(matched)} lines")
-    for i, (label, text) in enumerate(matched):
+    print_lines(matched)
+    if held:
+        print_held(held)
+
+
+def print_held(held: list) -> None:
+    print(f"HELD (did not wake you): {len(held)} lines")
+    print_lines(held)
+
+
+def print_lines(lines: list) -> None:
+    labels = {lab for lab, _ in lines}
+    for i, (label, text) in enumerate(lines):
         if i >= MAX_OUT_LINES:
-            print(f"… {len(matched) - MAX_OUT_LINES} more lines — read the source")
+            print(f"… {len(lines) - MAX_OUT_LINES} more lines — read the source")
             break
         if len(text) > MAX_LINE_CHARS:
             text = text[:MAX_LINE_CHARS] + " …"

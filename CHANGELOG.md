@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A hub's wakes cost about half as much and come less often.** On 25.10 the santinel stage hubs spent more than
+  half of the owner's Claude week-to-date in one evening, almost all of it on waking: every wake was two model calls
+  over a 200–370K context, and a third of the wakes carried nothing to act on.
+  - A Claude hub waits with `jwait … --stream` under one `Monitor`: each batch is an event that already carries the
+    lines, so a wake is one call with no output file to read and no waiter to re-arm. The stream ends with `ALARM`
+    at 29 minutes (a Monitor lives at most 30). The takeover digest prints this form; a Codex hub keeps `--for`.
+  - A line that reaches the hub only as `@hub` and is signed by another stage's hub (`tell`) or by `[pace]` no
+    longer wakes it: `jwait` prints it with the next batch that does, or at the deadline, under `HELD`, and a
+    waiter killed before that leaves it for the next one. Status words, QUESTION, URGENT, FAILED, TIMEOUT and
+    CONFLICT still wake; `tell --urgent` writes URGENT, and a pace crossing to `exhaust` carries it too. The watchdog
+    wakes a hub that has no waiter for a held line only after 30 minutes.
 - **The watchdog stops retired hubs that keep MCP servers.** R7 counted every live descendant of a session's process as
   work, and every Claude session keeps its MCP servers as children, so a retired hub with context7 or chrome-devtools was
   only reported, never stopped (two such hubs of one stage held their servers for days). Now only a shell among the direct

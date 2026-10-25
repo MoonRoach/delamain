@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Write to another stage's hub: a journal line addressed by the registry, and the registered direct address.
 
-  tell <target-stage> "text" [--question] [--role hub] [--address]
+  tell <target-stage> "text" [--question | --urgent] [--role hub] [--address]
   tell <target-stage> [options] -- "-text that starts with a dash"
 
 The target's current holder of the role (default hub) is read from <target-stage>/roles.json — the registry, not a
 session list: a replaced hub can still run under the same display name. Then:
   1. one line is appended to the target stage's journal, "@hub text" ("@<role> text" for --role; "@hub QUESTION text"
      with --question), signed with your stage-qualified tag (`[dolya-hub-3]`, as `jlog` does in a foreign journal), so
-     the holder's `jwait --tag hub` hears it;
+     the holder's `jwait --tag hub` hears it. A plain line does not wake that hub: its jwait holds it and prints it
+     with the next batch that does wake it, or at its deadline (at most ~30 minutes later). --question (QUESTION)
+     and --urgent (URGENT) wake it at once; so do the status words and FAILED, TIMEOUT or CONFLICT in the text;
   2. the direct address is printed for the rare case a direct message is needed (the other hub must act before its
      next wake-up): the full session id, kind and title; for a Claude session the name a cross-session message
      goes to (from `claude agents --json` by session id; skipped silently when the CLI does not answer). Codex uses
@@ -134,6 +136,7 @@ def main(argv: list) -> int:
     p.add_argument("stage", help="the stage whose hub (or --role) is written to")
     p.add_argument("text", nargs="*", help="line text (newlines are collapsed); a text starting with '-' goes after --; none with --address")
     p.add_argument("--question", action="store_true", help="prefix the text with QUESTION (a jwait wake word)")
+    p.add_argument("--urgent", action="store_true", help="prefix the text with URGENT: the other hub must act before its next wake")
     p.add_argument("--role", default="hub", help="role to address (default: hub)")
     p.add_argument("--address", action="store_true", help="print only the direct address, write nothing")
     args = p.parse_intermixed_args(argv)  # options between the stage and a nargs="*" text: plain parse_args drops the text on older Pythons
@@ -143,6 +146,9 @@ def main(argv: list) -> int:
         raise hc.UsageError("--address takes no text")
     if not args.address and not text:
         raise hc.UsageError("empty text")
+    if args.question and args.urgent:
+        raise hc.UsageError("--question and --urgent: pick one (a question wakes the hub too)")
+    prefix = "QUESTION " if args.question else "URGENT " if args.urgent else ""
     rec = holder(stage, args.role)
     if not args.address:
         tag = hc.signing_tag(stage)
@@ -151,15 +157,15 @@ def main(argv: list) -> int:
                                 "`hub start --stage S --goal \"<what the stage delivers>\" --session $CLAUDE_CODE_SESSION_ID`; anyone else: "
                                 "`roles set <role> <session id> --tag …`)")
         if rec.get("kind") == "headless":
-            return deliver_headless(stage, args.role, tag, ("QUESTION " if args.question else "") + text)
+            return deliver_headless(stage, args.role, tag, prefix + text)
         try:
-            line = hc.journal_append(stage, tag, f"@{args.role} " + ("QUESTION " if args.question else "") + text)
+            line = hc.journal_append(stage, tag, f"@{args.role} " + prefix + text)
         except OSError as e:
             raise hc.Failure(f"could not write the journal {hc.journal_path(stage)}: {e}") from None
         print(line)
         if rec.get("engine") == "codex" and not codex_sessions.detached(stage, rec):
             result = codex_tell.dispatch(stage, args.role, rec,
-                                         ("QUESTION " if args.question else "") + text + f" (from {tag})",
+                                         prefix + text + f" (from {tag})",
                                          {"tag": tag, "journal_path": str(hc.journal_path(stage)), "journal_line": line})
             print("codex tell receipt: " + json.dumps(result, ensure_ascii=False))
             # Pending native work is not successful delivery. Never silently retry unknown sends.

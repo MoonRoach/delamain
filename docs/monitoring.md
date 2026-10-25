@@ -229,9 +229,10 @@ A row of `claude agents --json` is stopped only when all of these hold:
    not registered yet), and not named by a running `hub takeover` / `hub start` (below);
 5. it is **idle**: `status` is `idle` and `state` is `done`. `busy`, `working`, `blocked`, `waiting`, a missing value or
    any other one protects it, and so does **a live shell among the direct children of its process**, whatever runs in it:
-   Claude Code starts every Bash call, background task, monitor and hook as a shell (`/bin/zsh -c …`). A direct child that
-   is no shell is an MCP or LSP server the session keeps for its whole life (`npm exec …`, `node …`, `uvx …`), and it does
-   not protect the session, nor does anything below it (in 1.0.17 and earlier every descendant counted, and a retired hub with an
+   Claude Code starts every Bash call and background task as a shell (`/bin/zsh -c …`, the user's shell or
+   `CLAUDE_CODE_SHELL`). A direct child that is no shell, such as an MCP or LSP server the session keeps for its whole
+   life (`npm exec …`, `node …`, `uvx …`) or the host's `caffeinate`, does not protect the session, nor does anything
+   below it (in 1.0.17 and earlier every descendant counted, and a retired hub with an
    MCP server was never stopped). A process table that cannot be read completely (`ps` fails, or any row of its answer
    cannot be parsed) or does not list the session's pid is unknown and protects it as well. Such a session is not stopped: once a day, while it is quiet, one line in the job output, `log.md`
    and the stage journal says `retired hub <id8> (<stage>) is <status/state> for <age>; stop it by hand: claude stop <id8>`
@@ -284,7 +285,9 @@ role recorded in one still protects its session.
 Not covered, deliberately: a session whose home is in no registry of homes (a project home is registered when a stage is
 registered in it; delete `homes.json` and it is invisible until its next `roles set`); a retired hub that is idle and done,
 has no shell child and has not written anything for 15 minutes yet is working (a long MCP call under a stale status; an MCP
-server started through a shell, `sh -c …`, protects its session instead): it is stopped, and `claude --bg --resume <id>` brings it back. A busy, blocked or shell-holding retired hub is
+server started through a shell, `sh -c …`, protects its session instead); and a background task whose command runs `exec`
+itself (`exec ./long-job.sh`), which replaces its shell, is not seen as work: if it writes nothing for 15 minutes, its retired
+hub is stopped and the task with it: it is stopped, and `claude --bg --resume <id>` brings it back. A busy, blocked or shell-holding retired hub is
 never stopped by R7: the report line is the whole of it.
 
 ### The load hold (R5)

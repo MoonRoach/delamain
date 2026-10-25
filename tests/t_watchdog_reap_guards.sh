@@ -315,7 +315,8 @@ rows "$X"; tick "control, row unchanged"; stopped "control: nothing changes: sto
 # ================================================================== children
 # a child that is no shell is an MCP server the session keeps for its life (`npm exec …`, `node …`): it does not protect the
 # session, nor does a shell below it (the server's own); a shell child next to it does. Two retired hubs on 23.10 kept
-# context7-mcp and chrome-devtools-mcp alive for days because every child used to count
+# context7-mcp and chrome-devtools-mcp alive for days because every child used to count. The shell is started by its path,
+# as Claude Code does (`ps` shows `/bin/sh` on macOS, `sh` on Linux)
 X=$(sid e0000038); retire_hub a "$X" hub-62; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3002"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 1 "…the process of the row has its plain child (sleep)"
@@ -325,7 +326,7 @@ spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "i
 check "$(pgrep -f '^sleep 3004' | wc -l | tr -d ' ')" 1 "…the Python child runs a shell of its own"
 rows "$X"; tick "python child"; stopped "the process has a Python child with a shell below it (an MCP server's own): stopped" "stop e0000039 "
 X=$(sid e000003b); retire_hub a "$X" hub-65; quiet_for "$X" 30
-spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3005"]); subprocess.Popen(["sh", "-c", "sleep 3006; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
+spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3005"]); subprocess.Popen(["/bin/sh", "-c", "sleep 3006; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 rows "$X"; tick "MCP server and shell"; stopped "an MCP server's stand-in and a shell child: not stopped" ""
 grep -q "retired hub e000003b (a) is running a child process (sh and 1 more) for 30 min; stop it by hand: claude stop e000003b" "$R/tick.out"; check $? 0 "…and the report names the shell, not the server"
 unset ROWPID

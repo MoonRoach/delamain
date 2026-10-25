@@ -1430,10 +1430,21 @@ def descendants(pid, procs: dict) -> list:
     return sorted(out)
 
 
-# The shells a session runs its work in. Claude Code starts every Bash call, background task, monitor and hook as a shell
-# (`/bin/zsh -c source <snapshot> && … eval '<command>' && pwd -P >| <file>`, never exec'd away by the trailing `pwd`), and
-# its stdio MCP servers (`npm exec …`, `node …`, `uvx …`) and LSP servers directly, for the life of the session.
+# The shells a session runs its work in. Claude Code starts every Bash call and background task as a shell (`/bin/zsh -c
+# source <snapshot> && … eval '<command>' && pwd -P >| <file>`, never exec'd away thanks to the trailing `pwd`; the shell is
+# the user's, or CLAUDE_CODE_SHELL), and its stdio MCP servers (`npm exec …`, `node …`, `uvx …`) and LSP servers directly,
+# for the life of the session. A command that runs `exec` itself replaces its shell and is no longer seen as work.
 SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "fish", "tcsh", "csh", "ash", "busybox"})
+
+
+def is_shell(cmd: str) -> bool:
+    """Whether a `ps -o comm=` value is a shell: its basename, or that of its first word (macOS shows argv[0], a path that
+    may hold a space, or `npm exec …` for a process that set its title; Linux the 15-character name), without a login
+    shell's leading '-' and a version suffix (`bash-5.2`)."""
+    names = {os.path.basename(cmd.strip())}
+    if cmd.split():
+        names.add(os.path.basename(cmd.split()[0]))
+    return any(re.sub(r"-[0-9][0-9.]*$", "", n.lstrip("-")) in SHELLS for n in names)
 
 
 def work_children(pid, procs: dict) -> list:
@@ -1442,7 +1453,7 @@ def work_children(pid, procs: dict) -> list:
     whole life, and its subtree is its own; counting it would make every session with an MCP server unstoppable."""
     out = []
     for p, (ppid, _, cmd) in procs.items():
-        if ppid == pid and os.path.basename(cmd.split()[0] if cmd.split() else "").lstrip("-") in SHELLS:
+        if ppid == pid and is_shell(cmd):
             out += [(p, cmd)] + descendants(p, procs)
     return sorted(out)
 
@@ -1450,7 +1461,7 @@ def work_children(pid, procs: dict) -> list:
 def busy_reason(row: dict, procs: dict) -> str:
     """Why the session of a row may be working or waiting, "" when nothing says so. Only an `idle` status with a `done`
     state is quiet: busy, working, blocked, waiting, running, a missing or any other value protects the session, and so does
-    a live shell among the direct children of its process, whatever runs in it (a Bash call, a background task, a monitor, a
+    a live shell among the direct children of its process, whatever runs in it (a Bash call, a background task, a
     leftover `jwait`). Its MCP servers do not (see work_children). A pid that is not in the table is unknown, and protects
     as well."""
     status, state = row.get("status"), row.get("state")

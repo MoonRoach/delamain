@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.18 — 2026-10-25
+
 - **A hub's wakes cost about half as much and come less often.** On 25.10 the santinel stage hubs spent more than
   half of the owner's Claude week-to-date in one evening, almost all of it on waking: every wake was two model calls
   over a 200–370K context, and a third of the wakes carried nothing to act on.

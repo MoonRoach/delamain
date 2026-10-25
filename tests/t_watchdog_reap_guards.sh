@@ -10,10 +10,11 @@
 #             there, a transcript dated in the future, a transcript that is not found (kept under another CLAUDE_CONFIG_DIR),
 #             a running sub-agent (a file appended to in a directory whose own time is old), a scan that is cut short or fails,
 #             a session that wrote between the first look and the stop
-#   busy:     a status other than idle/done (busy, blocked, working, waiting, none), ANY live descendant of the process (a shell, a
-#             Python or Node child, a `sleep`, at any depth): reported once a day in the job output and the stage journal, never
-#             stopped; a child that appears between the first look and the last one; a process table that cannot be read
-#             completely (a row that cannot be parsed, `ps` failing): nothing is stopped
+#   busy:     a status other than idle/done (busy, blocked, working, waiting, none), a live shell child of the process (a Bash
+#             call, a background task; also next to an MCP server): reported once a day in the job output and the stage
+#             journal, never stopped; a shell child that appears between the first look and the last one; a process table that
+#             cannot be read completely (a row that cannot be parsed, `ps` failing): nothing is stopped. A child that is no
+#             shell (an MCP server: a `sleep`, a Python child, a shell below it) does not protect: stopped
 #   config:   the own home's config.json read fresh before each stop, and strictly (corrupt, or JSON that is no object: nothing is
 #             stopped, also when the environment says on); a REAP value that is not understood, in the environment or the file:
 #             off; REAP switched off while the last listing is being made: not stopped
@@ -288,8 +289,7 @@ reset_log; FX_NOW=$(python3 -c 'import datetime as d,sys; print((d.datetime.from
 check "$(grep -c 'stop it by hand' "$R/tick.out")" 6 "the next day: reported again, once"
 grep -q "remote:\|local:" "$R/notify.log" "$R/remote.log"; check $? 1 "…and nothing was notified"
 for k in "$B1" "$B2" "$B3" "$B4" "$B5" "$B6"; do "$B/roles" set --stage a hub "$k" --kind cli --tag live > /dev/null; done   # out of the way of the later scenarios
-# ANY live descendant of the process protects the session, whatever it runs and however deep: a shell with its own child,
-# a `sleep`, a Python or Node-like child (an MCP server looks like one, a long tool call too)
+# a shell child of the process (Claude Code runs every Bash call in one) protects the session, whatever runs in it
 X=$(sid e0000037); retire_hub a "$X" hub-60; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["sh", "-c", "sleep 3001; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
 rows "$X"; tick "shell child"; stopped "the process has a shell child with a child of its own (a command in flight): not stopped" ""
@@ -313,15 +313,21 @@ stopped "the row names another process in the fresh listing: not stopped" ""
 rows "$X"; tick "control, row unchanged"; stopped "control: nothing changes: stopped" "stop e0000070 "
 
 # ================================================================== children
-# a child of any kind protects the session: a `sleep`, a Python-like process (an MCP server, a long tool call); the control is
-# the process with no child, which every other test of this file stops
+# a child that is no shell is an MCP server the session keeps for its life (`npm exec …`, `node …`): it does not protect the
+# session, nor does a shell below it (the server's own); a shell child next to it does. Two retired hubs on 23.10 kept
+# context7-mcp and chrome-devtools-mcp alive for days because every child used to count
 X=$(sid e0000038); retire_hub a "$X" hub-62; quiet_for "$X" 30
 spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3002"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
-rows "$X"; tick "sleep child"; stopped "the process has a plain child (sleep): not stopped" ""
-grep -q "retired hub e0000038 (a) is running a child process (sleep) for 30 min; stop it by hand: claude stop e0000038" "$R/tick.out"; check $? 0 "…and it is reported, once"
+check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 1 "…the process of the row has its plain child (sleep)"
+rows "$X"; tick "sleep child"; stopped "the process has a plain child (sleep, an MCP server's stand-in): stopped" "stop e0000038 "
 X=$(sid e0000039); retire_hub a "$X" hub-63; quiet_for "$X" 30
-spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "import time; time.sleep(3000)"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
-rows "$X"; tick "python child"; stopped "the process has a Python child: not stopped" ""
+spawn python3 -c 'import subprocess, time; subprocess.Popen(["python3", "-c", "import subprocess, time; subprocess.Popen([\"sh\", \"-c\", \"sleep 3004; true\"]); time.sleep(3000)"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
+check "$(pgrep -f '^sleep 3004' | wc -l | tr -d ' ')" 1 "…the Python child runs a shell of its own"
+rows "$X"; tick "python child"; stopped "the process has a Python child with a shell below it (an MCP server's own): stopped" "stop e0000039 "
+X=$(sid e000003b); retire_hub a "$X" hub-65; quiet_for "$X" 30
+spawn python3 -c 'import subprocess, time; subprocess.Popen(["sleep", "3005"]); subprocess.Popen(["sh", "-c", "sleep 3006; true"]); time.sleep(3000)'; ROWPID=$SPAWNED; sleep 1
+rows "$X"; tick "MCP server and shell"; stopped "an MCP server's stand-in and a shell child: not stopped" ""
+grep -q "retired hub e000003b (a) is running a child process (sh and 1 more) for 30 min; stop it by hand: claude stop e000003b" "$R/tick.out"; check $? 0 "…and the report names the shell, not the server"
 unset ROWPID
 # a child that appears between the first look and the last one (the process table is read again right before the stop). The
 # process gets the flag path as an argument and says "ready" once it polls for the flag; the hook of the second listing touches the flag
@@ -330,13 +336,13 @@ spawn python3 -c '
 import os, subprocess, sys, time
 open(sys.argv[2], "w").close()
 while not os.path.exists(sys.argv[1]): time.sleep(0.05)
-subprocess.Popen(["sleep", "3003"]); time.sleep(3000)' "$R/child.flag" "$R/child.ready"; ROWPID=$SPAWNED
+subprocess.Popen(["sh", "-c", "sleep 3003; true"]); time.sleep(3000)' "$R/child.flag" "$R/child.ready"; ROWPID=$SPAWNED
 for _ in $(seq 100); do [ -f "$R/child.ready" ] && break; sleep 0.1; done
 kill -0 "$ROWPID" && [ -f "$R/child.ready" ]; check $? 0 "…the process of the row is alive and polling for the flag"
 check "$(pgrep -P "$ROWPID" | wc -l | tr -d ' ')" 0 "…and has no child yet"
 rows "$X"; reset_log; FAKE_WD_ON_AGENTS="2:touch $R/child.flag; sleep 1" WD run > "$R/tick.out" 2>&1; check $? 0 "child appears during the last listing: the tick exits 0"
-check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the child (sleep 3003) did appear, after the flag"
-stopped "a child starts between the first listing and the last look: not stopped" ""
+check "$(pgrep -P "$ROWPID" -f 'sleep 3003' | wc -l | tr -d ' ')" 1 "…the shell child (sleep 3003 in it) did appear, after the flag"
+stopped "a shell child starts between the first listing and the last look: not stopped" ""
 unset ROWPID
 
 # ================================================================== process table

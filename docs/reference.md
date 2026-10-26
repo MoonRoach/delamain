@@ -197,10 +197,10 @@ One line per worktree of the repository (`git worktree list`, the main checkout 
 | PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. |
 | WHO | `agent <role> (stage S)` when an agent run's `meta.json` in any known hub home names the worktree as its worktree or working directory; `hub of S #n` for a hub's `<stage>-hub-<n>` directory under `.claude/worktrees/` or `.worktrees/`, or a registered hub whose recorded worktree it is; another registered role by its name; otherwise `other` (Desktop, Codex app, manual). |
 | LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
-| DIRTY | `git status --porcelain`: untracked files count, ignored ones do not. |
+| DIRTY | `git status --porcelain`: untracked files count, ignored ones do not (build output or a local `.env` goes with the worktree). Files marked `skip-worktree` or `assume-unchanged` that exist on disk count too: git does not show an edit to them. |
 | ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch origin` first). A branch whose merged pull request holds all its commits shows `PR #n`. |
 | MERGED | `yes` — HEAD is an ancestor of the remote default branch (`origin/HEAD`, else `origin/main`, else `origin/master`); `PR #n` — a pull request from this branch was merged into the default branch and HEAD is inside its head commit (`gh pr list --state merged --head BRANCH`; a squash or rebase merge leaves no ancestry). `no` — neither; a commit made after the pull request was merged keeps the branch "not merged". `?` — the merge state of a squash-merged branch cannot be told without `gh` (not installed, not logged in, or `--no-gh`); said once, as a note under the table. |
-| AGE | Since the last change: the last commit, the worktree's reflog entry or the newest edited file, whichever is latest. |
+| AGE | Since the last change, whichever is latest: the last commit, the worktree's newest reflog entry, one of its uncommitted files (the first 200 are looked at), its top directory. |
 | PRUNE | `removable`, or `kept:` with every reason. |
 
 `--prune` removes a worktree only when **all** of this holds: merged, clean (nothing changed, nothing untracked), no
@@ -208,7 +208,11 @@ commit on no remote, no git operation under way (rebase, merge, cherry-pick, rev
 not locked, not the working directory of the caller (nor one inside it), not in use — and where use is `unknown`, no
 change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never removed, with any flag. It runs
 `git worktree remove` (never `--force`; git's own refusal keeps the worktree and is reported), then
-`git worktree prune`, which also clears entries whose directory is gone. The main checkout is listed and never a
+`git worktree prune --expire=<the idle limit>`, which clears the entries whose directory has been gone that long (a
+worktree moved by hand or on an unmounted disk looks the same, and its entry holds its index, so a younger one is kept
+and said so). Before it decides, `--prune` runs `git fetch origin` (`--no-fetch` skips it; a listing fetches only with
+`--fetch`), so a merge that the remote has since lost does not count, and it looks at the processes once more just
+before removing. The main checkout is listed and never a
 candidate. The branch goes with the worktree only when it is merged by ancestry (`git branch -d`); a squash-merged
 branch stays unless `--delete-branches` (`git branch -D`, only for a branch whose merged pull request holds all its
 commits); the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by

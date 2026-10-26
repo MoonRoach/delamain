@@ -75,11 +75,16 @@ replies "ok" or corrects by number. Use the `grilling` skill if it is installed;
    project's agents need MCP servers (a browser, docs, GitLab or DB server), so that `inherit` is the project's default?
    *Recommended:* `inherit` if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json` and its
    agents use them, else leave the default `none`. A single task can still ask for servers with `agent spawn --mcp`.
+11. Files outside git that a new agent worktree needs (`.env`, local configs), or a quick setup step? Committed
+   `.agents/linked` (one git-ignored path per line, symlinked to the main checkout's copy) and an executable
+   `.agents/prepare` (run once in a new worktree, no installs; it is run by the hub's process with the user's rights, outside the
+   agent's sandbox, so say so) do it; see `docs/reference.md`, *Preparing worktrees*.
+   *Recommended:* offer to write them only if the user names such files; otherwise nothing.
 
 `--defaults` (or a headless run with nobody to answer): take the recommended answers, say so in the report, and list
 what the user should confirm. Autopilot and the watchdog stay off in that case: nobody asked for background sessions or
 a scheduled job, and the user's settings are not edited (question 7): list the edit for the user to confirm. Question 10
-stays `none` (nobody has said that the agents need servers) and writes nothing, so an `inherit` the user set earlier
+stays `none` (nobody has said that the agents need servers) and writes nothing, as does question 11, so an `inherit` the user set earlier
 is kept: if the repository has a `.mcp.json` or `mcpServers` in `.claude/settings.json`, list `inherit` for the user to
 confirm.
 

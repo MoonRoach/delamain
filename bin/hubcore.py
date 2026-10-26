@@ -61,7 +61,7 @@ HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
-                "AGENT_HUB_BG_WAIT_CEILING_MS")
+                "AGENT_HUB_BG_WAIT_CEILING_MS", "AGENT_HUB_PREPARE_TIMEOUT")
 PROJECT_KEYS += ("AGENT_HUB_ENGINE", "CODEX_BIN", "AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_CODEX_DEFAULT_MODEL",
                  "AGENT_HUB_CODEX_PERMISSION_MODE", "AGENT_HUB_CODEX_HOOK_TRUST")
 # Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
@@ -106,6 +106,9 @@ PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
 # MCP servers of a Claude agent (`agent spawn --mcp`): a repository may choose inherit or none, never a config file —
 # a file's servers are commands the CLI starts without the approval a project's .mcp.json needs (bin/agent mcp_choice).
 PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
+# Commit provenance (bin/provenance.py): a repository whose git must not see the hooks shim turns it off for its agents.
+PROJECT_KEYS += ("AGENT_HUB_PROVENANCE",)
+BOOL_KEYS += ("AGENT_HUB_PROVENANCE",)
 HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
 # The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
 # not switch it off, so it is the hub home's (and the environment's) to set.
@@ -1361,6 +1364,8 @@ def child_env(extra: Optional[dict] = None) -> dict:
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
     env["HUB_BIN"] = str(BIN)  # for a brief written by an older run: rebuilt at every spawn and resume, so it follows updates
+    for k in ("AGENT_HUB_RUN", "AGENT_HUB_PROVENANCE_REPO"):  # an agent's run id is not its children's (provenance.py)
+        env.pop(k, None)
     if extra:
         env.update(extra)
     return env

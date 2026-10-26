@@ -142,9 +142,11 @@ class PythonRuntime(unittest.TestCase):
             process = real_popen(argv, **kwargs)
             captured.append(process)
             return process
+        # provenance.agent_env is patched out: its git probe would be the first Popen captured, not the launch under test
         with patch.object(agent, 'claude_argv', return_value=['/bin/sh', '-c', 'exit 17']), \
              patch.object(agent, 'child_env', return_value=dict(self.env, HUB_STAGE='fixture')), \
              patch.object(agent, 'bg_wait_ceiling', return_value='0'), \
+             patch.object(agent.provenance, 'agent_env', return_value={}), \
              patch.object(agent, 'save_meta'), patch.object(agent, 'init_timeout', return_value=1), \
              patch.object(agent, 'wait_for_init', return_value={'session_id': 'session'}), \
              patch.object(agent.sys, 'executable', str(selected)), patch.object(agent.subprocess, 'Popen', side_effect=popen):

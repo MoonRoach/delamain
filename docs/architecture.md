@@ -139,6 +139,10 @@ main repository's `.worktrees/`. A branch checked out in the main checkout, a ba
 the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it by
 itself: at handoff the hub runs `agent worktrees --prune --dry-run` and then `--prune`, which removes the finished ones.
 
+A new worktree is also prepared (`.agents/linked`, `.agents/prepare`) and numbered (a slot, `AGENT_HUB_SLOT`); the
+slot is kept in `<git common dir>/delamain-worktrees.json` and in `meta.json`. See *Preparing worktrees* in
+[the reference](reference.md#preparing-worktrees).
+
 ## Formats
 
 **Journal line** — `- HH:MM [tag] text`, one per event, in `<stage>/coordinator/work/journal-YYYY-MM-DD.md`.

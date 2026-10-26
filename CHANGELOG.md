@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.21 — 2026-10-26
+
 - **Every agent commit says where it came from, and `hub why` walks back from code to the conversation.** Commits an
   agent makes in its repository carry `Delamain-Stage`, `Delamain-Role` and `Delamain-Run` trailers, added by a git
   hooks shim the agent's environment points git at (`GIT_CONFIG_PARAMETERS` `core.hooksPath`), not by the agent

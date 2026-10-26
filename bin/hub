@@ -22,9 +22,16 @@
   hub grill    bind --stage stage-a --launch ID --session FULL_ID
   hub grill    join --stage stage-a --launch ID --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
   hub home     [--cwd DIR] [--json]
+  hub why      <sha | file:line> [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
 Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename, close and grill need a stage, `reviewer`
-puts it into the `agent spawn` line it prints, `home` and `effort` ignore it, `grilling` finds it from the session.
+puts it into the `agent spawn` line it prints, `home`, `effort` and `why` ignore it, `grilling` finds it from the session.
+
+why (read-only) names the agent run that made a commit, or the last commit of a line (git blame): its Delamain-Stage/-Role/-Run
+trailers are looked up in the run records of every known hub home, and it prints the stage, role, run, engine and model, the
+brief, the report, the session and its transcript, and the agent's journal lines within 30 minutes of the commit
+(bin/provenance.py). Without trailers it guesses from the reflogs of the agents' worktrees and branches and says so (GUESS,
+WEAK GUESS), or answers "not an agent commit".
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
@@ -240,6 +247,7 @@ import engines
 import hubcore as hc  # noqa: E402
 import grill_session  # noqa: E402
 import hubhome  # noqa: E402
+import provenance  # noqa: E402
 import reviewers  # noqa: E402
 import session_effort  # noqa: E402
 import subagents  # noqa: E402
@@ -2448,6 +2456,11 @@ def main(argv: list) -> int:
     hm.add_argument("--to", dest="dst", metavar="DIR", help="default: the resolved hub home (~/agent-hub when that is "
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
+    wy = sub.add_parser("why", parents=[stage_opt], help="which agent run made a commit or a line: stage, role, brief, "
+                        "report, journal lines, model, session and transcript (read-only; --stage is ignored)")
+    wy.add_argument("target", metavar="SHA|FILE:LINE", help="a commit, or a line whose last commit git blame names")
+    wy.add_argument("--cwd", help="the repository to look in (default: here)")
+    wy.add_argument("--json", action="store_true")
     grill_session.add_parser(sub, stage_opt)
     a = p.parse_args(argv)
     a.argv = list(argv)  # a MOVE message repeats the command line
@@ -2461,7 +2474,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
-            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling,
+            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling, "why": provenance.cmd_why,
             "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),

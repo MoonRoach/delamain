@@ -1,0 +1,39 @@
+#!/bin/sh
+# Delamain's git hooks shim for agent runs (docs/reference.md, "Commit provenance"). `agent spawn` and every resume point
+# the agent's git at this directory through GIT_CONFIG_PARAMETERS ('core.hooksPath=…', the form `git -c` uses); each
+# hook file here runs `delamain-hook <hook name> <args…>`.
+# Every hook chains to the project's own one — the last core.hooksPath that is not this directory (husky's .husky/_, a
+# global one), else <common git dir>/hooks — with the arguments, stdin and exit code passed through. prepare-commit-msg
+# then appends the run's trailers (Delamain-Stage, Delamain-Role, Delamain-Run) when the agent's environment names a run
+# and the commit is made in the agent's own repository; a commit the project's hook refused gets none. A failure here
+# never blocks a commit: provenance is best effort, the project's hooks are not.
+unset CDPATH   # `cd` would print the directory and spoil the comparisons below
+name=$1
+shift
+self=$(cd "${0%/*}" && pwd -P)
+orig=
+vals=$(git config --type=path --get-all core.hooksPath 2>/dev/null)
+while IFS= read -r v; do
+  [ -n "$v" ] && [ "$(cd "$v" 2>/dev/null && pwd -P)" != "$self" ] && orig=$v
+done <<END
+$vals
+END
+[ -n "$orig" ] || orig="$(git rev-parse --git-common-dir 2>/dev/null)/hooks"
+hook="$orig/$name"
+if [ -f "$hook" ] && [ -x "$hook" ] && [ "$(cd "$orig" 2>/dev/null && pwd -P)" != "$self" ]; then
+  "$hook" "$@" || exit $?
+fi
+[ "$name" = prepare-commit-msg ] && [ -n "${AGENT_HUB_RUN:-}" ] && [ -n "${AGENT_HUB_PROVENANCE_REPO:-}" ] || exit 0
+[ "$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)" = "$AGENT_HUB_PROVENANCE_REPO" ] || exit 0
+# a commit replayed by cherry-pick or rebase keeps the trailers it had or none: a person's commit stays a person's
+for state in CHERRY_PICK_HEAD rebase-merge rebase-apply; do
+  [ -e "$(git rev-parse --git-path "$state" 2>/dev/null)" ] && exit 0
+done
+msg=$1
+# an empty message must stay empty: git aborts such a commit, trailers alone would let it through
+[ -n "$(git stripspace --strip-comments < "$msg" 2>/dev/null)" ] || exit 0
+# not --in-place: that writes a temporary file next to the message, which a Codex worktree sandbox does not allow
+out=$(git interpret-trailers --if-exists doNothing --trailer "Delamain-Stage: ${HUB_STAGE:-}" \
+      --trailer "Delamain-Role: ${AGENT_ROLE:-}" --trailer "Delamain-Run: $AGENT_HUB_RUN" "$msg" 2>/dev/null) || exit 0
+printf '%s\n' "$out" > "$msg"
+exit 0

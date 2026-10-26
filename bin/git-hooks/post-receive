@@ -1,0 +1,3 @@
+#!/bin/sh
+# Delamain provenance shim: chains to the project's hook of this name (see delamain-hook here).
+exec "${0%/*}/delamain-hook" "${0##*/}" "$@"

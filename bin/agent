@@ -45,6 +45,9 @@ refuses (exit 1) only with fresh data on both engines; --reason passes and is jo
 low-confidence first six hours, are context only. Stale/unknown data never grounds refusal. Each crossing journals
 one `@hub LIMIT …` line. AGENT_HUB_LIMIT_PACE=warn|off (bin/limit_pace.py).
 --dry-run runs every check and prints the advice, then stops before anything is started or written.
+Commit provenance: every run has an id (meta runs[].id); in a git repository its environment points git at bin/git-hooks
+(GIT_CONFIG_PARAMETERS core.hooksPath, AGENT_HUB_RUN, AGENT_HUB_PROVENANCE_REPO), which chains to the project's hooks and
+adds Delamain-Stage/-Role/-Run trailers to its commits there; AGENT_HUB_PROVENANCE=off skips it (bin/provenance.py).
 A stage closed by `hub close` refuses spawn (exit 2) until a takeover reopens it.
 Background sub-agents: a `claude -p` run whose turn ended waits for its background sub-agents only up to the
 CLI's ceiling (10 min, then they are killed); an agent's run waits until they finish
@@ -99,6 +102,7 @@ import engines  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
 import limit_pace  # noqa: E402
+import provenance  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -517,6 +521,9 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
     if engine == "codex" and meta.get("sandbox") == "workspace-write" and not is_review_role(meta):
         engines.prepare_worktree_sandbox(meta, env)
+    run_id = uuid.uuid4().hex[:12]
+    # The run's commits carry Delamain-Stage/-Role/-Run trailers: git hooks shim of bin/provenance.py.
+    env.update(provenance.agent_env(meta["cwd"], run_id, env))
     if engine == "claude":
         env[BG_WAIT_ENV] = bg_wait_ceiling(meta["cwd"])
         env.setdefault(hc.IDLE_COMPACT_ENV, hc.IDLE_COMPACT_NEVER)
@@ -526,7 +533,6 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     # The prompt is the run's stdin, never argv: `ps` shows every command line, so a hub's `pkill -f "<words of the
     # brief>"` would otherwise kill the agents whose briefs hold the words (N2-01).
     # One file per run, created exclusively and never rewritten: a run reads exactly the prompt it was started with.
-    run_id = uuid.uuid4().hex[:12]
     stdin_file = d / f"prompt-{run_id}.txt"
     fd = os.open(stdin_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -538,7 +544,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     # the previous run's (a resumed agent would otherwise look dead until the init event).
     before = (meta.get("pid"), list(meta.get("runs") or []))
     meta["pid"] = proc.pid
-    meta.setdefault("runs", []).append({"pid": proc.pid, "at": hc.now().isoformat(timespec="seconds"),
+    meta.setdefault("runs", []).append({"id": run_id, "pid": proc.pid, "at": hc.now().isoformat(timespec="seconds"),
                                         "kind": "resume" if resume else "spawn", "prompt": stdin_file.name})
     save_meta(meta["stage"], meta["role"], meta)
     try:

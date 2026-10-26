@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Every agent commit says where it came from, and `hub why` walks back from code to the conversation.** Commits an
+  agent makes in its repository carry `Delamain-Stage`, `Delamain-Role` and `Delamain-Run` trailers, added by a git
+  hooks shim the agent's environment points git at (`GIT_CONFIG_PARAMETERS` `core.hooksPath`), not by the agent
+  remembering to: every hook chains to the project's own (husky, `.git/hooks`, a global `core.hooksPath`) with its exit
+  code, a person's commits and commits replayed by cherry-pick or rebase are left as they are, and the trailers name no
+  path or session. `hub why <sha|file:line>` prints the run's stage and role, brief, report, model, session, transcript
+  and journal lines around the commit; a commit without trailers gets a guess marked as one, from the agent's worktree
+  and branch reflogs, or "not an agent commit". `AGENT_HUB_PROVENANCE=off` turns the shim off
+  ([Commit provenance](docs/reference.md#commit-provenance)).
+
 ## 1.0.19 — 2026-10-26
 
 - **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke

@@ -11,10 +11,19 @@
   been unchanged; `--json` gives the same as data. `--prune` (with `--dry-run` to look first) removes exactly the
   worktrees that are merged, clean, fully pushed, not in use and not under a git operation, with `git worktree remove`
   and never `--force`; where use is unknown it also waits for `--idle-for` (24 h) without a change. Unpushed or
-  uncommitted work is never removed, with any flag; the main checkout and the caller's own directory are never
-  candidates. The branch goes with a worktree merged by ancestry (`git branch -d`); a squash-merged one stays unless
+  uncommitted work is never removed, with any flag (an edit hidden by `skip-worktree` counts); the main checkout and
+  the caller's own directory are never candidates. `--prune` fetches `origin` first (`--no-fetch` skips it) and clears
+  the entry of a missing directory only after `--idle-for`, since a worktree moved by hand looks the same. The branch goes with a worktree merged by ancestry (`git branch -d`); a squash-merged one stays unless
   `--delete-branches`. The hub handoff draft and the hub skill point to `agent worktrees --prune --dry-run` instead of
   a manual `git worktree remove`; handoff does not prune by itself.
+
+## 1.0.20 — 2026-10-26
+
+- **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known
+  hub home, through `tell` (so a headless or Codex hub is reached the way `tell` reaches it), leaving out your own hub
+  and closed stages; `--urgent` / `--question` wake them at once, `--dry-run` lists the recipients, `--this-home`,
+  `--exclude`, `--json`. In Claude Code and Desktop the mod adds `/broadcast "text"` (bare: who would get it). A caller
+  that is not a registered hub signs `owner`. `tell --no-address` writes without printing the direct address.
 
 ## 1.0.19 — 2026-10-26
 

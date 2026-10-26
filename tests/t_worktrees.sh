@@ -178,6 +178,14 @@ LISTING --prune --idle-for 0s > $P/p7.out 2>&1; check $? 0 "--prune with hub wor
 [ -d $HW/stx-hub-4 ] && [ ! -e $HW/stx-hub-3 ]; check $? 0 "the superseded hub's worktree goes at once, the registered hub's stays"
 grep -q 'registered hub of stage stx' $P/p7.out; check $? 0 "…the output names the registration"
 
+# ---- 8a. a moved worktree looks like a deleted one: its entry (index, HEAD) is not cleared before the idle limit
+add_wt feat/moved; commit_in feat/moved mv.txt; merge_into_main feat/moved; echo staged > $WT/feat/moved/staged.txt; G -C $WT/feat/moved add staged.txt
+mv $WT/feat/moved $P/moved-away
+LISTING --prune > $P/p8a.out 2>&1; check $? 0 "--prune with a worktree moved away by hand"
+git -C $REPO worktree list --porcelain | grep -q 'feat/moved'; check $? 0 "its entry is kept (younger than the idle limit)"
+grep -q 'newer than 1 d' $P/p8a.out; check $? 0 "…and the output says why"
+git -C $REPO worktree repair $P/moved-away > /dev/null 2>&1; [ "$(git -C $P/moved-away status --porcelain)" = "A  staged.txt" ]; check $? 0 "git worktree repair brings it back with its staged file"
+git -C $REPO worktree remove --force $P/moved-away; git -C $REPO branch -q -D feat/moved
 # ---- 8. locked, stale, a git operation under way
 add_wt feat/locked; merge_into_main feat/locked 2>/dev/null; git -C $REPO worktree lock --reason "on a USB stick" $WT/feat/locked
 add_wt feat/rebase; merge_into_main feat/rebase 2>/dev/null; mkdir -p "$(git -C $WT/feat/rebase rev-parse --absolute-git-dir)/rebase-merge"
@@ -188,6 +196,22 @@ LISTING --prune --idle-for 0s > $P/p8.out 2>&1; check $? 0 "--prune with a locke
 git -C $REPO worktree list --porcelain | grep -q 'feat/gone'; check $? 1 "a stale entry (directory gone) is cleared"
 grep -q 'cleared 1 stale entry' $P/p8.out; check $? 0 "…and reported"
 branch_exists feat/gone; check $? 0 "…its branch is not touched"
+
+# ---- 8b. changes git status does not show (skip-worktree) keep the worktree
+add_wt feat/skip; commit_in feat/skip s.txt; merge_into_main feat/skip
+echo edited > $WT/feat/skip/s.txt; git -C $WT/feat/skip update-index --skip-worktree s.txt
+[ -z "$(git -C $WT/feat/skip status --porcelain)" ]; check $? 0 "control: git status shows nothing for the skip-worktree edit"
+LISTING --prune --idle-for 0s > $P/p8b.out 2>&1; [ -d $WT/feat/skip ] && [ "$(cat $WT/feat/skip/s.txt)" = edited ]; check $? 0 "the worktree with a hidden edit survives --prune"
+git -C $WT/feat/skip update-index --no-skip-worktree s.txt; git -C $WT/feat/skip checkout -q -- s.txt
+LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/skip ]; check $? 0 "positive control: with the edit undone it goes"
+
+# ---- 8c. --prune fetches first: a remote that took the merge back no longer counts the branch as merged
+add_wt feat/rolled; commit_in feat/rolled r.txt; merge_into_main feat/rolled
+git -C $REMOTE update-ref refs/heads/main "$(git -C $REPO rev-parse feat/rolled~1)"   # as a force-push would
+LISTING --prune --dry-run --no-fetch --idle-for 0s > $P/p8c1.out 2>&1; grep -q 'feat/rolled' $P/p8c1.out && grep -q 'would remove' $P/p8c1.out; check $? 0 "control: without a fetch the stale origin/main still says merged"
+LISTING --prune --idle-for 0s > $P/p8c2.out 2>&1; check $? 0 "--prune (fetches first)"
+[ -d $WT/feat/rolled ] && grep -q 'branch not merged into origin/main' $P/p8c2.out; check $? 0 "…the branch is no longer merged and stays"
+LISTING --no-fetch > $P/u6.out 2>&1; check $? 2 "--no-fetch without --prune is a usage error"
 
 # ---- 9. usage, output
 LISTING --dry-run > $P/u1.out 2>&1; check $? 2 "--dry-run without --prune is a usage error"

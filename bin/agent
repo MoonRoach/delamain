@@ -12,7 +12,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
                                                       is the message, a word starting with `-` included)
   agent stop R [--stage S]
-  agent worktrees [--repo PATH] [--json] [--fetch] [--no-gh] [--prune [--dry-run] [--delete-branches] [--idle-for DUR]]
+  agent worktrees [--repo PATH] [--json] [--fetch] [--no-gh] [--prune [--dry-run] [--delete-branches] [--no-fetch] [--idle-for DUR]]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
 brief.md (copy of the brief), inbox.md (messages while the agent runs), prompt-<run>.txt (the prompt of each run, written once).
@@ -83,8 +83,10 @@ request merged into it (`gh pr list --state merged --head BRANCH`; a squash merg
 worktree (`git worktree remove`, never --force) only when it is merged, clean, has nothing unpushed, no git operation
 under way, is not locked, not your working directory, not in use — and, where use is "unknown", has not changed for
 --idle-for (default 24h); then `git worktree prune`. Its branch goes with it when merged by ancestry (`git branch -d`);
-a squash-merged branch stays unless --delete-branches. --dry-run prints what would go; --fetch runs `git fetch origin`
-first (the remote refs are otherwise as last fetched); --no-gh skips the pull-request lookup.
+a squash-merged branch stays unless --delete-branches. `git worktree prune --expire=<idle limit>` clears the entries
+of directories that have been gone that long (a moved worktree looks the same, sooner). --dry-run prints what would go.
+The remote refs are as last fetched: --fetch runs `git fetch origin` first for a listing, and --prune does it unless
+--no-fetch. --no-gh skips the pull-request lookup. Files git ignores (build output, a local .env) go with the worktree.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
@@ -1354,11 +1356,12 @@ def main(argv: list) -> int:
     wt = sub.add_parser("worktrees", help="list the repository's worktrees; --prune removes the finished ones")
     wt.add_argument("--repo", metavar="PATH", help="a path inside the repository (default: the working directory's)")
     wt.add_argument("--json", action="store_true", help="the same ledger as JSON")
-    wt.add_argument("--fetch", action="store_true", help="git fetch origin first: the remote refs are otherwise as last fetched")
+    wt.add_argument("--fetch", action="store_true", help="git fetch origin first (--prune does it by itself): the remote refs are otherwise as last fetched")
     wt.add_argument("--no-gh", action="store_true", help="do not ask GitHub (gh) whether a branch's pull request was merged")
     wt.add_argument("--prune", action="store_true",
                     help="remove the worktrees that are merged, clean, fully pushed and not in use; nothing else")
     wt.add_argument("--dry-run", action="store_true", help="with --prune: say what would be removed, remove nothing")
+    wt.add_argument("--no-fetch", action="store_true", help="with --prune: do not run `git fetch origin` first")
     wt.add_argument("--delete-branches", action="store_true",
                     help="with --prune: also delete the branch of a squash-merged worktree (git branch -D; its merged pull "
                          "request holds every commit); a branch merged by ancestry always goes (git branch -d)")

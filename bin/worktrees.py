@@ -13,7 +13,10 @@ pull request found with `gh`), and how long since the last change (the last comm
 
 Prune removes a worktree only when every check passes: merged, clean, nothing unpushed, no git operation under way,
 not locked, not the caller's directory, not in use — and, where use is "unknown", unchanged for longer than the idle
-limit. `git worktree remove` without --force is the only removal. Work that is not on a remote is never removed.
+limit. `git worktree remove` without --force removes a worktree; `git worktree prune --expire=<idle limit>` clears only
+the entries of directories that have been gone for that long (a moved or unmounted worktree looks the same, and its
+entry holds its index). Work that is not on a remote is never removed. Files git ignores (build output, a local .env)
+are not looked at and go with the worktree.
 """
 from __future__ import annotations
 
@@ -43,7 +46,7 @@ OPERATIONS = (("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HE
               ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("BISECT_LOG", "bisect"),
               ("index.lock", "a running git command"))
 # the order a worktree's "kept" reasons are reported and tallied in: the first is the primary one
-REASON_ORDER = ("main", "bare", "locked", "caller", "live", "dirty", "operation", "unpushed", "unmerged", "idle")
+REASON_ORDER = ("main", "bare", "locked", "caller", "live", "dirty", "operation", "unpushed", "unmerged", "idle", "gone")
 
 
 @dataclasses.dataclass
@@ -110,6 +113,7 @@ def _git(cwd, *argv, timeout: int = GIT_TIMEOUT_S):
     env = hc.git_env()
     env["LC_ALL"] = "C"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
     try:
         return subprocess.run(["git", "--no-optional-locks", "-C", str(cwd), *argv], capture_output=True, text=True,
                               timeout=timeout, env=env, stdin=subprocess.DEVNULL)
@@ -322,6 +326,19 @@ def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Opt
 
 # ---------------------------------------------------------------- git facts
 
+def _hidden_files(w: Worktree) -> Optional[list]:
+    """Files marked skip-worktree or assume-unchanged that exist on disk: `git status` (and `git worktree remove`) do not
+    see an edit to them. A sparse checkout's skip-worktree files are absent and do not count. None: git could not say."""
+    res = _git(w.path, "ls-files", "-v", "-z")
+    if res is None or res.returncode != 0:
+        return None
+    out = []
+    for tok in res.stdout.split("\0"):
+        if len(tok) > 2 and (tok[0] == "S" or tok[0].islower()) and os.path.lexists(w.path / tok[2:]):
+            out.append(tok[2:])
+    return out
+
+
 def _inspect(main: Path, w: Worktree, default_ref: Optional[str]) -> None:
     """dirty, operation, unpushed, ancestry-merged and last_change of one worktree."""
     if not w.exists:
@@ -335,10 +352,15 @@ def _inspect(main: Path, w: Worktree, default_ref: Optional[str]) -> None:
             tok = tokens[i]
             if len(tok) > 3:
                 files.append(tok[3:])
-                if tok[0] in "RC":
+                if tok[0] in "RC" or tok[1] in "RC":
                     i += 1  # the source path of a rename follows as its own token
             i += 1
-        w.dirty = len(files)
+        hidden = _hidden_files(w)
+        if hidden is None:
+            w.dirty = None
+        else:
+            files += hidden
+            w.dirty = len(files)
         for f in files[:200]:
             try:
                 stamps.append((w.path / f).lstat().st_mtime)
@@ -429,6 +451,8 @@ def _apply_pr(main: Path, w: Worktree, prs: list, default_branch: Optional[str])
 
 
 def _fetch(main: Path, notes: list) -> None:
+    """git fetch origin (bounded, never asks for a password): the decisions rest on the remote refs, and stale ones can
+    tell a branch is merged that the remote has since lost."""
     res = _git(main, "fetch", "--quiet", "origin", timeout=FETCH_TIMEOUT_S)
     if res is None or res.returncode != 0:
         notes.append(f"git fetch origin failed ({_first_line(res)}): remote refs are as last fetched")
@@ -535,6 +559,26 @@ def fmt_delta(d: dt.timedelta) -> str:
 
 # ---------------------------------------------------------------- prune
 
+def _expired_stale(main: Path, idle: dt.timedelta) -> set:
+    """Real paths of the worktrees whose entry `git worktree prune --expire=<idle>` clears: directory gone, entry older
+    than the limit. A directory that was moved or sits on an unmounted disk looks the same as a deleted one for a while."""
+    res = _git(main, "worktree", "prune", "--dry-run", "--verbose", f"--expire={int(idle.total_seconds())}.seconds.ago")
+    common = _out(_git(main, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    out: set = set()
+    if res is None or res.returncode != 0 or not common:
+        return out
+    for line in (res.stdout + "\n" + res.stderr).splitlines():
+        m = re.match(r"Removing worktrees/([^:]+):", line)
+        if not m:
+            continue
+        try:
+            text = (Path(common) / "worktrees" / m.group(1) / "gitdir").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        out.add(_real(Path(text).parent))
+    return out
+
+
 @dataclasses.dataclass
 class Outcome:
     removed: list  # [(Worktree, branch action)]
@@ -549,20 +593,30 @@ def prune(ledger: Ledger, dry_run: bool, delete_branches: bool) -> Outcome:
     for a branch whose merged pull request holds everything it has). A worktree that changed since the listing is kept."""
     removed, kept, stale = [], [], []
     main = ledger.main
+    expired = _expired_stale(main, ledger.idle) if any(w.prunable is not None for w in ledger.items) else set()
+    procs = None if dry_run else process_cwds()  # the world moves while the ledger is built: look at processes once more
+    in_use = _assign_processes(ledger.items, procs)
     for w in ledger.items:
         if w.is_main or w.bare:
             continue
         if w.prunable is not None:
-            if w.locked is None:
+            if w.locked is not None:
+                kept.append((w, [("locked", f"stale entry, locked ({w.locked})")]))
+            elif w.real in expired:
                 stale.append(w)
             else:
-                kept.append((w, [("locked", f"stale entry, locked ({w.locked})")]))
+                kept.append((w, [("idle", f"its directory is gone, but the entry is newer than {fmt_delta(ledger.idle)} "
+                                          "(a moved or unmounted worktree looks the same)")]))
             continue
         if not w.removable:
-            kept.append((w, w.reasons))
+            kept.append((w, w.reasons or [("gone", "its directory disappeared while pruning")]))
             continue
         if dry_run:
             removed.append((w, branch_plan(w, delete_branches, ledger.default_branch)))
+            continue
+        if in_use.get(w.real):
+            kept.append((w, [("live", "in use: " + "; ".join(f"{c or 'process'} (pid {p})" for p, c in in_use[w.real])
+                                       + " (appeared while pruning)")]))
             continue
         now_head = _out(_git(w.path, "rev-parse", "HEAD"))
         if now_head != w.head:
@@ -574,7 +628,7 @@ def prune(ledger: Ledger, dry_run: bool, delete_branches: bool) -> Outcome:
             continue
         removed.append((w, delete_branch(main, w, delete_branches, ledger.default_branch)))
     if stale and not dry_run:
-        _git(main, "worktree", "prune")
+        _git(main, "worktree", "prune", f"--expire={int(ledger.idle.total_seconds())}.seconds.ago")
     return Outcome(removed, kept, stale, dry_run)
 
 
@@ -672,7 +726,7 @@ def render_outcome(ledger: Ledger, out: Outcome) -> str:
         lines += [f"  {_rel(ledger.main, w)}" for w in out.stale]
     tally: dict = {}
     for w, reasons in out.kept:
-        tally.setdefault(reasons[0][0], []).append((w, reasons))
+        tally.setdefault(reasons[0][0] if reasons else "gone", []).append((w, reasons))
     lines.append(f"kept {len(out.kept)}" + (":" if out.kept else ""))
     for code in REASON_ORDER:
         group = tally.get(code, [])
@@ -718,8 +772,8 @@ def as_json(ledger: Ledger, out: Optional[Outcome] = None) -> str:
 
 def run(a, alive: Callable[[dict], bool]) -> int:
     """`agent worktrees` (the argument parser is bin/agent's)."""
-    if (a.dry_run or a.delete_branches) and not a.prune:
-        raise hc.UsageError("--dry-run and --delete-branches go with --prune (without it the command only lists)")
+    if (a.dry_run or a.delete_branches or a.no_fetch) and not a.prune:
+        raise hc.UsageError("--dry-run, --delete-branches and --no-fetch go with --prune (without it the command only lists)")
     idle = hc.parse_duration(a.idle_for)
     try:
         caller = Path.cwd()
@@ -728,7 +782,8 @@ def run(a, alive: Callable[[dict], bool]) -> int:
     repo = Path(a.repo).expanduser() if a.repo else (caller or Path("/"))
     if not repo.is_dir():
         raise hc.UsageError(f"--repo {repo}: not a directory")
-    ledger = collect(repo, alive, idle, use_gh=not a.no_gh, fetch=a.fetch, caller_cwd=caller)
+    fetch = a.fetch or (a.prune and not a.no_fetch)  # a prune decides on the remote refs: bring them up to date
+    ledger = collect(repo, alive, idle, use_gh=not a.no_gh, fetch=fetch, caller_cwd=caller)
     outcome = prune(ledger, a.dry_run, a.delete_branches) if a.prune else None
     if a.json:
         print(as_json(ledger, outcome))

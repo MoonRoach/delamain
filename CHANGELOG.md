@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.22 — 2026-10-26
+
 - **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch
   --fail-fast` exited 0 with an empty output after red checks (PR #138 attempt 1) and once with an empty output on green
   checks (the 1.0.21 release PR): `await` exited 0 whenever its journal line was written, and the verdict, `FAILED` or
@@ -19,6 +21,10 @@
   is fail-closed, so `--wait` in any spelling, a redirection, `&` `;` `|`, a quote elsewhere, an expansion, a glob, a wrapper
   or a comment bring back the ordinary rules. See *Waiting for CI* in
   `docs/launch-modes.md`.
+
+- **`t_scan_guard` times the hook by CPU time, not by the wall clock.** Its "many words" timing check failed macOS CI about
+  half the time under load, because a loaded runner stretched the wall clock without the hook doing more work. The thresholds now
+  read the hook's CPU time, and the hang guard is no longer replaced by the hook's own timer (PR #141). A test-only change: the plugin's behaviour is the same.
 
 ## 1.0.21 — 2026-10-26
 

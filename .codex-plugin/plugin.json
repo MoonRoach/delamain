@@ -1,6 +1,6 @@
 {
   "name": "delamain",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "description": "Coordinate detached Claude Code and Codex agents through shared briefs, inboxes, journals, owner questions, locks and handoffs.",
   "author": {
     "name": "Ilya Kozyrev",

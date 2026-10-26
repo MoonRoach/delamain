@@ -58,7 +58,12 @@ Desktop Code tab:
 - **A status line and toasts.** The status line reads `agents ● 2 ✓ 5 ✗ 1` (nothing when there are no agents). A toast
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.
-- **Read-only.** No send, stop or message button. The mod writes nothing: it runs `bin/agent-top --json` and draws the
+- **`/broadcast "text"` writes to every hub.** The same mod registers `/broadcast` (and `/delamain:broadcast`): it runs
+  `bin/broadcast` with the flags you type before the text (`--urgent`, `--question`, `--this-home`, `--exclude S`; a flag
+  after the text is part of the text) and answers
+  with its summary: one line per recipient, the skipped stages and the counts. A bare `/broadcast` lists who would get
+  it and sends nothing. From a session that is not a registered hub the line is signed `owner`.
+- **Read-only otherwise.** No send, stop or message button. The pane writes nothing: it runs `bin/agent-top --json` and draws the
   result (the Summary's `close` runs `bin/hub close` for the stage's own name, in its home, as `AGENT_HUB_HOME`). Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
   writes one file per home it reads, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
   log offsets of the last run, so the next one reads only what the logs gained. `AGENT_TOP_CACHE=0` turns it off.

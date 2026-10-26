@@ -95,7 +95,7 @@ with its `--since HH:MM`, handle what it shows, keep one waiter. Going quiet on 
 
 - `jlog "text"` — a journal line with your tag; append-only, correct with a new line. In another stage's journal `jlog`
   signs `<your stage>-<tag>`, never `hub`.
-- To another stage's hub: `tell <stage> "…"` (`--question`); the answer reaches you only in your own journal. A direct
+- To another stage's hub: `tell <stage> "…"` (`--question`; every hub: `broadcast "…"`); the answer reaches you only in your own journal. A direct
   cross-session message only when the journal cannot do, and only to the address from `tell <stage> --address` /
   `roles --stage <stage> get hub`, never a session chosen by its display name. Codex: `references/codex-hub.md`.
 - `roles list | get | set | retire | broadcast` — the role registry. Detached workers of either engine: `agent send`.

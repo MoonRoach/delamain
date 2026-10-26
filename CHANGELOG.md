@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known
+  hub home, through `tell` (so a headless or Codex hub is reached the way `tell` reaches it), leaving out your own hub
+  and closed stages; `--urgent` / `--question` wake them at once, `--dry-run` lists the recipients, `--this-home`,
+  `--exclude`, `--json`. In Claude Code and Desktop the mod adds `/broadcast "text"` (bare: who would get it). A caller
+  that is not a registered hub signs `owner`. `tell --no-address` writes without printing the direct address.
+
 ## 1.0.19 — 2026-10-26
 
 - **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke

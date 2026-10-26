@@ -322,5 +322,42 @@ check "$rc:$(grep -c '^ALARM r17' $O/o17.out)" "3:1" "--stream ends at the deadl
 ( armed $O/o18.out; $B/jlog --tag stage-b-hub-3 "@hub FYI repeated tag" >/dev/null ) &
 $B/jwait --journal --stage stage-a --tag hub --tag hub --hub-events --settle 1 --for 4s --note r18 --caller s18 > $O/o18.out 2>&1; rc=$?
 check $rc 3 "a repeated --tag hub: another hub's plain line is still held"
+# held max beats an active settle: a held line, then a waking line with a long settle, come out at HELD_MAX
+( armed $O/o24.out; $B/jlog --tag stage-b-hub-3 "@hub FYI before settle" >/dev/null; sleep 2; $B/jlog --tag builder "DONE settle-long" >/dev/null ) &
+t0=$(date +%s)
+JWAIT_HELD_MAX_S=4 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 60 --for 90s --caller s24 > $O/o24.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check "$rc:$(grep -c 'settle-long' $O/o24.out)" "0:1" "held max during a settle: both lines delivered"
+[ $el -le 20 ]; check $? 0 "…at HELD_MAX, not after the 60 s settle (${el}s)"
+# 11. NEXT WAIT: an idle stage gets one long background wait (inside the Bash cap), a busy one a Monitor stream;
+# a held line wakes a long wait after HELD_MAX at the latest; a Codex host gets no hint
+env -u BASH_MAX_TIMEOUT_MS HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --stream --settle 0 --for 2s --note r19 --caller s19 > $O/o19.out 2>&1
+grep -q "^NEXT WAIT: nothing runs in stage-a — no Monitor; ONE Bash run_in_background: true, timeout 7200000: jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --note r19 --caller s19 --for 115m$" $O/o19.out
+check $? 0 "idle: NEXT WAIT is one background wait inside the 2h Bash cap, without --stream"
+BASH_MAX_TIMEOUT_MS=43200000 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --stream --settle 0 --for 2s --caller s19 > $O/o20.out 2>&1
+grep -q "timeout 29100000: jwait .* --for 480m$" $O/o20.out; check $? 0 "idle: a raised BASH_MAX_TIMEOUT_MS gives the full 8h"
+BASH_MAX_TIMEOUT_MS=60000 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --stream --settle 0 --for 2s --caller s19 > $O/o20b.out 2>&1
+grep -q "timeout 60000: jwait .* --for 54s$" $O/o20b.out; check $? 0 "idle: a small Bash cap is respected, with a margin"
+$B/jwait --journal --stage stage-a --unt 23:59 --settle 0 --caller s19 > $O/o20c.out 2>&1; check $? 2 "negative: an abbreviated option is refused (NEXT WAIT rebuilds argv)"
+AGENT_HUB_ENGINE=codex HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o21.out 2>&1
+! grep -q "NEXT WAIT" $O/o21.out; check $? 0 "a Codex host gets no NEXT WAIT"
+TOK=busy-token-$$; mkdir -p $O/stage-a/agents/busy1; bash -c "exec -a sleeper-$TOK sleep 60" & sp=$!
+printf '{"pid": %s, "session_id": "%s"}\n' $sp $TOK > $O/stage-a/agents/busy1/meta.json
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o22.out 2>&1
+kill $sp 2>/dev/null; wait $sp 2>/dev/null; rm -rf $O/stage-a/agents/busy1
+grep -q "^NEXT WAIT: running in stage-a: agent busy1 — one Monitor, timeout_ms 1800000: jwait .* --stream$" $O/o22.out
+check $? 0 "busy: a live agent of the stage gets a Monitor stream"
+bash -c "exec -a 'python3 /x/await --stage stage-a --label ci-mr-7 --log $O/stage-a/coordinator/work/await/x.log --wait --' sleep 60" & ap=$!
+bash -c "exec -a 'python3 /x/await --stage stage-a --label other --log /elsewhere/stage-a/coordinator/work/await/x.log --wait --' sleep 60" & ap2=$!
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o22b.out 2>&1
+kill $ap $ap2 2>/dev/null; wait $ap $ap2 2>/dev/null
+grep -q "^NEXT WAIT: running in stage-a: await ci-mr-7 — one Monitor" $O/o22b.out && ! grep -q "other" $O/o22b.out
+check $? 0 "busy: an await supervisor of this home's stage (not one of another home) gets a Monitor stream"
+( armed $O/o23.out; $B/jlog --tag stage-b-hub-3 "@hub FYI held max" >/dev/null ) &
+t0=$(date +%s)
+JWAIT_HELD_MAX_S=3 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --for 60s --caller s19 > $O/o23.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check "$rc:$(grep -c 'FYI held max' $O/o23.out)" "0:1" "a held line wakes a long wait after HELD_MAX"
+[ $el -le 20 ]; check $? 0 "…long before the deadline (${el}s)"
 check "$(waited 29 AGENT_HUB_JWAIT_FOR=50m -- --journal --caller d1 --stage stage-a --stream)" ok "--stream without --for waits 29 minutes, not the setting"
 exit $fail

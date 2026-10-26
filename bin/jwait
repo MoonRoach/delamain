@@ -47,6 +47,11 @@ With --journal it also looks, every 10 s, for a headless agent of the stage whos
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
 --stream: after each batch, print it and keep waiting until the deadline (default --for 29m: a Monitor lives at most
 30 minutes); a batch is one Monitor event, the deadline ALARM ends the stream.
+NEXT WAIT (Claude host, --journal): when a run ends, a last line says how to wait next, so the hub does not reason
+about it: a Monitor stream while something of the stage runs (a live headless agent, an `await` supervisor), else ONE
+long background wait (idle: up to 8h, inside the Bash timeout cap BASH_MAX_TIMEOUT_MS, 2h unset). An idle hub then costs
+no model call until a line comes; the Monitor's 30-minute cap would wake it twice an hour for nothing.
+A held line wakes after HELD_MAX (30 min) at the latest, so a long idle wait does not sit on another hub's message.
 Exit: 0 lines delivered, 3 deadline, 1 failure, 2 usage.
 """
 from __future__ import annotations
@@ -60,6 +65,7 @@ import json
 import os
 import re
 import signal
+import shlex
 import subprocess
 import sys
 import time
@@ -74,6 +80,10 @@ DEFAULT_FOR = hc.DEFAULT_JWAIT_FOR  # the built-in; main() reads hc.jwait_for() 
 MAX_OUT_LINES = 200
 MAX_LINE_CHARS = 1200
 STREAM_FOR = "29m"  # a Claude Code Monitor is killed after 30 minutes; the ALARM comes first
+MONITOR_TIMEOUT_MS = 1_800_000
+IDLE_FOR_S = 8 * 3600  # an idle hub's background wait; trimmed to the Bash timeout cap
+BASH_CAP_DEFAULT_MS = 2 * 3600 * 1000  # Claude Code's cap on a Bash call's timeout unless BASH_MAX_TIMEOUT_MS
+HELD_MAX_S = 30 * 60  # a held line waits at most this long for a waking batch
 # Words that make a held line (another stage's hub, the pacer) wake after all, besides the status words.
 HELD_WAKE_RE = re.compile(r"\b(FAILED|TIMEOUT|CONFLICT|URGENT)\b")
 HELD_TAGS = ("pace",)  # limit_pace's tag: an `@hub LIMIT …` crossing is context for the next launch, not a decision now
@@ -391,7 +401,9 @@ def since_cutoff(raw: str, base: dt.datetime) -> dt.datetime:
 
 
 def main(argv: list) -> int:
-    p = argparse.ArgumentParser(prog="jwait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # no abbreviations: NEXT WAIT rebuilds the command from argv and must recognise every --for/--until/--since
+    p = argparse.ArgumentParser(prog="jwait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                allow_abbrev=False)
     p.add_argument("--journal", action="store_true", help="wait for lines of the stage journal")
     p.add_argument("--stage", default=None)
     p.add_argument("--file", action="append", default=[], help="wait for lines of this file (repeatable)")
@@ -442,6 +454,8 @@ def main(argv: list) -> int:
     baselined = [0]
     matched: list = []
     held: list = []  # (sid, key, label, text) of held lines not yet delivered: not saved as seen until printed
+    held_since = [0.0]  # monotonic time the oldest undelivered held line was seen
+    held_max = float(os.environ.get("JWAIT_HELD_MAX_S") or HELD_MAX_S)  # the environment: the tests' short clock
     first_match_at = None
 
     def all_sources():
@@ -483,6 +497,8 @@ def main(argv: list) -> int:
                     continue
                 kind = flt.classify(text)
                 if kind == "held":
+                    if not held:
+                        held_since[0] = time.monotonic()
                     held.append((src.sid, key, src.label, text))
                 elif kind == "wake":
                     matched.append((src.label, text))
@@ -537,16 +553,19 @@ def main(argv: list) -> int:
             if has_source:
                 scan()
             t = hc.now()
-            settled = first_match_at is not None and time.monotonic() - first_match_at >= args.settle
+            held_due = bool(held) and time.monotonic() - held_since[0] >= held_max  # held long enough: deliver now
+            settled = held_due or (first_match_at is not None and time.monotonic() - first_match_at >= args.settle)
             if settled or (matched and t >= deadline):
                 deliver()
                 if not args.stream:
+                    print_next_wait(args, argv, stage)
                     return 0
                 first_match_at = None
                 if t < deadline:
                     continue
                 # a stream past its deadline ends with the ALARM even while lines keep coming: the hub re-arms on it
                 print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
+                print_next_wait(args, argv, stage)
                 return 3
             if t >= deadline:
                 finish(bool(held))
@@ -554,6 +573,7 @@ def main(argv: list) -> int:
                 if held:
                     print_held([(label, text) for _, _, label, text in held])
                 print(f"ALARM {args.note}".rstrip() + f" (deadline {fmt_deadline(deadline)})")
+                print_next_wait(args, argv, stage)
                 return 3
             time.sleep(POLL_S)
     except KeyboardInterrupt:
@@ -561,6 +581,86 @@ def main(argv: list) -> int:
     finally:
         if args.journal:
             clear_armed(caller, stage)
+
+
+def stage_busy(stage: str) -> list:
+    """What of the stage runs now: live headless agents ("agent <role>") and `await` supervisors ("await <label>").
+    Unreadable state counts as nothing running for that item; the watchdog, not this hint, guards a hung process."""
+    out = []
+    base = hc.root() / stage / "agents"
+    try:
+        metas = sorted(base.glob("*/meta.json")) if base.is_dir() else []
+    except OSError:
+        metas = []
+    for mp in metas:
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            pid = int(meta.get("pid") or 0)
+            if not pid:
+                continue
+            os.kill(pid, 0)
+            cmd = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                                 timeout=10).stdout
+            token = meta.get("process_token") or meta.get("session_id")
+            if token and token in cmd:
+                out.append(f"agent {mp.parent.name}")
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            continue
+    try:
+        ps = subprocess.run(["ps", "-ww", "-A", "-o", "command="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        ps = ""
+    # a supervisor of THIS hub home's stage: its --log lies under <root>/<stage>/ (bin/await); the stage name alone
+    # would also match another home's stage of the same name (a test suite running beside a live hub)
+    home = re.escape(str(hc.root() / stage) + os.sep)
+    for line in ps.splitlines():
+        if "await" in line and " --wait" in line and re.search(r"--log\s+" + home, line):
+            m = re.search(r"--label\s+(\S+)", line)
+            out.append(f"await {m.group(1) if m else ''}".rstrip())
+    return out
+
+
+def bash_cap_ms() -> int:
+    try:
+        return int(os.environ.get("BASH_MAX_TIMEOUT_MS") or BASH_CAP_DEFAULT_MS)
+    except ValueError:
+        return BASH_CAP_DEFAULT_MS
+
+
+def next_wait_argv(argv: list) -> list:
+    """The caller's own arguments without the wait form and the one-off replay (--stream, --for, --until, --since)."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == "--stream":
+            continue
+        if a in ("--for", "--until", "--since"):
+            skip = True
+            continue
+        if a.startswith(("--for=", "--until=", "--since=")):
+            continue
+        out.append(a)
+    return out
+
+
+def print_next_wait(args, argv: list, stage: str) -> None:
+    """The NEXT WAIT line of a Claude hub's journal waiter (see the module doc)."""
+    if not args.journal or hc.host_engine() == "codex":
+        return
+    rest = " ".join(shlex.quote(a) for a in next_wait_argv(argv))
+    busy = stage_busy(stage)
+    if busy:
+        print(f"NEXT WAIT: running in {stage}: {', '.join(busy)[:200]} — one Monitor, timeout_ms {MONITOR_TIMEOUT_MS}: "
+              f"jwait {rest} --stream")
+        return
+    cap_s = max(2, bash_cap_ms() // 1000)
+    margin = min(300, max(1, cap_s // 10))  # the Bash timeout outlives the wait by this much, inside the cap
+    idle_s = min(IDLE_FOR_S, cap_s - margin)
+    span = f"{idle_s // 60}m" if idle_s % 60 == 0 else f"{idle_s}s"
+    print(f"NEXT WAIT: nothing runs in {stage} — no Monitor; ONE Bash run_in_background: true, timeout "
+          f"{(idle_s + margin) * 1000}: jwait {rest} --for {span}")
 
 
 def fmt_deadline(t) -> str:

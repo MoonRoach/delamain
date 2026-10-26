@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch
+  --fail-fast` exited 0 with an empty output after red checks (PR #138 attempt 1) and once with an empty output on green
+  checks (the 1.0.21 release PR): `await` exited 0 whenever its journal line was written, and the verdict, `FAILED` or
+  `PASSED`, was only in the journal, which an executor reading `echo "exit=$?"` never looked at. The journal lines and `gh`
+  itself were right every time (checked: `gh pr checks --watch` exits 1 for red checks, for no checks and for an unknown PR,
+  without a TTY too). Now `--wait` prints the line and exits 0 only for the `--ok` word, 3 for `FAILED`, `TIMEOUT` or an
+  `--on` word; detached `await` is unchanged. The polling guard no longer denies a detached `await … -- gh pr checks N
+  --watch`, the form the hub skill recommends (`await --wait` in the foreground stays denied). See *Waiting for CI* in
+  `docs/launch-modes.md`.
+
 ## 1.0.21 — 2026-10-26
 
 - **Every agent commit says where it came from, and `hub why` walks back from code to the conversation.** Commits an

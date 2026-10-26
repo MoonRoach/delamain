@@ -153,9 +153,24 @@ The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `
 `--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group
 gets SIGTERM, then SIGKILL after 5 s, also for a grandchild that ignores SIGTERM) → `TIMEOUT`; any other exit code,
 a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words such as `CONFLICT` for a command that
-distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait` and reads
-the result from the exit word it prints; `--to <its tag>` is for an executor that wants a line for its own `jwait`,
-the default `--to hub` wakes the hub. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
+distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait`: `await`
+then prints the line it journaled and exits 0 only when the word is the `--ok` word, 3 for any other (`FAILED`,
+`TIMEOUT`, an `--on` word), 1 when the journal could not be written. Read that exit code or the printed word, never
+"the command ended": until 1.0.22 the exit was 0 whenever the line was written, so `await --wait --ok PASSED -- gh pr
+checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 and the 1.0.21 release PR).
+`--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
+
+On GitHub the wait command is `gh pr checks N --watch --fail-fast` (exit 0 only when every check passed; 1 for a red
+check, for "no checks reported" and for an unknown PR) or `gh run watch <id> --exit-status`:
+
+```bash
+await --ok MERGED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # detached; the polling guard lets it through
+await --wait --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # attached: run_in_background, exit 3 = not passed
+```
+
+Right after a push the checks may not be registered yet; that is `FAILED` (`no checks reported`), not a pass — wait a
+moment and run it again. To confirm a result by commit, `gh run list --commit <sha> --json name,status,conclusion`
+shows every run of that head. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
 `FAILED … interrupted`; a supervisor killed
 with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails
 at once with exit 2 and no line.

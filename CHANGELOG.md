@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.20 — 2026-10-26
+
 - **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known
   hub home, through `tell` (so a headless or Codex hub is reached the way `tell` reaches it), leaving out your own hub
   and closed stages; `--urgent` / `--question` wake them at once, `--dry-run` lists the recipients, `--this-home`,

@@ -156,7 +156,7 @@ a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words su
 distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait`: `await`
 then prints the line it journaled and exits 0 only when the word is the `--ok` word, 3 for any other (`FAILED`,
 `TIMEOUT`, an `--on` word), 1 when the journal could not be written. Read that exit code or the printed word, never
-"the command ended": until 1.0.22 the exit was 0 whenever the line was written, so `await --wait --ok PASSED -- gh pr
+"the command ended": before 26.10 the exit was 0 whenever the line was written, so `await --wait --ok PASSED -- gh pr
 checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 and the 1.0.21 release PR).
 `--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
 

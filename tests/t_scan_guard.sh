@@ -359,29 +359,20 @@ import resource
 import time
 
 
-def cpu_seconds():
-    """CPU time (user + system) of every child this script has waited for so far."""
-    u = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return u.ru_utime + u.ru_stime
-
-
-def cpu_run(fn):
-    """(fn(), CPU seconds its subprocess used, wall seconds). The limits below are on CPU time: the suite runs several
-    scripts at once, so wall time on a loaded runner measures the load (6-8 s for a 1 s check), not the hook. A hook that
-    hangs without burning CPU is still caught by the subprocess's wall-clock timeout. Children run one at a time here."""
-    c0, t0 = cpu_seconds(), time.time()
-    r = fn()
-    return r, cpu_seconds() - c0, time.time() - t0
-
-
 def timed(cmd, **extra):
-    """(verdict, CPU seconds) of a command; a hook that does not answer within the wall-clock ceiling counts as broken."""
+    """(verdict, CPU seconds, wall seconds) of a command. The limits below are on the hook's CPU time (user + system of the
+    child): the suite runs several scripts at once, so wall time on a loaded runner measures the load (6-8 s for a 1.6 s check),
+    not the hook. A hook that hangs without burning CPU is caught by the wall-clock timeout, which is a hang guard and not a
+    speed limit; the hook's own fail-safe timer (8.5 s) is set out of the way, or it would answer "no decision" for a hang
+    and the check would read that as a fast pass. Children run one at a time, so the difference of getrusage is this one's."""
     event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": WS, "tool_input": {"command": cmd}}).encode()
+    u0, t0 = resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
     try:
-        r, cpu, _ = cpu_run(lambda: subprocess.run([sys.executable, str(HOOK)], capture_output=True, env=env(**extra), timeout=30, input=event))
+        r = subprocess.run([sys.executable, str(HOOK)], capture_output=True, env=env(AGENT_HUB_HOOK_DEADLINE_S="60", **extra), timeout=30, input=event)
     except subprocess.TimeoutExpired:
-        return "broken", float("inf")
-    return verdict(r), cpu
+        return "broken", float("inf"), time.time() - t0
+    u1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return verdict(r), (u1.ru_utime - u0.ru_utime) + (u1.ru_stime - u0.ru_stime), time.time() - t0
 
 
 # the reviewer's input: one heredoc opener inside quotes, 50000 blank lines and no terminator took 12 s and more (a regex holds the
@@ -397,8 +388,8 @@ LATENCY = {
     "a 200 kB line of heredoc openers": "cat " + "<<A " * 50000 + "\nA",
 }
 for label, cmd in LATENCY.items():
-    v, sec = timed(cmd)
-    check(v != "broken" and sec < 2.0, f"latency ({label}): answered in {sec:.2f} s of CPU, {v}")
+    v, cpu, wall = timed(cmd)
+    check(v != "broken" and cpu < 2.0, f"latency ({label}): {cpu:.2f} s of CPU ({wall:.2f} s wall), {v}")
 check(timed("printf '%s' '<<EOF\n" + "\n" * 50000 + "END'")[0] == "pass", "latency: the reviewer's input is an ordinary printf, allowed")
 check(timed("cat <<A\nx\nA\n" * 10000 + "find ~ -name x")[0] == "deny", "latency: a walk after 10000 heredocs is still refused")
 
@@ -459,8 +450,8 @@ for label, cmd in (("nested substitutions", "x=$(" * 800 + "find ~" + ")" * 800)
                    ("many quotes", "echo " + "'a' " * 30000 + "; find ~ -name x"), ("deep parentheses", "(" * 3000 + "find ~" + ")" * 3000),
                    ("20000 heredoc openers", "<<EOF " * 20000 + "find ~ -name x"), ("a pile of brackets", "find ~/" + "[" * 50000),
                    ("many globs", "find ~/" + "*/" * 5000 + "x")):
-    r, cpu, wall = cpu_run(lambda: bash(cmd))
-    check(verdict(r) != "broken" and cpu < 6, f"pathological command ({label}): {cpu:.1f} s of CPU ({wall:.1f} s wall), exit {r.returncode}")
+    v, cpu, wall = timed(cmd)
+    check(v != "broken" and cpu < 6, f"pathological command ({label}): {cpu:.1f} s of CPU ({wall:.1f} s wall), {v}")
 
 # ---- registration: Claude and Codex
 claude = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]

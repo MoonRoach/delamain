@@ -94,6 +94,46 @@ $B/hub why "$OLD" --cwd "$R" | grep -q "not an agent commit"; check $? 0 "why: a
 $B/hub why "$H" --cwd "$R" > "$W/why-h.out"
 grep -q "^WEAK GUESS\|not an agent commit" "$W/why-h.out"; check $? 0 "why: a person's commit next to an agent in a shared checkout is at most a weak guess"
 
+# 9. a commit written in the editor gets the trailers from commit-msg (prepare-commit-msg saw an empty message)
+rm -f "$R/shell.log"
+spawn editor 'echo 6 > f && git add f && GIT_EDITOR="printf \"from the editor\n\" >" git commit -q'
+grep -q '^exit=0' "$R/shell.log"; check $? 0 "editor run: the commit succeeded"
+check "$(git -C "$R" log -1 --format=%s)" "from the editor" "editor run: the message is the editor's"
+check "$(trailer Role "$R")" editor "a message written in the editor carries the trailers"
+
+# 10. an agent of an older installation starts this one: its shim entry leaves the environment (no chain of two shims),
+#     other inherited git parameters stay; and two shims in the chain never call each other forever
+cp -R "$B/git-hooks" "$W/old-git-hooks"
+rm -f "$R/shell.log"
+GIT_CONFIG_PARAMETERS="'core.hooksPath=$W/old-git-hooks' 'maintenance.auto=false'" \
+  spawn nested 'git config --get-all core.hooksPath; git config maintenance.auto'
+check "$(grep -c git-hooks "$R/shell.log")" 1 "nested: one shim in the agent's core.hooksPath"
+grep -q "^$B/git-hooks\$" "$R/shell.log"; check $? 0 "nested: it is this installation's"
+grep -q '^false$' "$R/shell.log"; check $? 0 "nested: an inherited git parameter stays"
+rm -f "$W/pre-commit.ran"; echo 7 > "$R/f"; git -C "$R" add f
+GIT_CONFIG_PARAMETERS="'core.hooksPath=$W/old-git-hooks' 'core.hooksPath=$B/git-hooks'" bounded 30 git -C "$R" commit -qm "two shims"
+check $? 0 "two shims in the chain: the commit finishes"
+check "$(wc -l < "$W/pre-commit.ran" | tr -d ' ')" 1 "two shims in the chain: the project's pre-commit ran once"
+
+# 11. run windows: a commit just after a resume belongs to the resumed run; a malformed meta.json breaks nothing
+python3 - "$B" <<'PY2'
+import sys, datetime as dt
+sys.path.insert(0, sys.argv[1])
+import hubcore as hc, provenance as pv
+z = dt.timezone.utc
+meta = {"_dir": "/nonexistent", "runs": [{"id": "a", "at": "2026-10-26T10:00:00+00:00"},
+                                         {"id": "b", "at": "2026-10-26T11:00:00+00:00"}]}
+got = pv.run_at(meta, dt.datetime(2026, 10, 26, 11, 2, tzinfo=z))
+assert got and got["id"] == "b", got
+assert pv.run_at(meta, dt.datetime(2026, 10, 26, 10, 30, tzinfo=z))["id"] == "a"
+assert pv.run_at(meta, dt.datetime(2026, 10, 26, 9, 0, tzinfo=z)) is None
+assert pv.run_windows({"_dir": "/x", "runs": 1}) == []
+PY2
+check $? 0 "run_at: the run going at the time, not the one before it; bad runs are no runs"
+mkdir -p "$AGENT_HUB_HOME/stage-a/agents/broken"; echo '{"role": "broken", "runs": 1, "worktree": 3, "cwd": 5}' \
+  > "$AGENT_HUB_HOME/stage-a/agents/broken/meta.json"
+$B/hub why "$H" --cwd "$R" > /dev/null; check $? 0 "why: a malformed meta.json in the home breaks nothing"
+
 # 8. Codex: the environment reaches the run's shell and the commit carries the trailers
 if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
   FAKE_CODEX_SHELL='echo 5 > f && git add f && git commit -qm "codex change"' \

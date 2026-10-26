@@ -81,7 +81,12 @@ def agent_env(cwd, run_id: str, env: dict) -> dict:
     if repo is None:
         return {}
     entry = sq(f"core.hooksPath={HOOKS_DIR}")
-    params = " ".join(p for p in (env.get("GIT_CONFIG_PARAMETERS", "").replace(entry, "").strip(), entry) if p)
+    # an older installation's shim (an agent of that version started this one) leaves too: two shims in the chain
+    # would each pick the other as "the project's hooks"
+    kept = re.sub(r"'core\.hooksPath=([^']*)'",
+                  lambda m: "" if (Path(m.group(1)) / "delamain-hook").is_file() else m.group(0),
+                  env.get("GIT_CONFIG_PARAMETERS", ""))
+    params = " ".join(p for p in (" ".join(kept.split()), entry) if p)
     return {"GIT_CONFIG_PARAMETERS": params, RUN_ENV: run_id, REPO_ENV: str(repo)}
 
 
@@ -112,7 +117,7 @@ def run_records(stage: Optional[str] = None) -> list:
                     meta = json.loads(mp.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
-                if isinstance(meta, dict) and meta.get("role"):
+                if isinstance(meta, dict) and isinstance(meta.get("role"), str) and meta["role"]:
                     meta.update(_home=str(base), _dir=str(mp.parent))
                     meta.setdefault("stage", st)
                     out.append(meta)
@@ -127,10 +132,15 @@ def _alive(meta: dict) -> bool:
         return False
 
 
+def _runs(meta: dict) -> list:
+    runs = meta.get("runs")
+    return [r for r in runs if isinstance(r, dict)] if isinstance(runs, list) else []
+
+
 def run_windows(meta: dict) -> list:
     """[(run, start, end)] of an agent's runs: each run ends where the next starts, the last at the log's last write
     (now, while its process lives)."""
-    runs = [r for r in meta.get("runs") or [] if isinstance(r, dict) and _when(r.get("at"))]
+    runs = [r for r in _runs(meta) if _when(r.get("at"))]
     if not runs and _when(meta.get("started_at")):
         runs = [{"at": meta["started_at"], "kind": "spawn"}]
     try:
@@ -148,22 +158,21 @@ def run_windows(meta: dict) -> list:
 
 
 def run_at(meta: dict, when: dt.datetime):
-    """The run of `meta` whose window holds `when`, else None."""
-    for r, start, end in run_windows(meta):
-        if start - RUN_EARLY <= when <= end + RUN_LATE:
-            return r
+    """The run of `meta` that was going at `when`: the last one started by then (RUN_EARLY for clock rounding), if
+    `when` is within RUN_LATE of its end; else None."""
+    going = [(r, end) for r, start, end in run_windows(meta) if start - RUN_EARLY <= when]
+    if going and when <= going[-1][1] + RUN_LATE:
+        return going[-1][0]
     return None
 
 
-def find_run(stage: str, role: str, run_id: str):
-    """(meta, run) of a trailer's run: the run id first, then a lone agent of that role as a fallback (run None)."""
-    metas = run_records(stage)
-    for meta in metas:
-        for r in meta.get("runs") or []:
-            if isinstance(r, dict) and (r.get("id") == run_id or r.get("prompt") == f"prompt-{run_id}.txt"):
+def find_run(stage: str, run_id: str):
+    """(meta, run) of a trailer's run id, else (None, None)."""
+    for meta in run_records(stage):
+        for r in _runs(meta):
+            if r.get("id") == run_id or r.get("prompt") == f"prompt-{run_id}.txt":
                 return meta, r
-    same = [m for m in metas if m.get("role") == role]
-    return (same[-1], None) if len(same) == 1 else (None, None)
+    return None, None
 
 
 # ---------------------------------------------------------------- the commit
@@ -227,11 +236,12 @@ def guesses(info: dict, repo: Path) -> list:
         run = run_at(meta, info["committed"])
         if run is None:
             continue
-        cwd = meta.get("cwd")
+        cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else None
         here = bool(cwd) and Path(cwd).is_dir()
         if here and common_dir(cwd) != me:
             continue
-        own = (meta.get("worktree") or {}).get("branch")
+        wt = meta.get("worktree")
+        own = wt.get("branch") if isinstance(wt, dict) and isinstance(wt.get("branch"), str) else None
         refs = [f"refs/heads/{own}"] if own else []
         shared = [f"refs/heads/agent/{meta['role']}"] if not own else []
         if here:
@@ -242,7 +252,7 @@ def guesses(info: dict, repo: Path) -> list:
         for where, ref, place in ([(Path(cwd), "HEAD", f"the HEAD reflog of its worktree {cwd}")] if here else []) + \
                 [(repo, r, f"the reflog of {r.removeprefix('refs/heads/')}") for r in refs + shared]:
             when = reflog_created(where, ref, info["sha"])
-            if when:
+            if when and run_at(meta, when) is run:  # the entry, not only the commit date, falls in this run
                 hit = (f"{place} records creating it at {when:%Y-%m-%d %H:%M}, during the run",
                        "guess" if own and (ref in refs or ref == "HEAD") else "weak guess")
                 break
@@ -337,16 +347,13 @@ def why(target: str, cwd: Path) -> dict:
         out["source"] = "trailers"
         stage, role, run_id = tr.get(STAGE_KEY, ""), tr.get(ROLE_KEY, ""), tr.get(RUN_KEY, "")
         meta = run = None
-        if hc.STAGE_RE.fullmatch(stage or ""):
-            meta, run = find_run(stage, role, run_id)
+        if hc.STAGE_RE.fullmatch(stage or "") and run_id:
+            meta, run = find_run(stage, run_id)
         if meta is None:
             out["notes"].append(f"no run record of stage {stage or '?'}, role {role or '?'}, run {run_id or '?'} in "
                                 f"this machine's hub homes: the commit was made elsewhere or the stage was deleted")
             out["agents"].append({"stage": stage or None, "role": role or None, "run": run_id or None})
         else:
-            if run is None:
-                out["notes"].append(f"run {run_id or '?'} is not among the role's recorded runs: the role's only agent "
-                                    "is shown")
             out["agents"].append(describe(meta, run, info["committed"], info))
         return out
     found = guesses(info, repo)

@@ -371,7 +371,8 @@ hub why 1a2b3c4 --json      # the same as JSON
 It prints the stage, role, tag and run; the engine, model and effort; the brief (the copy in the agent's directory when
 the original is gone), the report, the session id and its transcript (Claude: `~/.claude/projects/*/<session>.jsonl`;
 Codex: its rollout under `$CODEX_HOME/sessions`); and the agent's journal lines within ±30 minutes of the commit. What
-is missing is said, not filled in. A commit without trailers — made before this release, or with provenance off — gets
+is missing is said, not filled in; it writes nothing of its own (resolving a project hub home still adds that home to
+`.git/info/exclude` once, as every tool does). A commit without trailers — made before this release, or with provenance off — gets
 a `GUESS` when the reflog of the worktree or branch `agent spawn --worktree` made for an agent records creating it during
 one of its runs, a `WEAK GUESS` when only a shared checkout's reflog or a branch that contains it points at a run, and
 otherwise "not an agent commit as far as this machine knows". Reflogs are local and expire (90 days by default).
@@ -382,7 +383,9 @@ passes through, unlike `GIT_CONFIG_KEY_<n>`), `AGENT_HUB_RUN` and `AGENT_HUB_PRO
 directory of its `--cwd`). Each hook there runs the project's own hook of that name — the last `core.hooksPath` that is
 not the shim (husky's `.husky/_`, a global one), else `<common git dir>/hooks` — with its arguments, stdin and exit
 code, so a project hook that refuses still refuses. `prepare-commit-msg` then appends the trailers, which is why
-`git commit --no-verify` keeps them. Nothing is added:
+`git commit --no-verify` keeps them, and `commit-msg` adds them to a message first written in the editor. Another
+installation's shim inherited from an agent of an older version is dropped from the variable, and a shim never chains to
+a shim. Nothing is added:
 
 - in another repository (a throw-away repository of a test, a clone): the shim only chains there;
 - to a commit replayed by `cherry-pick` or `rebase`: it keeps the trailers it had, or none — a person's commit stays a

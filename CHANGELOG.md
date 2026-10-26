@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.19 — 2026-10-26
+
 - **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke
   twice an hour all night to say "nothing new" (dolya, 26.10). Every journal `jwait` of a Claude hub now ends with a
   `NEXT WAIT:` line that names the one waiter to arm: a Monitor stream while a headless agent or an `await` supervisor

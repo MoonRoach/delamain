@@ -9,6 +9,11 @@ mkdir -p $O/bin
 # `--watch` uses) exits 0 on a cancelled check. STEPS: files $O/step.N hold successive JSON answers (the last repeats).
 cat > $O/bin/gh <<'SH'
 #!/bin/bash
+[ -n "$GH_SLEEP" ] && sleep "$GH_SLEEP"
+case "$1 $2" in
+  "pr view") echo '{"headRefOid":"abc123"}'; exit 0 ;;
+  "run list") cat "${GH_RUNS:-/dev/null}" 2>/dev/null || echo '[]'; exit 0 ;;
+esac
 n=$(cat "$GH_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$GH_STATE"
 f="$GH_STEPS.$n"; [ -e "$f" ] || f="$GH_STEPS.last"
 case "$*" in
@@ -21,10 +26,12 @@ SH
 chmod +x $O/bin/gh
 export GH_STATE=$O/state GH_STEPS=$O/steps
 U=https://github.com/o/r/actions/runs/1/job
-chk(){ printf '{"name":"%s","bucket":"%s","state":"X","link":"%s/%s"}' "$1" "$2" "$U" "$3"; }
+chk(){ printf '{"name":"%s","bucket":"%s","state":"%s","link":"%s/%s"}' "$1" "$2" "${4:-X}" "$U" "$3"; }
+run_json(){ printf '[{"name":"Tests","status":"%s","conclusion":"%s","databaseId":1,"url":"%s/run"}]' "$1" "$2" "$U" > $O/runs; export GH_RUNS=$O/runs; }
+run_json completed success
 # answer FILE-SUFFIX JSON-LIST-ITEMS...: write one canned answer
 answer(){ local s=$1; shift; local IFS=,; echo "[$*]" > "$GH_STEPS.$s"; }
-reset(){ rm -f $GH_STATE $GH_STEPS.*; }
+reset(){ rm -f $GH_STATE $GH_STEPS.*; run_json completed success; unset GH_SLEEP; }
 run(){ PATH=$O/bin:$PATH $B/gh-ci-wait "$@" > $O/w.out 2>&1; }
 
 reset; answer last "$(chk ubuntu pass 1)" "$(chk macos pass 2)"
@@ -54,13 +61,49 @@ run 12 --interval 0.1s --grace 5s; check $? 0 "no checks yet, then they appear a
 reset; echo 'no checks reported on the '"'"'x'"'"' branch' > $GH_STEPS.last
 GH_RC=1 run 12 --interval 0.1s --grace 1s; check $? 3 "gh's 'no checks reported' text is the same answer"
 reset; answer last "$(chk ubuntu skipping 1)"
-run 12 --interval 0.1s; check $? 3 "everything skipped: nothing passed, not ok"
+run 12 --interval 0.1s; check $? 4 "everything skipped: nothing passed, exit 4"
 reset; echo 'HTTP 502' > $GH_STEPS.last
 GH_RC=1 run 12 --interval 0.1s; check $? 2 "gh unusable five polls in a row: exit 2"
 check "$(cat $GH_STATE)" 5 "…after exactly five polls"
 reset; answer 1 "$(chk ubuntu pass 1)"; echo 'HTTP 502' > $GH_STEPS.2; answer last "$(chk ubuntu pass 1)"
 GH_RC=0 run 12 --interval 0.1s; check $? 0 "one answer from gh and the next fine: not an error"
 run 12 --interval soon; check $? 2 "bad --interval: usage"
+
+# review 3: completeness, skipped / neutral, the deadline
+reset; answer last "$(chk 'tests (ubuntu-latest)' pass 1)"
+run 12 --interval 0.1s --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)' --grace 1s; check $? 3 "--require: ubuntu passed, macOS never registered: exit 3, not 0"
+grep -q 'required check not reported.*tests (macos-latest)' $O/w.out; check $? 0 "…naming the missing one"
+reset; answer last "$(chk 'tests (ubuntu-latest)' pass 1)"
+run 12 --interval 0.1s --grace 1s; check $? 0 "control: without --require the same list is a pass (the runs are complete)"
+reset; answer 1 "$(chk 'tests (ubuntu-latest)' pass 1)"; answer 2 "$(chk 'tests (ubuntu-latest)' pass 1)"; answer last "$(chk 'tests (ubuntu-latest)' pass 1)" "$(chk 'tests (macos-latest)' pass 2)"
+run 12 --interval 0.1s --grace 10s --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'; check $? 0 "--require: the second check appears later and passes: exit 0"
+reset; answer 1 "$(chk a pass 1)" "$(chk b pending 2)"; answer last "$(chk a pass 1)" "$(chk b pass 2)"
+run 12 --interval 0.1s --require a --require b; check $? 0 "--require: a pending required check is waited for"
+reset; answer last "$(chk a pass 1)" "$(chk b fail 2)"
+run 12 --interval 0.1s --require a; check $? 1 "…a failed check that is not required still fails the wait"
+reset; answer last "$(chk a pass 1)"; run_json in_progress ""
+run 12 --interval 0.1s --timeout 1s; check $? 124 "no --require: a workflow run of the head still open is not a verdict (deadline)"
+reset; answer last "$(chk a pass 1)"; run_json in_progress ""
+GH_SLEEP=0 run 12 --interval 0.1s --require a; check $? 0 "control: the same open run does not hold a --require wait"
+reset; answer last "$(chk a pass 1)"; run_json completed failure
+run 12 --interval 0.1s; check $? 1 "a completed run that failed with no failed check in the list: exit 1"
+grep -q 'RESULT: failed (run Tests: failure)' $O/w.out; check $? 0 "…naming the run"
+reset; answer last "$(chk a pass 1)" "$(chk b skipping 2 SKIPPED)"
+run 12 --interval 0.1s; check $? 4 "a SKIPPED check: exit 4, not 0"
+reset; answer last "$(chk a pass 1)" "$(chk b skipping 2 SKIPPED)"
+run 12 --interval 0.1s --require a --require b; check $? 4 "a required check that was SKIPPED: exit 4"
+reset; answer last "$(chk a pass 1)" "$(chk b skipping 2 SKIPPED)"
+run 12 --interval 0.1s --require a; check $? 0 "control: a skipped check that is not required is ignored under --require"
+reset; answer last "$(chk a pass 1)" "$(chk b skipping 2 NEUTRAL)"
+run 12 --interval 0.1s; check $? 4 "a NEUTRAL check is no success by default"
+run 12 --interval 0.1s --allow-neutral; check $? 0 "…with --allow-neutral it is"
+reset; answer last "$(chk a pass 1)" "$(chk b skipping 2 SKIPPED)"
+run 12 --interval 0.1s --allow-neutral; check $? 4 "…and --allow-neutral does not make SKIPPED one"
+reset; answer last "$(chk a pass 1)"
+GH_SLEEP=2 run 12 --interval 0.1s --timeout 1s; check $? 124 "a gh answer that comes after the deadline is not a pass: exit 124 (control: it used to be 0)"
+t0=$(date +%s); GH_SLEEP=30 run 12 --interval 0.1s --timeout 2s; rc=$?; el=$(( $(date +%s) - t0 ))
+check $rc 124 "gh that hangs: the deadline wins"
+[ $el -le 10 ]; check $? 0 "…a gh call is cut at what is left of the deadline, not at 120 s (${el}s)"
 
 # under await --wait: the verdict line and the exit code. Control: the old recipe, gh pr checks --watch, called a
 # cancelled check a success (the stub's table form exits 0 on it exactly like gh 2.92)

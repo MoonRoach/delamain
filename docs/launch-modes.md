@@ -163,14 +163,18 @@ checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 a
 `--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
 
 On GitHub the wait command is `gh-ci-wait N` (`bin/`; `--repo OWNER/REPO`, `--timeout 45m`, `--grace 3m`). It reads the
-PR's checks as JSON and decides by every check's bucket: exit 0 only when all passed (skipped ones aside, at least one
-passed); 1 when one failed or was **cancelled** (it stops at the first); 124 at the deadline (`await` reads that as
-`TIMEOUT`); 3 when no checks were registered within the grace; 2 usage or `gh` unusable. Do not wait with `gh pr checks
+PR's checks as JSON and decides by every check's bucket: exit 0 only when all passed; 1 when one failed or was
+**cancelled** (it stops at the first); 124 at the deadline (`await` reads that as `TIMEOUT`; checked after every `gh`
+call, before any success); 3 when no checks, or a required one, were registered within the grace; 4 when a check that had
+to pass was **skipped** (a neutral one too, unless `--allow-neutral`); 2 usage or `gh` unusable. A list is not complete
+by itself (ubuntu passed, macOS not registered yet): name the checks with `--require 'NAME'` (repeatable) and it waits
+until each is reported and passed; without `--require` it also waits for every workflow run of the head commit to
+complete (`gh run list --commit`) and fails on a run that ended failed or cancelled. Do not wait with `gh pr checks
 --watch`: it exits 0 on a cancelled check (a runner that timed out), so a red macOS job read as a pass (PR #140, 26.10).
 
 ```bash
-await --ok PASSED --label "PR #12" -- gh-ci-wait 12   # detached; MERGED is for waiting on the merge itself
-await --wait --ok PASSED --label "PR #12" -- gh-ci-wait 12   # attached: run_in_background, exit 3 = not passed
+await --ok PASSED --label "PR #12" -- gh-ci-wait 12 --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'   # detached; MERGED is for waiting on the merge itself
+await --wait --ok PASSED --label "PR #12" -- gh-ci-wait 12 --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'   # attached: run_in_background, exit 3 = not passed
 ```
 
 Right after a push the checks may not be registered yet: `gh-ci-wait` waits for them for `--grace`, then answers 3. To confirm a result by commit, `gh run list --commit <sha> --json name,status,conclusion`

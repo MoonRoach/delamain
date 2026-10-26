@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Wait for the checks of a GitHub pull request and exit with what they concluded. Meant to run under `await`.
+
+  gh-ci-wait [PR] [--repo OWNER/REPO] [--timeout 45m] [--interval 10s] [--grace 3m]
+  await --ok PASSED --label "PR #12" -- gh-ci-wait 12
+
+Why not `gh pr checks --watch`: it exits 0 when a check was CANCELLED (a timed-out or cancelled runner: bucket `cancel`),
+because it counts only `fail` and `pending`; a red macOS job that timed out at 15 minutes was reported as passed (PR #140,
+26.10). This reads the checks as JSON and decides by every check's bucket itself.
+
+Exit: 0 every check passed (or was skipped, at least one passed); 1 a check failed or was cancelled, or its bucket is
+unknown (the wait ends at the first such check, the others may still run); 124 the deadline came; 3 no checks were
+registered within --grace (right after a push they are not there yet); 2 usage, or `gh` unusable / unreachable five
+polls in a row. The last line says which; the last URL it prints is the check that decided (the failed one, else the
+last passed), which `await` takes as the link. PR defaults to the current branch's.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+
+FAIL_BUCKETS = ("fail", "cancel")
+OK_BUCKETS = ("pass", "skipping")
+ERRORS_IN_A_ROW = 5
+
+
+def seconds(text: str) -> float:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text.strip())
+    if not m:
+        raise ValueError(f"{text!r}: use 30s, 10m, 2h")
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def read_checks(pr: str, repo: str):
+    """The PR's checks as a list of dicts; [] when none are reported; None when gh could not tell."""
+    cmd = ["gh", "pr", "checks"] + ([pr] if pr else []) + (["--repo", repo] if repo else []) + [
+        "--json", "name,bucket,state,link"]
+    try:
+        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"gh-ci-wait: gh did not answer: {e}", file=sys.stderr)
+        return None
+    try:  # gh's exit code is no verdict (0 on a cancelled check): the JSON is
+        data = json.loads(r.stdout)
+        if isinstance(data, list) and all(isinstance(c, dict) for c in data):
+            return data
+    except ValueError:
+        pass
+    if "no checks reported" in (r.stdout + r.stderr).lower():
+        return []
+    print(f"gh-ci-wait: gh pr checks (exit {r.returncode}): {(r.stderr or r.stdout).strip()[:300]}", file=sys.stderr)
+    return None
+
+
+def show(checks: list) -> None:
+    for c in checks:
+        print(f"{c.get('name', '?')}\t{c.get('bucket', '?')}\t{c.get('state', '?')}\t{c.get('link', '')}", flush=True)
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="gh-ci-wait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                allow_abbrev=False)
+    p.add_argument("pr", nargs="?", default="", help="PR number, URL or branch (default: the current branch's)")
+    p.add_argument("--repo", default="")
+    p.add_argument("--timeout", default="45m")
+    p.add_argument("--interval", default="10s")
+    p.add_argument("--grace", default="3m", help="how long 'no checks reported' may last before it is the answer")
+    args = p.parse_args(argv)
+    try:
+        timeout, interval, grace = seconds(args.timeout), seconds(args.interval), seconds(args.grace)
+    except ValueError as e:
+        print(f"gh-ci-wait: {e}", file=sys.stderr)
+        return 2
+
+    start = time.monotonic()
+    errors, last = 0, None
+    while True:
+        checks = read_checks(args.pr, args.repo)
+        elapsed = time.monotonic() - start
+        if checks is None:
+            errors += 1
+            if errors >= ERRORS_IN_A_ROW:
+                print("RESULT: gh unusable")
+                return 2
+        else:
+            errors = 0
+            buckets = [str(c.get("bucket", "")) for c in checks]
+            bad = [c for c, b in zip(checks, buckets) if b not in OK_BUCKETS and b != "pending"]
+            if checks and bad:
+                show(checks)
+                worst = next((c for c in bad if c.get("bucket") in FAIL_BUCKETS), bad[0])
+                print(f"RESULT: failed ({worst.get('name')}: {worst.get('bucket')}/{worst.get('state')})")
+                print(worst.get("link", ""))
+                return 1
+            if checks and "pending" not in buckets:
+                show(checks)
+                passed = [c for c, b in zip(checks, buckets) if b == "pass"]
+                if not passed:
+                    print("RESULT: no check passed (all skipped)")
+                    return 3
+                print(f"RESULT: passed ({len(passed)} of {len(checks)})")
+                print(passed[-1].get("link", ""))
+                return 0
+            if not checks and elapsed >= grace:
+                print(f"RESULT: no checks reported within {args.grace}")
+                return 3
+            state = (len(checks), buckets.count("pending"))
+            if state != last:
+                last = state
+                print(f"waiting: {len(checks)} checks, {state[1]} pending ({int(elapsed)}s)", flush=True)
+        if elapsed + interval > timeout:
+            print(f"RESULT: timeout after {args.timeout}")
+            return 124
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

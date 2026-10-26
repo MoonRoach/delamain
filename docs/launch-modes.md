@@ -162,16 +162,18 @@ word cannot be put on a failure: `--ok FAILED|TIMEOUT`, `--on 0=WORD` and `--on 
 checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 and the 1.0.21 release PR).
 `--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
 
-On GitHub the wait command is `gh pr checks N --watch --fail-fast` (exit 0 only when every check passed; 1 for a red
-check, for "no checks reported" and for an unknown PR) or `gh run watch <id> --exit-status`:
+On GitHub the wait command is `gh-ci-wait N` (`bin/`; `--repo OWNER/REPO`, `--timeout 45m`, `--grace 3m`). It reads the
+PR's checks as JSON and decides by every check's bucket: exit 0 only when all passed (skipped ones aside, at least one
+passed); 1 when one failed or was **cancelled** (it stops at the first); 124 at the deadline (`await` reads that as
+`TIMEOUT`); 3 when no checks were registered within the grace; 2 usage or `gh` unusable. Do not wait with `gh pr checks
+--watch`: it exits 0 on a cancelled check (a runner that timed out), so a red macOS job read as a pass (PR #140, 26.10).
 
 ```bash
-await --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # detached; the polling guard lets it through (MERGED is for waiting on the merge itself)
-await --wait --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # attached: run_in_background, exit 3 = not passed
+await --ok PASSED --label "PR #12" -- gh-ci-wait 12   # detached; MERGED is for waiting on the merge itself
+await --wait --ok PASSED --label "PR #12" -- gh-ci-wait 12   # attached: run_in_background, exit 3 = not passed
 ```
 
-Right after a push the checks may not be registered yet; that is `FAILED` (`no checks reported`), not a pass — wait a
-moment and run it again. To confirm a result by commit, `gh run list --commit <sha> --json name,status,conclusion`
+Right after a push the checks may not be registered yet: `gh-ci-wait` waits for them for `--grace`, then answers 3. To confirm a result by commit, `gh run list --commit <sha> --json name,status,conclusion`
 shows every run of that head. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
 `FAILED … interrupted`; a supervisor killed
 with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails

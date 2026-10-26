@@ -12,6 +12,9 @@
   slot, a number unique among the repository's live worktrees and stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
   shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
   behaves as before. See *Preparing worktrees* in `docs/reference.md`.
+
+## 1.0.20 — 2026-10-26
+
 - **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known
   hub home, through `tell` (so a headless or Codex hub is reached the way `tell` reaches it), leaving out your own hub
   and closed stages; `--urgent` / `--question` wake them at once, `--dry-run` lists the recipients, `--this-home`,

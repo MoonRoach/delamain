@@ -20,12 +20,16 @@ LINK is `--link`, else the last http(s) URL COMMAND printed (a failed job, the m
 start, is killed by a signal, or a supervisor that gets SIGTERM/SIGHUP/SIGINT (which also stops COMMAND's process
 group) ends in FAILED. A supervisor killed with SIGKILL writes nothing: the hub's jwait alarm is the backstop.
 
---wait keeps `await` attached (the supervisor's work in the foreground; exit 0 once the line is written).
+--wait keeps `await` attached (the supervisor's work in the foreground). It prints the journal line it wrote and exits
+0 only when the word is the --ok word: FAILED, TIMEOUT or an --on word ends with exit 3. Read that exit code or that
+line, never "the command ended": `await --wait --ok PASSED -- gh pr checks N --watch` used to exit 0 on red checks,
+because 0 meant "the line is written", and the verdict was only in the journal.
 --timeout is the supervisor's own limit on COMMAND (default 2h; the process group gets SIGTERM, and after a grace of
 5 s SIGKILL, also when only the leader obeyed SIGTERM).
 Tag: --tag, else the caller's signing tag + "-await". Stage: --stage, else $HUB_STAGE. Log: --log, else
 <stage>/coordinator/work/await/<time>-<label>.log.
-Exit: 0 started (or, with --wait, the line written), 1 the line could not be written, 2 usage / COMMAND not found.
+Exit: 0 started (with --wait: the --ok word), 1 the line could not be written, 2 usage / COMMAND not found,
+3 (--wait only) the line was written and its word is not the --ok word.
 """
 from __future__ import annotations
 
@@ -45,10 +49,12 @@ from pathlib import Path
 # it once the wait starts (run_wait). The real handlers replace these.
 EARLY_SIGNALS: list = []
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+DETACHED = False  # a supervisor started by `await` itself: nobody reads its stdout or its exit code
 if "--wait" in sys.argv:
     for _sig in STOP_SIGNALS:
         signal.signal(_sig, lambda signum, frame: EARLY_SIGNALS.append(signum))
     if os.environ.pop("AWAIT_NOTIFY", None):  # the detaching parent waits for this: from here on a kill is journaled
+        DETACHED = True
         os.write(1, b"ready\n")
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -192,6 +198,12 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     except OSError as e:
         print(f"await: could not write the journal: {e}", file=sys.stderr)
         return 1
+    if not DETACHED:  # the caller waited for the verdict: it gets the line and an exit code that says which verdict
+        try:
+            print(text, flush=True)
+        except OSError:
+            pass
+        return 0 if word == args.ok else 3
     return 0
 
 

@@ -12,11 +12,12 @@ are on a remote, whether its branch is merged (ancestor of the remote default br
 pull request found with `gh`), and how long since the last change (the last commit, reflog entry or edited file).
 
 Prune removes a worktree only when every check passes: merged, clean, nothing unpushed, no git operation under way,
-not locked, not the caller's directory, not in use — and, where use is "unknown", unchanged for longer than the idle
-limit. `git worktree remove` without --force removes a worktree; `git worktree prune --expire=<idle limit>` clears only
-the entries of directories that have been gone for that long (a moved or unmounted worktree looks the same, and its
-entry holds its index). Work that is not on a remote is never removed. Files git ignores (build output, a local .env)
-are not looked at and go with the worktree.
+not locked, not the caller's directory, not in use, holding no other worktree — and, where use is "unknown", unchanged
+for longer than the idle limit; and only on remote refs a fetch has just brought up to date. `git worktree remove`
+without --force removes a worktree. A registered worktree whose directory is missing keeps its registration: a moved or
+unmounted worktree looks the same, and the registration holds its index (`git worktree prune` is never run). Paths are
+compared by directory identity (device and inode), not by spelling. Work that is not on a remote is never removed.
+Files git ignores (build output, a local .env) are not looked at and go with the worktree.
 """
 from __future__ import annotations
 
@@ -46,7 +47,8 @@ OPERATIONS = (("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HE
               ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("BISECT_LOG", "bisect"),
               ("index.lock", "a running git command"))
 # the order a worktree's "kept" reasons are reported and tallied in: the first is the primary one
-REASON_ORDER = ("main", "bare", "locked", "caller", "live", "dirty", "operation", "unpushed", "unmerged", "idle", "gone")
+REASON_ORDER = ("main", "bare", "missing", "locked", "caller", "live", "nested", "dirty", "operation", "unpushed",
+                "unmerged", "idle", "refs", "gone")
 
 
 @dataclasses.dataclass
@@ -78,6 +80,13 @@ class Worktree:
     caller: bool = False
     reasons: list = dataclasses.field(default_factory=list)  # [(code, text)] why prune keeps it; empty: removable
     gitdir: Optional[Path] = None
+    ident: Optional[tuple] = None  # (device, inode) of its directory; None when it is missing
+    holds: list = dataclasses.field(default_factory=list)  # the other registered worktrees inside its directory
+
+    @property
+    def key(self):
+        """What indexes by path use: the directory's identity, its real path when it is missing."""
+        return self.ident or self.real
 
     @property
     def exists(self) -> bool:
@@ -98,6 +107,7 @@ class Ledger:
     gh: str  # ok | off | missing | unavailable: <why>
     now: dt.datetime
     idle: dt.timedelta
+    refs: Optional[str] = None  # None: the remote refs were just fetched; else why they may be stale
 
 
 def _real(path) -> str:
@@ -105,6 +115,41 @@ def _real(path) -> str:
         return os.path.realpath(str(path))
     except (OSError, ValueError):
         return str(path)
+
+
+def _ident(path) -> Optional[tuple]:
+    """(device, inode) of an existing directory: one directory has one, however its path is spelt (a symlink, another
+    case on a case-insensitive file system such as macOS's); None when there is none."""
+    try:
+        st = os.stat(str(path))
+    except (OSError, ValueError):
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _key(path):
+    return _ident(path) or _real(path)
+
+
+def _idents() -> Callable[[str], Optional[tuple]]:
+    """_ident with a cache for one pass (many processes share parent directories)."""
+    seen: dict = {}
+
+    def get(path: str) -> Optional[tuple]:
+        if path not in seen:
+            seen[path] = _ident(path)
+        return seen[path]
+    return get
+
+
+def _inside(real: str, by_ident: dict, ident) -> Optional["Worktree"]:
+    """The deepest worktree a real path is in (or is), by directory identity along its chain of parents."""
+    p = Path(real)
+    for d in (p, *p.parents):
+        w = by_ident.get(ident(str(d)))
+        if w is not None:
+            return w
+    return None
 
 
 def _git(cwd, *argv, timeout: int = GIT_TIMEOUT_S):
@@ -148,7 +193,7 @@ def list_worktrees(main: Path) -> list:
             continue
         key, _, val = line.partition(" ")
         if key == "worktree":
-            cur = Worktree(path=Path(val), real=_real(val))
+            cur = Worktree(path=Path(val), real=_real(val), ident=_ident(val))
         elif cur is None:
             continue
         elif key == "HEAD":
@@ -176,7 +221,7 @@ def _hub_homes() -> list:
 
 
 def _agent_index(homes: list) -> dict:
-    """{real path: [(started_at, stage, role, meta)]} of every agent run (the current one and the finished runs kept as
+    """{path key (_key): [(started_at, stage, role, meta)]} of every agent run (the current one and the finished runs kept as
     `<role>.<stamp>`) whose worktree or working directory is that path."""
     index: dict = {}
     for home in homes:
@@ -192,12 +237,12 @@ def _agent_index(homes: list) -> dict:
             role = meta.get("role") or meta_path.parent.name
             for p in {wt.get("path"), meta.get("cwd")}:
                 if isinstance(p, str) and p:
-                    index.setdefault(_real(p), []).append((str(meta.get("started_at") or ""), stage, role, meta))
+                    index.setdefault(_key(p), []).append((str(meta.get("started_at") or ""), stage, role, meta))
     return index
 
 
 def _role_index(homes: list) -> tuple:
-    """({real path: [(stage, role, record)]} of registered roles that name a worktree or cwd, {stage: highest registered
+    """({path key: [(stage, role, record)]} of registered roles that name a worktree or cwd, {stage: highest registered
     hub number}) from the roles.json of every stage of every known home."""
     by_path: dict = {}
     hubs: dict = {}
@@ -219,7 +264,7 @@ def _role_index(homes: list) -> tuple:
                     hubs[stage] = max(hubs[stage], hc.hub_number(rec.get("tag")) or 0)
                 for p in {rec.get("worktree"), rec.get("cwd")}:
                     if isinstance(p, str) and p:
-                        by_path.setdefault(_real(p), []).append((stage, role, rec))
+                        by_path.setdefault(_key(p), []).append((stage, role, rec))
     return by_path, hubs
 
 
@@ -259,20 +304,31 @@ def process_cwds() -> Optional[list]:
 
 
 def _assign_processes(items: list, procs: Optional[list]) -> dict:
-    """{real path of a worktree: [(pid, command)]}: each process goes to the deepest worktree its directory is inside
-    (the main checkout contains the others), this process left out."""
-    found: dict = {w.real: [] for w in items}
+    """{worktree key: [(pid, command)]}: each process goes to the deepest worktree its directory is inside (the main
+    checkout contains the others), by directory identity, this process left out."""
+    found: dict = {w.key: [] for w in items}
     if not procs:
         return found
-    roots = sorted(found, key=len, reverse=True)
+    by_ident = {w.ident: w for w in items if w.ident}
+    ident = _idents()
     for pid, cmd, cwd in procs:
         if pid == os.getpid():
             continue
-        for r in roots:
-            if cwd == r or cwd.startswith(r + os.sep):
-                found[r].append((pid, cmd))
-                break
+        w = _inside(cwd, by_ident, ident)
+        if w is not None:
+            found[w.key].append((pid, cmd))
     return found
+
+
+def _nest(main: Path, items: list) -> None:
+    """Fill `holds`: removing a directory removes every worktree inside it, at any depth, with its uncommitted files."""
+    by_ident = {w.ident: w for w in items if w.ident}
+    ident = _idents()
+    for o in items:
+        for d in Path(o.real).parents:
+            w = by_ident.get(ident(str(d)))
+            if w is not None and w is not o:
+                w.holds.append(_rel(main, o))
 
 
 def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Optional[list]) -> None:
@@ -283,8 +339,8 @@ def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Opt
     in_use = _assign_processes(items, procs)
     main_real = _real(main)
     for w in items:
-        runs = sorted(agents.get(w.real, []), key=lambda r: r[0])
-        registered = roles.get(w.real, [])
+        runs = sorted(agents.get(w.key, []), key=lambda r: r[0])
+        registered = roles.get(w.key, [])
         rel = Path(os.path.relpath(w.real, main_real)).parts if w.real.startswith(main_real + os.sep) else ()
         hub = None
         if (rel[:2] == (".claude", "worktrees") and len(rel) == 3) or (rel[:1] == (".worktrees",) and len(rel) > 1):
@@ -296,7 +352,7 @@ def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Opt
         for stage, role, rec in registered:
             if rec.get("kind") != "headless":  # a headless role is judged by its run (above): its record outlives the process
                 live_by.append(f"registered {role} of stage {stage}")
-        for pid, cmd in in_use.get(w.real, []):
+        for pid, cmd in in_use.get(w.key, []):
             live_by.append(f"{cmd or 'process'} (pid {pid})")
         known_not_live = False
         if w.is_main:
@@ -450,12 +506,16 @@ def _apply_pr(main: Path, w: Worktree, prs: list, default_branch: Optional[str])
                          "(or its head is not in this clone)")
 
 
-def _fetch(main: Path, notes: list) -> None:
-    """git fetch origin (bounded, never asks for a password): the decisions rest on the remote refs, and stale ones can
-    tell a branch is merged that the remote has since lost."""
-    res = _git(main, "fetch", "--quiet", "origin", timeout=FETCH_TIMEOUT_S)
+def _fetch(main: Path, notes: list) -> Optional[str]:
+    """git fetch --prune origin (bounded, never asks for a password): the decisions rest on the remote refs, and stale
+    ones can tell a branch is merged that the remote has since lost, or pushed when the remote deleted it. None when it
+    worked, else why not."""
+    res = _git(main, "fetch", "--prune", "--quiet", "origin", timeout=FETCH_TIMEOUT_S)
     if res is None or res.returncode != 0:
-        notes.append(f"git fetch origin failed ({_first_line(res)}): remote refs are as last fetched")
+        why = f"git fetch origin failed: {_first_line(res)}"
+        notes.append(why + "; remote refs are as last fetched, so --prune removes nothing")
+        return why
+    return None
 
 
 def collect(repo: Path, alive: Callable[[dict], bool], idle: dt.timedelta, use_gh: bool = True, fetch: bool = False,
@@ -465,8 +525,7 @@ def collect(repo: Path, alive: Callable[[dict], bool], idle: dt.timedelta, use_g
     if main is None:
         raise hc.UsageError(f"{repo} is not inside a git repository with a working tree")
     notes: list = []
-    if fetch:
-        _fetch(main, notes)
+    refs = _fetch(main, notes) if fetch else "not fetched"
     items = list_worktrees(main)
     default_ref, default_branch = hc.default_ref(main)
     if default_ref is None:
@@ -476,6 +535,7 @@ def collect(repo: Path, alive: Callable[[dict], bool], idle: dt.timedelta, use_g
     if procs is None:
         notes.append("this host cannot list processes' directories (no /proc, no lsof): use is judged from agent runs only")
     attribute(main, items, alive, procs)
+    _nest(main, items)
     with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
         list(pool.map(lambda w: _inspect(main, w, default_ref), items))
     gh = GitHub(main, use_gh)
@@ -507,13 +567,11 @@ def collect(repo: Path, alive: Callable[[dict], bool], idle: dt.timedelta, use_g
     elif gh_failed == "off":
         notes.append("--no-gh: merge state unknown for squash-merged branches")
     now = hc.now()
-    here = _real(caller_cwd) if caller_cwd else None
-    holder = next((w for w in sorted(items, key=lambda w: len(w.real), reverse=True)
-                   if here and (here == w.real or here.startswith(w.real + os.sep))), None)  # the deepest one holds it
+    holder = _inside(_real(caller_cwd), {w.ident: w for w in items if w.ident}, _idents()) if caller_cwd else None
     for w in items:
         w.caller = w is holder
         w.reasons = keep_reasons(w, now, idle, default_ref)
-    return Ledger(main, default_ref, default_branch, items, notes, gh.state, now, idle)
+    return Ledger(main, default_ref, default_branch, items, notes, gh.state, now, idle, refs)
 
 
 def keep_reasons(w: Worktree, now: dt.datetime, idle: dt.timedelta, default_ref: Optional[str] = None) -> list:
@@ -522,15 +580,20 @@ def keep_reasons(w: Worktree, now: dt.datetime, idle: dt.timedelta, default_ref:
         return [("main", "main checkout")]
     if w.bare:
         return [("bare", "bare repository")]
-    if w.prunable is not None:
-        return []
     r = []
+    if w.prunable is not None:
+        r.append(("missing", "directory missing: its registration is kept, it may hold an index and commits "
+                             "(`git worktree repair <new path>` after a move)"))
     if w.locked is not None:
         r.append(("locked", "locked" if w.locked == "locked" else f"locked: {w.locked}"))
+    if w.prunable is not None:
+        return r
     if w.caller:
         r.append(("caller", "your current directory"))
     if w.live == "yes":
         r.append(("live", "in use: " + "; ".join(w.live_by)))
+    if w.holds:
+        r.append(("nested", "holds the worktree" + ("s " if len(w.holds) > 1 else " ") + ", ".join(w.holds)))
     if w.dirty is None:
         r.append(("dirty", "dirty state unknown (git status failed)"))
     elif w.dirty:
@@ -559,63 +622,38 @@ def fmt_delta(d: dt.timedelta) -> str:
 
 # ---------------------------------------------------------------- prune
 
-def _expired_stale(main: Path, idle: dt.timedelta) -> set:
-    """Real paths of the worktrees whose entry `git worktree prune --expire=<idle>` clears: directory gone, entry older
-    than the limit. A directory that was moved or sits on an unmounted disk looks the same as a deleted one for a while."""
-    res = _git(main, "worktree", "prune", "--dry-run", "--verbose", f"--expire={int(idle.total_seconds())}.seconds.ago")
-    common = _out(_git(main, "rev-parse", "--path-format=absolute", "--git-common-dir"))
-    out: set = set()
-    if res is None or res.returncode != 0 or not common:
-        return out
-    for line in (res.stdout + "\n" + res.stderr).splitlines():
-        m = re.match(r"Removing worktrees/([^:]+):", line)
-        if not m:
-            continue
-        try:
-            text = (Path(common) / "worktrees" / m.group(1) / "gitdir").read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        out.add(_real(Path(text).parent))
-    return out
-
-
 @dataclasses.dataclass
 class Outcome:
     removed: list  # [(Worktree, branch action)]
     kept: list  # [(Worktree, [(code, text)])]
-    stale: list  # [Worktree] entries whose directory is gone
     dry_run: bool
 
 
 def prune(ledger: Ledger, dry_run: bool, delete_branches: bool) -> Outcome:
-    """Remove the finished worktrees (git worktree remove, never --force), then clear stale entries; delete a branch
-    only when it is merged by ancestry (git branch -d), a squash-merged one only with `delete_branches` (git branch -D,
-    for a branch whose merged pull request holds everything it has). A worktree that changed since the listing is kept."""
-    removed, kept, stale = [], [], []
+    """Remove the finished worktrees (git worktree remove, never --force); delete a branch only when it is merged by
+    ancestry or, with `delete_branches`, by a merged pull request that holds everything it has — at the commit that was
+    verified, and only when no worktree has it checked out. Nothing is removed on remote refs that were not just
+    fetched. A worktree that changed since the listing is kept; a missing one keeps its registration."""
+    removed, kept = [], []
     main = ledger.main
-    expired = _expired_stale(main, ledger.idle) if any(w.prunable is not None for w in ledger.items) else set()
+    if ledger.refs is not None:  # merged and pushed rest on the remote refs: stale ones decide nothing
+        why = "refs not fresh (" + ("--no-fetch" if ledger.refs == "not fetched" else ledger.refs) + ")"
+        for w in ledger.items:
+            if w.removable:
+                w.reasons = [("refs", why)]
     procs = None if dry_run else process_cwds()  # the world moves while the ledger is built: look at processes once more
     in_use = _assign_processes(ledger.items, procs)
     for w in ledger.items:
         if w.is_main or w.bare:
             continue
-        if w.prunable is not None:
-            if w.locked is not None:
-                kept.append((w, [("locked", f"stale entry, locked ({w.locked})")]))
-            elif w.real in expired:
-                stale.append(w)
-            else:
-                kept.append((w, [("idle", f"its directory is gone, but the entry is newer than {fmt_delta(ledger.idle)} "
-                                          "(a moved or unmounted worktree looks the same)")]))
-            continue
         if not w.removable:
             kept.append((w, w.reasons or [("gone", "its directory disappeared while pruning")]))
             continue
         if dry_run:
-            removed.append((w, branch_plan(w, delete_branches, ledger.default_branch)))
+            removed.append((w, branch_plan(w, delete_branches, ledger.default_branch, ledger.default_ref)))
             continue
-        if in_use.get(w.real):
-            kept.append((w, [("live", "in use: " + "; ".join(f"{c or 'process'} (pid {p})" for p, c in in_use[w.real])
+        if in_use.get(w.key):
+            kept.append((w, [("live", "in use: " + "; ".join(f"{c or 'process'} (pid {p})" for p, c in in_use[w.key])
                                        + " (appeared while pruning)")]))
             continue
         now_head = _out(_git(w.path, "rev-parse", "HEAD"))
@@ -626,38 +664,63 @@ def prune(ledger: Ledger, dry_run: bool, delete_branches: bool) -> Outcome:
         if res is None or res.returncode != 0:
             kept.append((w, [("dirty", f"git refused to remove it: {_first_line(res)}")]))
             continue
-        removed.append((w, delete_branch(main, w, delete_branches, ledger.default_branch)))
-    if stale and not dry_run:
-        _git(main, "worktree", "prune", f"--expire={int(ledger.idle.total_seconds())}.seconds.ago")
-    return Outcome(removed, kept, stale, dry_run)
+        removed.append((w, delete_branch(main, w, delete_branches, ledger.default_branch, ledger.default_ref)))
+    return Outcome(removed, kept, dry_run)
 
 
-def branch_plan(w: Worktree, delete_branches: bool, default_branch: Optional[str]) -> str:
+def _goes(w: Worktree, delete_branches: bool, default_branch: Optional[str]) -> Optional[str]:
+    """Why the worktree's branch stays, or None when it goes with the worktree."""
     if not w.branch:
         return "detached HEAD, no branch"
     if w.branch == default_branch:
         return f"branch {w.branch} kept (the default branch)"
-    if w.merged_by == "ancestry":
-        return f"branch {w.branch} would be deleted (git branch -d)"
-    if delete_branches:
-        return f"branch {w.branch} would be deleted (PR #{(w.pr or {}).get('number')} is merged)"
+    if w.merged_by == "ancestry" or (delete_branches and w.merged_by == "pr"):
+        return None
     return f"branch {w.branch} kept (squash-merged; --delete-branches removes it)"
 
 
-def delete_branch(main: Path, w: Worktree, delete_branches: bool, default_branch: Optional[str]) -> str:
-    if not w.branch:
-        return "detached HEAD, no branch"
-    if w.branch == default_branch:
-        return f"branch {w.branch} kept (the default branch)"
-    if w.merged_by == "ancestry":
-        res = _git(main, "branch", "-d", w.branch)
-        return f"branch {w.branch} deleted" if res is not None and res.returncode == 0 else \
-            f"branch {w.branch} kept (git branch -d: {_first_line(res)})"
-    if delete_branches and w.merged_by == "pr":
-        res = _git(main, "branch", "-D", w.branch)
-        return f"branch {w.branch} deleted (PR #{(w.pr or {}).get('number')} is merged)" if res is not None and res.returncode == 0 \
-            else f"branch {w.branch} kept (git branch -D: {_first_line(res)})"
-    return f"branch {w.branch} kept (squash-merged; --delete-branches removes it)"
+def _why_merged(w: Worktree, default_ref: Optional[str]) -> str:
+    return f"merged into {default_ref}" if w.merged_by == "ancestry" else f"PR #{(w.pr or {}).get('number')} is merged"
+
+
+def branch_plan(w: Worktree, delete_branches: bool, default_branch: Optional[str], default_ref: Optional[str]) -> str:
+    stays = _goes(w, delete_branches, default_branch)
+    return stays or f"branch {w.branch} would be deleted ({_why_merged(w, default_ref)})"
+
+
+def _checked_out(main: Path, branch: str) -> Optional[list]:
+    """Paths of the worktrees that have `branch` checked out now; None when git cannot say."""
+    res = _git(main, "worktree", "list", "--porcelain")
+    if res is None or res.returncode != 0:
+        return None
+    out, path = [], ""
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+        elif line == f"branch refs/heads/{branch}":
+            out.append(path)
+    return out
+
+
+def delete_branch(main: Path, w: Worktree, delete_branches: bool, default_branch: Optional[str],
+                  default_ref: Optional[str]) -> str:
+    """Delete the branch only at the commit the ledger verified (git update-ref -d <ref> <oid>: refused when the branch
+    has moved since, say to a commit nobody pushed), and only when no worktree has it checked out."""
+    stays = _goes(w, delete_branches, default_branch)
+    if stays:
+        return stays
+    holders = _checked_out(main, w.branch)
+    if holders is None:
+        return f"branch {w.branch} kept (git worktree list failed)"
+    if holders:
+        return f"branch {w.branch} kept (checked out in {holders[0]})"
+    res = _git(main, "update-ref", "-d", f"refs/heads/{w.branch}", w.head)
+    if res is not None and res.returncode == 0:
+        return f"branch {w.branch} deleted ({_why_merged(w, default_ref)})"
+    now = _out(_git(main, "rev-parse", "-q", "--verify", f"refs/heads/{w.branch}"))
+    if now and now != w.head:
+        return f"branch {w.branch} kept (it moved to {now[:12]} while pruning; {w.head[:12]} was the merged one)"
+    return f"branch {w.branch} kept (git update-ref: {_first_line(res)})"
 
 
 # ---------------------------------------------------------------- output
@@ -676,7 +739,7 @@ def _cells(ledger: Ledger, w: Worktree) -> list:
     def plural(n, word):
         return f"{n} {word}{'s' if n != 1 else ''}"
     if w.prunable is not None:
-        return ["gone", "-", "-", "-", "-", "stale entry (directory gone)"]
+        return ["missing", "-", "-", "-", w.live, "kept: " + "; ".join(t for _, t in w.reasons)]
     dirty = "?" if w.dirty is None else ("clean" if not w.dirty else plural(w.dirty, "file"))
     if w.merged_by == "pr":
         pushed, merged = f"PR #{w.pr.get('number')}", f"PR #{w.pr.get('number')}"
@@ -720,10 +783,6 @@ def render_outcome(ledger: Ledger, out: Outcome) -> str:
         lines.append("dry run: nothing was removed")
     lines.append(f"{verb} {len(out.removed)}:" if out.removed else f"{verb} 0")
     lines += [f"  {_rel(ledger.main, w)} — {action}" for w, action in out.removed]
-    if out.stale:
-        lines.append(("would clear" if out.dry_run else "cleared") + f" {len(out.stale)} stale entr"
-                     + ("y" if len(out.stale) == 1 else "ies") + " (directory gone):")
-        lines += [f"  {_rel(ledger.main, w)}" for w in out.stale]
     tally: dict = {}
     for w, reasons in out.kept:
         tally.setdefault(reasons[0][0] if reasons else "gone", []).append((w, reasons))
@@ -743,7 +802,7 @@ def render_outcome(ledger: Ledger, out: Outcome) -> str:
 
 def _item(ledger: Ledger, w: Worktree) -> dict:
     return {"path": str(w.path), "branch": w.branch, "head": w.head, "main": w.is_main, "bare": w.bare,
-            "locked": w.locked, "stale": w.prunable is not None,
+            "locked": w.locked, "missing": w.prunable is not None,
             "kind": w.kind, "who": w.who, "stage": w.stage, "role": w.role, "hub_number": w.hub_number,
             "live": w.live, "live_by": w.live_by,
             "dirty": None if w.dirty is None else bool(w.dirty), "dirty_files": w.dirty, "operation": w.operation,
@@ -752,21 +811,20 @@ def _item(ledger: Ledger, w: Worktree) -> dict:
             "pr": None if not w.pr else {k: w.pr.get(k) for k in ("number", "url", "headRefOid", "mergedAt")},
             "last_change": w.last_change.isoformat(timespec="seconds") if w.last_change else None,
             "age_seconds": int((ledger.now - w.last_change).total_seconds()) if w.last_change else None,
-            "caller": w.caller, "removable": w.removable,
+            "caller": w.caller, "holds": w.holds, "removable": w.removable,
             "keep": [{"code": c, "reason": t} for c, t in w.reasons]}
 
 
 def as_json(ledger: Ledger, out: Optional[Outcome] = None) -> str:
     data = {"repo": str(ledger.main), "default_ref": ledger.default_ref, "default_branch": ledger.default_branch,
-            "gh": ledger.gh, "idle_seconds": int(ledger.idle.total_seconds()),
+            "gh": ledger.gh, "refs_stale": ledger.refs, "idle_seconds": int(ledger.idle.total_seconds()),
             "generated_at": ledger.now.isoformat(timespec="seconds"), "notes": ledger.notes,
             "worktrees": [_item(ledger, w) for w in ledger.items]}
     if out is not None:
         data["prune"] = {"dry_run": out.dry_run,
                          "removed": [{"path": str(w.path), "branch": w.branch, "branch_action": action} for w, action in out.removed],
                          "kept": [{"path": str(w.path), "branch": w.branch,
-                                   "reasons": [{"code": c, "reason": t} for c, t in reasons]} for w, reasons in out.kept],
-                         "stale": [str(w.path) for w in out.stale]}
+                                   "reasons": [{"code": c, "reason": t} for c, t in reasons]} for w, reasons in out.kept]}
     return json.dumps(data, ensure_ascii=False, indent=1)
 
 

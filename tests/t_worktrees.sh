@@ -13,13 +13,15 @@ git init -q --bare -b main $REMOTE
 git init -q -b main $REPO; G -C $REPO commit -q --allow-empty -m init
 git -C $REPO remote add origin $REMOTE; git -C $REPO push -q -u origin main 2>/dev/null
 printf '*.log\n' >> $REPO/.git/info/exclude        # the stand-in CLI writes its logs into the agent's directory
-# a stub gh: `gh pr list --state merged --head BRANCH --json …` answers from $GHDIR/<branch, / as _>.json; GH_STUB_FAIL=1 fails
+# a stub gh: `gh pr list --state merged --head BRANCH --json …` answers from $GHDIR/<branch, / as _>.json (running
+# <branch>.hook first, once); GH_STUB_FAIL=1 fails
 cat > $STUB/gh <<'EOF'
 #!/bin/bash
 [ -n "${GH_STUB_FAIL:-}" ] && { echo "gh: not logged in; run gh auth login" >&2; exit 4; }
 [ "$1 $2" = "pr list" ] || exit 2
 while [ $# -gt 0 ]; do [ "$1" = --head ] && head=$2; shift; done
-f="$GH_STUB_DIR/$(echo "$head" | tr / _).json"
+f="$GH_STUB_DIR/$(echo "$head" | tr / _).json"; h="${f%.json}.hook"
+[ -f "$h" ] && { bash "$h"; rm -f "$h"; }   # <branch>.hook: something that happens while the ledger is built, once
 [ -f "$f" ] && cat "$f" || echo '[]'
 EOF
 chmod +x $STUB/gh; export GH_STUB_DIR=$GHDIR
@@ -178,24 +180,25 @@ LISTING --prune --idle-for 0s > $P/p7.out 2>&1; check $? 0 "--prune with hub wor
 [ -d $HW/stx-hub-4 ] && [ ! -e $HW/stx-hub-3 ]; check $? 0 "the superseded hub's worktree goes at once, the registered hub's stays"
 grep -q 'registered hub of stage stx' $P/p7.out; check $? 0 "…the output names the registration"
 
-# ---- 8a. a moved worktree looks like a deleted one: its entry (index, HEAD) is not cleared before the idle limit
+# ---- 8a. a moved worktree looks like a deleted one: its registration (index, HEAD) is kept
 add_wt feat/moved; commit_in feat/moved mv.txt; merge_into_main feat/moved; echo staged > $WT/feat/moved/staged.txt; G -C $WT/feat/moved add staged.txt
 mv $WT/feat/moved $P/moved-away
 LISTING --prune > $P/p8a.out 2>&1; check $? 0 "--prune with a worktree moved away by hand"
-git -C $REPO worktree list --porcelain | grep -q 'feat/moved'; check $? 0 "its entry is kept (younger than the idle limit)"
-grep -q 'newer than 1 d' $P/p8a.out; check $? 0 "…and the output says why"
+git -C $REPO worktree list --porcelain | grep -q 'feat/moved'; check $? 0 "its registration is kept"
+grep -q 'feat/moved — directory missing' $P/p8a.out; check $? 0 "…and the output says why"
 git -C $REPO worktree repair $P/moved-away > /dev/null 2>&1; [ "$(git -C $P/moved-away status --porcelain)" = "A  staged.txt" ]; check $? 0 "git worktree repair brings it back with its staged file"
 git -C $REPO worktree remove --force $P/moved-away; git -C $REPO branch -q -D feat/moved
-# ---- 8. locked, stale, a git operation under way
+# ---- 8. locked, missing, a git operation under way
 add_wt feat/locked; merge_into_main feat/locked 2>/dev/null; git -C $REPO worktree lock --reason "on a USB stick" $WT/feat/locked
 add_wt feat/rebase; merge_into_main feat/rebase 2>/dev/null; mkdir -p "$(git -C $WT/feat/rebase rev-parse --absolute-git-dir)/rebase-merge"
 add_wt feat/gone; merge_into_main feat/gone 2>/dev/null; rm -rf $WT/feat/gone
 LISTING --prune --idle-for 0s > $P/p8.out 2>&1; check $? 0 "--prune with a locked, a mid-rebase and a deleted worktree"
 [ -d $WT/feat/locked ] && grep -q 'locked: on a USB stick' $P/p8.out; check $? 0 "a locked worktree is kept"
 [ -d $WT/feat/rebase ] && grep -q 'rebase in progress' $P/p8.out; check $? 0 "a worktree in the middle of a rebase is kept"
-git -C $REPO worktree list --porcelain | grep -q 'feat/gone'; check $? 1 "a stale entry (directory gone) is cleared"
-grep -q 'cleared 1 stale entry' $P/p8.out; check $? 0 "…and reported"
+git -C $REPO worktree list --porcelain | grep -q 'feat/gone'; check $? 0 "a deleted directory: its registration is kept (git worktree prune is never run)"
+grep -q 'missing (1):' $P/p8.out; check $? 0 "…and counted as missing"
 branch_exists feat/gone; check $? 0 "…its branch is not touched"
+LISTING > $P/l8.out 2>&1; grep -q '^\.worktrees/feat/gone .* missing ' $P/l8.out; check $? 0 "…the listing shows it as missing"
 
 # ---- 8b. changes git status does not show (skip-worktree) keep the worktree
 add_wt feat/skip; commit_in feat/skip s.txt; merge_into_main feat/skip
@@ -208,10 +211,80 @@ LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/skip ]; check $?
 # ---- 8c. --prune fetches first: a remote that took the merge back no longer counts the branch as merged
 add_wt feat/rolled; commit_in feat/rolled r.txt; merge_into_main feat/rolled
 git -C $REMOTE update-ref refs/heads/main "$(git -C $REPO rev-parse feat/rolled~1)"   # as a force-push would
-LISTING --prune --dry-run --no-fetch --idle-for 0s > $P/p8c1.out 2>&1; grep -q 'feat/rolled' $P/p8c1.out && grep -q 'would remove' $P/p8c1.out; check $? 0 "control: without a fetch the stale origin/main still says merged"
+LISTING --json > $P/l8c.json 2>&1; check "$(wfield $P/l8c.json /.worktrees/feat/rolled merged)" "true" "control: without a fetch the stale origin/main still says merged"
+LISTING --prune --dry-run --no-fetch --idle-for 0s > $P/p8c1.out 2>&1; grep -q 'feat/rolled — refs not fresh (--no-fetch)' $P/p8c1.out && grep -q 'would remove 0' $P/p8c1.out; check $? 0 "…which --prune --no-fetch does not act on, even in a dry run"
 LISTING --prune --idle-for 0s > $P/p8c2.out 2>&1; check $? 0 "--prune (fetches first)"
 [ -d $WT/feat/rolled ] && grep -q 'branch not merged into origin/main' $P/p8c2.out; check $? 0 "…the branch is no longer merged and stays"
 LISTING --no-fetch > $P/u6.out 2>&1; check $? 2 "--no-fetch without --prune is a usage error"
+
+# ---- 10. the second review: five ways the first version could lose work
+# 10a. a missing directory keeps its registration whatever its age: `git worktree prune --expire` compares the index's
+#      mtime, not how long the directory has been gone, and a worktree moved by hand or on an unmounted disk looks the same
+add_wt feat/vanish; echo v1 > $WT/feat/vanish/v.txt; G -C $WT/feat/vanish add v.txt; echo v2 > $WT/feat/vanish/v.txt
+python3 -c 'import os,sys,time; t=time.time()-3*86400; os.utime(sys.argv[1],(t,t))' "$(git -C $WT/feat/vanish rev-parse --absolute-git-dir)/index"
+mv $WT/feat/vanish $P/vanish-away
+LISTING --prune > $P/p10a.out 2>&1; check $? 0 "--prune with a worktree moved away, its index three days old"
+git -C $REPO worktree list --porcelain | grep -q 'feat/vanish'; check $? 0 "its registration is kept (an old index proves nothing about the work)"
+grep -q 'feat/vanish — directory missing' $P/p10a.out; check $? 0 "…kept as missing, said so"
+git -C $REPO worktree repair $P/vanish-away > /dev/null 2>&1
+[ "$(git -C $P/vanish-away diff --cached --name-only)" = v.txt ] && [ "$(cat $P/vanish-away/v.txt)" = v2 ]; check $? 0 "git worktree repair brings back both its staged and its working version"
+git -C $REPO worktree remove --force $P/vanish-away; git -C $REPO branch -q -D feat/vanish
+# 10b. a worktree that holds another registered worktree is never removed: git removes a directory recursively
+add_wt feat/outer; printf '/.worktrees/\n' >> $REPO/.git/info/exclude
+git -C $REPO worktree add -q -b feat/inner $WT/feat/outer/.worktrees/inner origin/main
+echo wip > $WT/feat/outer/.worktrees/inner/wip.txt
+[ -z "$(git -C $WT/feat/outer status --porcelain)" ]; check $? 0 "control: the outer worktree is clean (the nested one is ignored in it)"
+LISTING --prune --idle-for 0s > $P/p10b.out 2>&1; check $? 0 "--prune with a dirty worktree nested in a removable one"
+[ -f $WT/feat/outer/.worktrees/inner/wip.txt ]; check $? 0 "the nested worktree's uncommitted file survives"
+[ -d $WT/feat/outer ] && grep -q 'feat/outer — holds the worktree .worktrees/feat/outer/.worktrees/inner' $P/p10b.out; check $? 0 "…the outer one is kept, saying which worktree it holds"
+rm $WT/feat/outer/.worktrees/inner/wip.txt
+LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/outer/.worktrees/inner ] && [ -d $WT/feat/outer ]; check $? 0 "positive control: clean, the inner one goes (the outer one waits for the next run)"
+LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/outer ]; check $? 0 "…and the next run removes the outer one"
+# 10c. refs that could not be refreshed decide nothing: a failed fetch or --no-fetch removes nothing
+add_wt feat/net main; commit_in feat/net n.txt; merge_into_main feat/net   # from local main: 8c left it ahead of origin/main
+git -C $REMOTE update-ref refs/heads/main "$(git -C $REPO rev-parse feat/net~1)"   # the server took the merge back
+git -C $REPO remote set-url origin $P/unreachable.git
+LISTING --prune --idle-for 0s > $P/p10c.out 2>&1; check $? 0 "--prune with the fetch failing"
+[ -d $WT/feat/net ] && grep -q 'feat/net — refs not fresh (git fetch origin failed' $P/p10c.out; check $? 0 "a failed fetch: the stale merge removes nothing (kept: refs not fresh)"
+git -C $REPO remote set-url origin $REMOTE
+LISTING --prune --no-fetch --idle-for 0s > $P/p10c2.out 2>&1; check $? 0 "--prune --no-fetch"
+[ -d $WT/feat/net ] && grep -q 'feat/net — refs not fresh (--no-fetch)' $P/p10c2.out; check $? 0 "…shows the candidate and removes nothing"
+LISTING --prune --idle-for 0s > $P/p10c3.out 2>&1; [ -d $WT/feat/net ] && grep -q 'feat/net — branch not merged into origin/main' $P/p10c3.out; check $? 0 "control: fetched, the rollback is seen and the worktree stays for that"
+add_wt feat/del; commit_in feat/del del.txt; git -C $REPO push -q origin feat/del 2>/dev/null
+git -C $REMOTE branch -q -D feat/del                                                  # deleted on the server
+LISTING --json --fetch > $P/l10c.json 2>&1
+check "$(wfield $P/l10c.json /.worktrees/feat/del unpushed_commits)" "1" "the fetch prunes the refs of server-deleted branches: the commit is on no remote again"
+# 10d. --delete-branches deletes the ref only at the commit it verified, and only when no worktree has it checked out
+sq sqrace; A=$(git -C $WT/sqrace rev-parse HEAD); pr_json sqrace 13 $A
+cat > $GHDIR/sqrace.hook <<EOF
+git -C $WT/sqrace checkout -q --detach
+git -C $REPO update-ref refs/heads/sqrace \$(git -C $REPO -c user.email=t@t -c user.name=t commit-tree $A^{tree} -p $A -m unpublished)
+git -C $REPO rev-parse refs/heads/sqrace > $P/sqrace.B
+EOF
+LISTING --prune --delete-branches --idle-for 0s > $P/p10d.out 2>&1; check $? 0 "--prune --delete-branches while the branch moves to an unpublished commit"
+[ "$(git -C $REPO rev-parse -q --verify refs/heads/sqrace)" = "$(cat $P/sqrace.B)" ]; check $? 0 "the branch and its unpublished commit survive"
+grep -q 'branch sqrace kept (it moved' $P/p10d.out; check $? 0 "…said so"
+[ ! -e $WT/sqrace ]; check $? 0 "…while the worktree, detached at the merged commit, goes"
+sq sqbusy; A=$(git -C $WT/sqbusy rev-parse HEAD); pr_json sqbusy 14 $A
+printf 'git -C %s checkout -q --detach\ngit -C %s worktree add -q %s sqbusy\n' $WT/sqbusy $REPO $P/sqbusy-2 > $GHDIR/sqbusy.hook
+LISTING --prune --delete-branches --idle-for 0s > $P/p10d2.out 2>&1
+branch_exists sqbusy && [ "$(git -C $P/sqbusy-2 symbolic-ref -q HEAD)" = refs/heads/sqbusy ]; check $? 0 "a branch checked out in another worktree meanwhile is not deleted"
+grep -q 'branch sqbusy kept (checked out in' $P/p10d2.out; check $? 0 "…said so"
+# 10e. paths compare by identity, not by spelling: a case-insensitive file system (macOS) spells one directory many ways
+mkdir -p $P/CaseDir
+if [ ! -d $P/casedir ]; then echo "SKIP paths of another case (a case-sensitive file system)"
+else
+  git -C $REPO worktree add -q -b feat/case $P/casedir/wt origin/main; mkdir -p $P/CaseDir/wt/deep/er
+  [ "$(git -C $REPO worktree list --porcelain | grep -c '/casedir/wt$')" = 1 ]; check $? 0 "control: git registered the lower-case spelling"
+  ( cd $P/CaseDir/wt/deep/er && exec sleep 60 ) & SLEEP=$!
+  sleep 1
+  LISTING --prune --idle-for 0s > $P/p10e.out 2>&1
+  [ -d $P/CaseDir/wt ] && grep -q "in use: sleep (pid $SLEEP)" $P/p10e.out; check $? 0 "a process deep inside, by the on-disk spelling: kept"
+  kill $SLEEP 2>/dev/null; wait $SLEEP 2>/dev/null
+  ( cd $P/CaseDir/wt/deep/er && PATH=$STUB:$PATH $B/agent worktrees --repo $REPO --prune --idle-for 0s > $P/p10e2.out 2>&1 )
+  [ -d $P/CaseDir/wt ] && grep -q 'your current directory' $P/p10e2.out; check $? 0 "the caller deep inside, by the on-disk spelling: kept"
+  LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $P/CaseDir/wt ]; check $? 0 "positive control: from elsewhere, with nobody inside, it goes"
+fi
 
 # ---- 9. usage, output
 LISTING --dry-run > $P/u1.out 2>&1; check $? 2 "--dry-run without --prune is a usage error"

@@ -59,6 +59,7 @@ flowchart LR
 | Tool | What it does |
 |---|---|
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
+| `agent worktrees` | List every worktree of a repository — who made it, in use or not, dirty, on a remote, merged (squash merges through `gh`), age — and, with `--prune`, remove the finished ones. Read-only by default; never removes unpushed or uncommitted work. [Details](#agent-worktrees-the-ledger-of-a-repositorys-worktrees). |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
 | `broadcast` | One line to the hub of every open stage at once: `tell` to each stage of every known hub home (`--this-home`: only the resolved one) whose registry has a live hub, leaving out your own hub (`--include-self`), closed stages and `--exclude S`. `--urgent` / `--question` as in `tell`; `--dry-run` lists the recipients; `--json` for scripts. Signed with your stage-qualified tag, or `owner` from an unregistered terminal or the Desktop `/broadcast`. Exit 1 when any recipient did not take the line (each failure is printed with tell's output). Not `roles broadcast`, which addresses roles within one stage. |
@@ -132,9 +133,10 @@ agent stop builder
 not exist yet starts from origin's default branch (after a bounded `git fetch`; the local ref, with a note, when the
 fetch fails; the local main/master without an origin), not from the commit `--cwd` has checked out — `--base REF`
 chooses another start (`--base HEAD`: the old behaviour). Two agents writing
-in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
-branch is merged, `git worktree remove <path>`. A repository can prepare its worktrees, and every worktree has a slot:
-see *Preparing worktrees* below.
+in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree by itself;
+`agent worktrees` shows what is left and `agent worktrees --prune` removes the finished ones
+([below](#agent-worktrees-the-ledger-of-a-repositorys-worktrees)).
+A repository can prepare its worktrees, and every worktree has a slot: see *Preparing worktrees* below.
 
 ### Preparing worktrees
 
@@ -219,6 +221,50 @@ The longer `templates/brief-executor-advanced.md` adds production permissions, s
 `templates/brief-review.md` is the brief for a reviewer.
 
 A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delamain.md).
+
+### `agent worktrees`: the ledger of a repository's worktrees
+
+```bash
+agent worktrees                                   # every worktree of the repository of the working directory
+agent worktrees --repo ~/code/webapp --json       # another repository; the same table as data
+agent worktrees --prune --dry-run                 # what --prune would remove, and what it keeps and why
+agent worktrees --prune                           # remove the finished ones
+```
+
+One line per worktree of the repository (`git worktree list`, the main checkout first):
+
+| Column | Meaning |
+|---|---|
+| PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. A registered worktree whose directory is missing shows `missing` in DIRTY and is kept. |
+| WHO | `agent <role> (stage S)` when an agent run's `meta.json` in any known hub home names the worktree as its worktree or working directory; `hub of S #n` for a hub's `<stage>-hub-<n>` directory under `.claude/worktrees/` or `.worktrees/`, or a registered hub whose recorded worktree it is; another registered role by its name; otherwise `other` (Desktop, Codex app, manual). |
+| LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out; directories compare by identity — device and inode — so a symlink or another case of the same path on macOS is the same directory). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
+| DIRTY | `git status --porcelain`: untracked files count, ignored ones do not (build output or a local `.env` goes with the worktree). Files marked `skip-worktree` or `assume-unchanged` that exist on disk count too: git does not show an edit to them. |
+| ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch --prune origin` first, so a branch deleted on the server no longer counts). A branch whose merged pull request holds all its commits shows `PR #n`. |
+| MERGED | `yes` — HEAD is an ancestor of the remote default branch (`origin/HEAD`, else `origin/main`, else `origin/master`); `PR #n` — a pull request from this branch was merged into the default branch and HEAD is inside its head commit (`gh pr list --state merged --head BRANCH`; a squash or rebase merge leaves no ancestry). `no` — neither; a commit made after the pull request was merged keeps the branch "not merged". `?` — the merge state of a squash-merged branch cannot be told without `gh` (not installed, not logged in, or `--no-gh`); said once, as a note under the table. |
+| AGE | Since the last change, whichever is latest: the last commit, the worktree's newest reflog entry, one of its uncommitted files (the first 200 are looked at), its top directory. |
+| PRUNE | `removable`, or `kept:` with every reason. |
+
+`--prune` removes a worktree only when **all** of this holds: merged, clean (nothing changed, nothing untracked), no
+commit on no remote, no git operation under way (rebase, merge, cherry-pick, revert, bisect, a running git command),
+not locked, not the working directory of the caller (nor one inside it), not in use, holding no other registered
+worktree at any depth (removing a directory removes everything inside it; run `--prune` again once the inner one is
+gone) — and where use is `unknown`, no change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never
+removed, with any flag. It runs `git worktree remove` (never `--force`; git's own refusal keeps the worktree and is
+reported). A registered worktree whose directory is missing is kept as `missing` with its registration: a worktree
+moved by hand or on an unmounted disk looks the same, and the registration holds its index and HEAD, so
+`git worktree prune` is never run (`git worktree repair <new path>` brings a moved one back). Before it decides,
+`--prune` runs `git fetch --prune origin`; when the fetch fails, or with `--no-fetch`, it removes nothing and shows the
+candidates as kept with `refs not fresh` (a merge the remote has since lost must not count); a listing fetches only with
+`--fetch` (`--fetch` with `--no-fetch` is a usage error). Merged and pushed are judged at the HEAD the listing saw, and
+just before removing it looks again: at the processes, at the HEAD (moved — kept) and at the registered worktrees (one
+registered inside since — kept). The main checkout is listed and never a candidate.
+The branch goes with the worktree only when it is merged by ancestry; a squash-merged branch stays unless
+`--delete-branches` (only for a branch whose merged pull request holds all its commits). Either is deleted with
+`git update-ref -d` at the commit that was verified, so a branch that moved meanwhile stays, and only when no worktree
+has it checked out; the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by
+their first reason. `--dry-run` prints the same and removes nothing. The listing is read-only; `--json` adds
+`removable` and `keep` per worktree (and a `prune` object with `--prune`). Exit 0 whenever the command ran, 2 for a usage
+error (not a repository, `--dry-run` without `--prune`).
 
 ## Cost and turn limits
 
@@ -891,7 +937,7 @@ hub:
    `worktree-<stage>-hub-<n+1>`, from `origin`'s default branch (Claude Code's `worktree.baseRef`, default `fresh`); a taken name gets `-2`, `-3`…), never in the hub's
    own directory — that may be a Desktop session's worktree, removed when the session is archived. Without `--cwd` the
    directory is the hub's registered worktree, else the shell's. A directory outside git, or in another repository than the
-   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree: `claude rm <id>` does once the session is done.
+   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree by itself: `agent worktrees --prune` does once a later hub has taken the stage over and the branch is merged, clean and pushed (`claude rm <id>` too).
 3. When the line arrives the old hub tells you in one line the successor's name and link and where it is: a
    background Remote Control session named `<stage>-hub-<n+1>`; in Claude Desktop it is listed under the repository's
    address group (for a repository not hosted on github.com a separate group from your folder group), on the phone in the

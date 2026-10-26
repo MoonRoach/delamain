@@ -86,7 +86,7 @@ def agent_env(cwd, run_id: str, env: dict) -> dict:
     kept = re.sub(r"'core\.hooksPath=([^']*)'",
                   lambda m: "" if (Path(m.group(1)) / "delamain-hook").is_file() else m.group(0),
                   env.get("GIT_CONFIG_PARAMETERS", ""))
-    params = " ".join(p for p in (" ".join(kept.split()), entry) if p)
+    params = " ".join(p for p in (kept.strip(), entry) if p)  # values keep their own spaces
     return {"GIT_CONFIG_PARAMETERS": params, RUN_ENV: run_id, REPO_ENV: str(repo)}
 
 
@@ -252,7 +252,7 @@ def guesses(info: dict, repo: Path) -> list:
         for where, ref, place in ([(Path(cwd), "HEAD", f"the HEAD reflog of its worktree {cwd}")] if here else []) + \
                 [(repo, r, f"the reflog of {r.removeprefix('refs/heads/')}") for r in refs + shared]:
             when = reflog_created(where, ref, info["sha"])
-            if when and run_at(meta, when) is run:  # the entry, not only the commit date, falls in this run
+            if when and run_at(meta, when) == run:  # the entry, not only the commit date, falls in this run
                 hit = (f"{place} records creating it at {when:%Y-%m-%d %H:%M}, during the run",
                        "guess" if own and (ref in refs or ref == "HEAD") else "weak guess")
                 break

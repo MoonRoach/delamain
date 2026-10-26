@@ -116,7 +116,7 @@ check $? 0 "two shims in the chain: the commit finishes"
 check "$(wc -l < "$W/pre-commit.ran" | tr -d ' ')" 1 "two shims in the chain: the project's pre-commit ran once"
 
 # 11. run windows: a commit just after a resume belongs to the resumed run; a malformed meta.json breaks nothing
-python3 - "$B" <<'PY2'
+python3 - "$B" "$R" <<'PY2'
 import sys, datetime as dt
 sys.path.insert(0, sys.argv[1])
 import hubcore as hc, provenance as pv
@@ -128,6 +128,10 @@ assert got and got["id"] == "b", got
 assert pv.run_at(meta, dt.datetime(2026, 10, 26, 10, 30, tzinfo=z))["id"] == "a"
 assert pv.run_at(meta, dt.datetime(2026, 10, 26, 9, 0, tzinfo=z)) is None
 assert pv.run_windows({"_dir": "/x", "runs": 1}) == []
+old = {"_dir": "/x", "started_at": "2026-10-26T10:00:00+00:00"}   # a record from before runs[]
+assert pv.run_at(old, dt.datetime(2026, 10, 26, 10, 1, tzinfo=z)) == pv.run_at(old, dt.datetime(2026, 10, 26, 10, 2, tzinfo=z))
+env = pv.agent_env(sys.argv[2], "r1", {"GIT_CONFIG_PARAMETERS": "'core.hooksPath=/tmp/project  hooks'"})
+assert env["GIT_CONFIG_PARAMETERS"].startswith("'core.hooksPath=/tmp/project  hooks' "), env
 PY2
 check $? 0 "run_at: the run going at the time, not the one before it; bad runs are no runs"
 mkdir -p "$AGENT_HUB_HOME/stage-a/agents/broken"; echo '{"role": "broken", "runs": 1, "worktree": 3, "cwd": 5}' \

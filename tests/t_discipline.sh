@@ -72,6 +72,41 @@ i=0; for c in "${BLOCKED[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: wai
 i=0; for c in "${ALLOWED[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: normal work $i passes"; done
 i=0; for c in "${CI_BLOCKED[@]}"; do i=$((i+1)); denied "$c"; check $? 0 "poll: CI status read $i denied"; denied "$c" 1; check $? 1 "poll: CI read $i in the background passes"; done
 i=0; for c in "${CI_ALLOWED[@]}"; do i=$((i+1)); denied "$c"; check $? 1 "poll: CI lookup/log/action $i passes"; done
+# `await` without --wait returns at once, its supervisor does the waiting: the CI command inside it is the recommended
+# wait, not a read by hand. With --wait it holds the foreground, so it stays denied; a read outside the await still is.
+denied 'await --ok MERGED --label "PR #12" -- gh pr checks 12 --watch --fail-fast'; check $? 1 "poll: a detached await of gh pr checks passes"
+denied '$HUB_BIN/await --ok PASSED --label x --on 2=TIMEOUT -- gh run watch 123 --exit-status'; check $? 1 "poll: …also by path"
+denied 'await --wait --ok PASSED --label x -- gh pr checks 12 --watch'; check $? 0 "poll: await --wait in the foreground is still denied"
+denied 'await --ok DONE -- gh pr checks 12 --watch; gh pr checks 12'; check $? 0 "poll: …a read next to a detached await is still denied"
+denied 'echo await -- gh pr checks 12'; check $? 1 "poll: (control) text of echo is not read"
+# review of PR #140: the exception is for ONE detached await, read from the shell's own tokens
+denied 'await "--wait" -- gh pr checks 12 --watch'; check $? 0 "poll: a quoted \"--wait\" is still --wait"
+denied "await '--wait' -- gh pr checks 12 --watch"; check $? 0 "poll: …single quotes too"
+denied 'await --wait -- gh pr checks 12 --watch'; check $? 0 "poll: …and the plain --wait"
+for op in '&' ';' '&&' '||' '|' $'\n'; do
+  denied "await --ok DONE -- true $op gh pr checks 12"; check $? 0 "poll: a control operator [$op] after a detached await ends the exception"
+done
+denied 'await -- true $(gh pr checks 12)'; check $? 0 "poll: a substitution inside a detached await is a read by hand"
+denied 'await -- true `gh pr checks 12`'; check $? 0 "poll: …a backtick too"
+denied '(await -- true) & gh pr checks 12'; check $? 0 "poll: a group around it does not keep the exception"
+# round 2 of the review: fail-closed. The exception is for a command made of plain words only
+denied $'await $\'--wait\' -- gh pr checks 12 --watch'; check $? 0 "poll: ANSI-C quoting \$'--wait' is not read as plain words"
+denied 'await -- true;</dev/null gh pr checks 12'; check $? 0 "poll: ;< glued into one token does not end up as an exception"
+denied 'await >-- --wait -- gh pr checks 12 --watch'; check $? 0 "poll: a redirection operand '--' is no end of options"
+denied 'await --ok PASSED -- gh pr checks 12 --watch >/tmp/w.out 2>&1'; check $? 0 "poll: any redirection ends the exception (fail-closed)"
+denied 'await --ok PASSED -- gh pr checks 12 --watch &>/tmp/w.out'; check $? 0 "poll: …&> too"
+denied 'await --ok PASSED --label "PR $N" -- gh pr checks 12 --watch'; check $? 0 "poll: an expansion in the label ends it"
+denied 'await --ok PASSED --label a"b c"d -- gh pr checks 12 --watch'; check $? 0 "poll: a quote inside a word ends it"
+denied 'await --ok PASSED "--label" x -- gh pr checks 12 --watch'; check $? 0 "poll: a quoted argument other than a --label value ends it"
+denied 'await --ok PASSED -- gh pr checks "$N" --watch'; check $? 0 "poll: a quoted argument of the command ends it"
+denied 'await --ok PASSED --label x -- gh pr checks 1* --watch'; check $? 0 "poll: a glob ends it"
+denied 'timeout 5 await --ok PASSED -- gh pr checks 12 --watch'; check $? 0 "poll: a wrapper before await ends it"
+denied 'await --ok PASSED --label x -- gh pr checks 12 --watch # more'; check $? 0 "poll: a trailing comment ends it"
+# positive controls: the recommended calls pass
+denied 'await --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast'; check $? 1 "poll: the recommended detached call passes"
+denied "await --ok PASSED --label 'PR #12' --on 2=TIMEOUT --timeout 40m -- gh pr checks 12 --watch"; check $? 1 "poll: …single-quoted label, --on and --timeout too"
+denied 'HUB_STAGE=s $HUB_BIN/await --ok PASSED --label x -- gh run watch 123 --exit-status'; check $? 1 "poll: …with an env prefix and \$HUB_BIN/await"
+denied 'bin/await --ok PASSED --label=x -- gh pr checks 12 --repo o/r --watch'; check $? 1 "poll: …a relative path and --label=x"
 pg "${BLOCKED[0]}" | grep -q 'matches the waiting shell'; check $? 0 "poll: pgrep -f self-match is named"
 pg "${BLOCKED[4]}" > $R/pg.out
 grep -q 'jwait' $R/pg.out && grep -q 'run_in_background' $R/pg.out && grep -q 'poll-ok' $R/pg.out; check $? 0 "poll: the message names jwait, run_in_background and the marker"

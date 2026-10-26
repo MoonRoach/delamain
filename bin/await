@@ -20,12 +20,18 @@ LINK is `--link`, else the last http(s) URL COMMAND printed (a failed job, the m
 start, is killed by a signal, or a supervisor that gets SIGTERM/SIGHUP/SIGINT (which also stops COMMAND's process
 group) ends in FAILED. A supervisor killed with SIGKILL writes nothing: the hub's jwait alarm is the backstop.
 
---wait keeps `await` attached (the supervisor's work in the foreground; exit 0 once the line is written).
+--wait keeps `await` attached (the supervisor's work in the foreground). It prints the journal line it wrote and exits
+0 only when COMMAND itself exited 0 (not a timeout, a signal or an interruption): FAILED, TIMEOUT or an --on word ends
+with exit 3. --ok FAILED|TIMEOUT, --on 0=WORD and --on RC=<the --ok word> are usage errors (exit 2): no failure may
+carry the success word. Options are exact (no abbreviations: `--wai` is an error, not --wait). Read that exit code or that
+line, never "the command ended": `await --wait --ok PASSED -- gh pr checks N --watch` used to exit 0 on red checks,
+because 0 meant "the line is written", and the verdict was only in the journal.
 --timeout is the supervisor's own limit on COMMAND (default 2h; the process group gets SIGTERM, and after a grace of
 5 s SIGKILL, also when only the leader obeyed SIGTERM).
 Tag: --tag, else the caller's signing tag + "-await". Stage: --stage, else $HUB_STAGE. Log: --log, else
 <stage>/coordinator/work/await/<time>-<label>.log.
-Exit: 0 started (or, with --wait, the line written), 1 the line could not be written, 2 usage / COMMAND not found.
+Exit: 0 started (with --wait: the --ok word), 1 the line could not be written, 2 usage / COMMAND not found,
+3 (--wait only) the line was written and COMMAND did not succeed.
 """
 from __future__ import annotations
 
@@ -45,10 +51,12 @@ from pathlib import Path
 # it once the wait starts (run_wait). The real handlers replace these.
 EARLY_SIGNALS: list = []
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
+DETACHED = False  # a supervisor started by `await` itself: nobody reads its stdout or its exit code
 if "--wait" in sys.argv:
     for _sig in STOP_SIGNALS:
         signal.signal(_sig, lambda signum, frame: EARLY_SIGNALS.append(signum))
     if os.environ.pop("AWAIT_NOTIFY", None):  # the detaching parent waits for this: from here on a kill is journaled
+        DETACHED = True
         os.write(1, b"ready\n")
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -60,6 +68,7 @@ READY_WAIT_S = 10.0
 LOG_SCAN_BYTES = 65536
 URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 WORD_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+RESERVED_WORDS = ("FAILED", "TIMEOUT")  # what await itself says for a failure: never also the success word
 
 
 class Interrupted(Exception):
@@ -138,7 +147,8 @@ def set_signals(handler) -> None:
 
 
 def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
-    """Run the command to its end; return (WORD, detail). Writes nothing to the journal. A stop signal anywhere in
+    """Run the command to its end; return (WORD, detail, ok). `ok` is the command's own outcome (it exited 0 by itself:
+    not a timeout, a signal, an interruption, a failed start), whatever WORD says. Writes nothing to the journal. A stop signal anywhere in
     here (also after the command has ended) is a FAILED verdict, never an exception that costs the line."""
     started = time.monotonic()
     proc = None
@@ -154,7 +164,7 @@ def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                         start_new_session=True)
             except OSError as e:
-                return "FAILED", f"could not start: {e.strerror or e}"
+                return "FAILED", f"could not start: {e.strerror or e}", False
             finally:
                 set_signals(_raise_interrupted)
             if EARLY_SIGNALS:
@@ -162,19 +172,19 @@ def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
             rc = proc.wait(timeout=hc.parse_duration(args.timeout).total_seconds())
         took = human(time.monotonic() - started)
         if rc < 0:
-            return "FAILED", f"killed by signal {-rc} after {took}"
+            return "FAILED", f"killed by signal {-rc} after {took}", False
         word = on.get(rc) or (args.ok if rc == 0 else "TIMEOUT" if rc == 124 else "FAILED")
-        return word, f"exit {rc}, {took}"
+        return word, f"exit {rc}, {took}", rc == 0
     except subprocess.TimeoutExpired:
         set_signals(signal.SIG_IGN)  # a second signal must not cut the cleanup short
         left = stop_group(proc)
         return "TIMEOUT", (f"could not be stopped ({left}) after {args.timeout}, no verdict yet" if left
-                           else f"stopped after {args.timeout}, no verdict yet")
+                           else f"stopped after {args.timeout}, no verdict yet"), False
     except Interrupted as e:
         set_signals(signal.SIG_IGN)
         left = stop_group(proc) if proc is not None else ""
         return "FAILED", f"await interrupted by signal {e.signum}" + (
-            f", the command could not be stopped ({left})" if left else ", the command was stopped" if proc else "")
+            f", the command could not be stopped ({left})" if left else ", the command was stopped" if proc else ""), False
     finally:
         set_signals(signal.SIG_IGN)  # the verdict is known: a late signal must not cost the line
 
@@ -182,9 +192,9 @@ def run_wait(args, cmd: list, log: Path, on: dict) -> tuple:
 def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int:
     offset = log.stat().st_size if log.exists() else 0
     try:
-        word, detail = run_wait(args, cmd, log, on)
+        word, detail, ok = run_wait(args, cmd, log, on)
     except Exception as e:  # a bug or a signal that slipped past run_wait: the hub still gets its one line
-        word, detail = "FAILED", f"await crashed: {e!r}"
+        word, detail, ok = "FAILED", f"await crashed: {e!r}", False
     link = args.link or last_url(log, offset)
     text = f"@{args.to} {word} {args.label}" + (f" — {link}" if link else "") + f" ({detail}, log {log})"
     try:
@@ -192,6 +202,12 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     except OSError as e:
         print(f"await: could not write the journal: {e}", file=sys.stderr)
         return 1
+    if not DETACHED:  # the caller waited for the verdict: it gets the line and an exit code that says which verdict
+        try:
+            print(text, flush=True)
+        except OSError:
+            pass
+        return 0 if ok else 3
     return 0
 
 
@@ -206,7 +222,8 @@ def main(argv: list) -> int:
         argv, cmd = argv[:cut], argv[cut + 1:]
     else:
         cmd = []
-    p = argparse.ArgumentParser(prog="await", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(prog="await", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                allow_abbrev=False)  # `--wai` must not be a spelling of --wait that a guard cannot see
     p.add_argument("--stage", default=None)
     p.add_argument("--tag", default=None, help="line tag (default: the caller's signing tag + \"-await\")")
     p.add_argument("--to", default="hub", help="who the line is addressed to (default: hub)")
@@ -226,6 +243,13 @@ def main(argv: list) -> int:
     if not re.fullmatch(r"[\w.-]+", args.to):
         raise hc.UsageError(f"--to {args.to!r}: a tag such as hub or hub-3")
     on = parse_on(args.on)
+    if args.ok in RESERVED_WORDS:
+        raise hc.UsageError(f"--ok {args.ok!r}: {args.ok} is the word of a failed wait; the --ok word is for success")
+    for rc, word in on.items():
+        if rc == 0:
+            raise hc.UsageError("--on 0=WORD: exit 0 is the --ok word")
+        if word == args.ok:
+            raise hc.UsageError(f"--on {rc}={word}: that is the --ok word, an exit {rc} must not read as success")
     hc.parse_duration(args.timeout)
     stage = hc.check_stage(args.stage or hc.default_stage())
     base = args.tag or hc.signing_tag(stage)

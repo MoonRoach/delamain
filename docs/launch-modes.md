@@ -153,9 +153,32 @@ The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `
 `--ok` word (`DONE`, or `MERGED` for a merge); exit 124 or `--timeout` (default 2h; the command's process group
 gets SIGTERM, then SIGKILL after 5 s, also for a grandchild that ignores SIGTERM) → `TIMEOUT`; any other exit code,
 a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words such as `CONFLICT` for a command that
-distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait` and reads
-the result from the exit word it prints; `--to <its tag>` is for an executor that wants a line for its own `jwait`,
-the default `--to hub` wakes the hub. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
+distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait`: `await`
+then prints the line it journaled and exits 0 only when the command itself exited 0 (not a timeout, a signal or an
+interruption), 3 otherwise (`FAILED`, `TIMEOUT`, an `--on` word), 1 when the journal could not be written. The success
+word cannot be put on a failure: `--ok FAILED|TIMEOUT`, `--on 0=WORD` and `--on RC=<the --ok word>` are usage errors (exit
+2), and options are exact (`--wai` is an error, not `--wait`). Read that exit code or the printed word, never
+"the command ended": before 26.10 the exit was 0 whenever the line was written, so `await --wait --ok PASSED -- gh pr
+checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 and the 1.0.21 release PR).
+`--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
+
+On GitHub the wait command is `gh-ci-wait N` (`bin/`; `--repo OWNER/REPO`, `--timeout 45m`, `--grace 3m`). It reads the
+PR's checks as JSON and decides by every check's bucket: exit 0 only when all passed; 1 when one failed or was
+**cancelled** (it stops at the first); 124 at the deadline (`await` reads that as `TIMEOUT`; checked after every `gh`
+call, before any success); 3 when no checks, or a required one, were registered within the grace; 4 when a check that had
+to pass was **skipped** (a neutral one too, unless `--allow-neutral`); 2 usage or `gh` unusable. A list is not complete
+by itself (ubuntu passed, macOS not registered yet): name the checks with `--require 'NAME'` (repeatable) and it waits
+until each is reported and passed; without `--require` it also waits for every workflow run of the head commit to
+complete (`gh run list --commit`) and fails on a run that ended failed or cancelled. Do not wait with `gh pr checks
+--watch`: it exits 0 on a cancelled check (a runner that timed out), so a red macOS job read as a pass (PR #140, 26.10).
+
+```bash
+await --ok PASSED --label "PR #12" -- gh-ci-wait 12 --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'   # detached; MERGED is for waiting on the merge itself
+await --wait --ok PASSED --label "PR #12" -- gh-ci-wait 12 --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'   # attached: run_in_background, exit 3 = not passed
+```
+
+Right after a push the checks may not be registered yet: `gh-ci-wait` waits for them for `--grace`, then answers 3. To confirm a result by commit, `gh run list --commit <sha> --json name,status,conclusion`
+shows every run of that head. `kill <supervisor pid>` (SIGTERM, SIGHUP or SIGINT) stops the wait and journals
 `FAILED … interrupted`; a supervisor killed
 with SIGKILL writes nothing, so the hub's `jwait` alarm stays the backstop. A command that is not on `PATH` fails
 at once with exit 2 and no line.

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch
+  --fail-fast` exited 0 with an empty output after red checks (PR #138 attempt 1) and once with an empty output on green
+  checks (the 1.0.21 release PR): `await` exited 0 whenever its journal line was written, and the verdict, `FAILED` or
+  `PASSED`, was only in the journal, which an executor reading `echo "exit=$?"` never looked at. The journal lines were right every
+  time. Now `--wait` prints the line and exits 0 only when the command itself exited 0, 3 for `FAILED`,
+  `TIMEOUT` or an `--on` word; detached `await` is unchanged. A failure can no longer carry the success word: `--ok
+  FAILED|TIMEOUT`, `--on 0=WORD` and `--on RC=<the --ok word>` are usage errors, and options are exact (`--wai` is an error).
+  A second fault was in `gh` itself: `gh pr checks --watch` exits 0 when a check was **cancelled** (a runner that timed out
+  after 15 minutes), so a red macOS job read as a pass (PR #140). New `bin/gh-ci-wait N` waits for a PR's checks and decides by
+  every check's bucket: 0 all passed, 1 failed or cancelled, 124 deadline (checked after every `gh` call, before any
+  success), 3 no checks or a `--require`d one registered, 4 a needed check skipped (neutral only with `--allow-neutral`),
+  2 `gh` unusable. `--require 'NAME'` (repeatable) waits until the named checks are reported and passed; without it every
+  workflow run of the head commit must also be complete. It is now the GitHub wait command of the docs. The polling guard no longer denies a single detached `await … -- gh pr
+  checks N --watch` (or any such plain call), and only that: the exception holds for one command made of plain words (a quoted value of `--label` aside) and
+  is fail-closed, so `--wait` in any spelling, a redirection, `&` `;` `|`, a quote elsewhere, an expansion, a glob, a wrapper
+  or a comment bring back the ordinary rules. See *Waiting for CI* in
+  `docs/launch-modes.md`.
+
 ## 1.0.21 — 2026-10-26
 
 - **Every agent commit says where it came from, and `hub why` walks back from code to the conversation.** Commits an

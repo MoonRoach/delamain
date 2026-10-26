@@ -6,10 +6,12 @@
 //   footer: a Button `agents ● 2 ✓ 5 ✗ 1` beside the engine's mode labels (SessionMode) opens and closes the pane; where a
 //   surface without that footer looks on (a phone, VS Code) the same counts are the status line instead
 //   toasts when an agent finishes, fails or dies and when a new owner question opens
+//   /broadcast "text" — one line to the hub of every open stage, through `bin/broadcast` (hooks/broadcast.tsx)
 //
-// Reads only, with one exception. Data comes from the plugin's own CLI, `bin/agent-top --json` (it keeps its read offsets in
-// its own cache, <hub home>/.state/agent-top/); the module itself writes nothing. The exception is Summary's Stages section:
-// `close` on an idle stage runs `bin/hub close --stage S`, after two presses (the first arms it, 10 s). Calls never overlap, each
+// Reads only, with two exceptions. Data comes from the plugin's own CLI, `bin/agent-top --json` (it keeps its read offsets in
+// its own cache, <hub home>/.state/agent-top/); the module itself writes nothing. The first exception is Summary's Stages section:
+// `close` on an idle stage runs `bin/hub close --stage S`, after two presses (the first arms it, 10 s); and /broadcast, typed by
+// the person, runs `bin/broadcast`. Calls never overlap, each
 // answer is drawn as it comes, and a failed card call says why in the feed area instead of "loading". The module is
 // plugin-name-agnostic (no $.state, no hard-coded plugin name): state lives in this closure, and a hot reload starts it over.
 // Needs Claude Code with mods (2.1.287+). Older CLIs ignore the module; there, and in Codex, the console `agent-top` stays.
@@ -43,6 +45,7 @@ import {
 } from './agent-top-model'
 import type { Agent, Card, CommandArgs, Memory, Snapshot, Target, View } from './agent-top-model'
 import { drawPane } from './agent-top-view'
+import { answerBroadcast, isBroadcastCommand, registerBroadcast } from './broadcast'
 import type { PaneModel } from './agent-top-view'
 
 type Api = EngineInterface
@@ -468,6 +471,7 @@ export const register: Register = on => {
     } catch (err) {
       $.ui.log(`agent-top: could not register /agent-top: ${err instanceof Error ? err.message : String(err)}`, { to: 'debug' })
     }
+    await registerBroadcast($)
     await syncPane($)
     await syncSurfaces($)
     startPolling($)
@@ -493,6 +497,7 @@ export const register: Register = on => {
   // and, in the installed plugin and in the dev copy (plugin `agent-top-dev`, tested beside it), the command from before the
   // rename. Another plugin's command of that name goes on to the engine.
   on('command.run', async ($, e, next) => {
+    if (isBroadcastCommand(e.command, $.plugin.name)) return { text: await answerBroadcast($, e.args) }
     if (!isOwnCommand(e.command, $.plugin.name)) return next(e)
     const args = parseArgs(e.args)
     if (!(await hasSurface($))) return { text: await onceText($, args) }

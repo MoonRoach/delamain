@@ -84,6 +84,8 @@ rm -f "$CHECK"
 check "$([ -f "$ROOT/hooks/agent-top.tsx" ] && echo yes || echo no)" yes "module file hooks/agent-top.tsx exists"
 check "$([ -f "$ROOT/hooks/agent-top-model.ts" ] && echo yes || echo no)" yes "helper hooks/agent-top-model.ts exists"
 check "$(grep -c "from './agent-top-model'" "$ROOT/hooks/agent-top.tsx" | tr -d ' ')" 2 "the module imports its helper (values and types)"
+check "$([ -f "$ROOT/hooks/broadcast.tsx" ] && grep -q "from './broadcast'" "$ROOT/hooks/agent-top.tsx" && echo yes || echo no)" yes "the module imports /broadcast from hooks/broadcast.tsx"
+check "$([ -x "$ROOT/bin/broadcast" ] && echo yes || echo no)" yes "bin/broadcast is executable (the mod runs it by path)"
 check "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("no" if "modules" in d else "ok")' "$ROOT/hooks/codex-hooks.json")" ok "codex-hooks.json parses and has no modules key"
 check "$([ -x "$ROOT/bin/agent-top" ] && echo yes || echo no)" yes "bin/agent-top is executable (the mod runs it by path)"
 # read-only by construction: the module names no write, network, prompt or model call

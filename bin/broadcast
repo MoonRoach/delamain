@@ -15,7 +15,8 @@ wake rules are tell's: a plain line from another stage's hub is held until that 
 The line is signed once for all recipients: $HUB_TAG (qualified with $HUB_STAGE when set), else this session's stage-
 qualified tag from the registry of its own stage, else `owner` — a terminal or the Desktop `/broadcast` command of the
 owner, as `hub close` signs a close from the agent-top pane.
-A tell that gives no answer in 120 s is stopped with its children and reported `????` (unknown: the line may be there).
+A tell that gives no answer in 120 s is stopped with its children and reported `????` (unknown: the line may be there,
+and a headless hub that `agent send` had already resumed may still read it; look before sending again).
 Exit: 0 every recipient took the line, 1 a delivery failed or is unknown, or there is no recipient, 2 usage.
 """
 from __future__ import annotations
@@ -32,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 
 TELL_TIMEOUT_S = 120
-WORKERS = 32  # one wave for every realistic home: the whole run stays within about one TELL_TIMEOUT_S (the mod waits 300 s)
+WORKERS = 64  # one wave up to 64 recipients, so the run stays within about one TELL_TIMEOUT_S (the mod waits two: 300 s)
 
 
 def own_tag() -> str:
@@ -151,7 +152,7 @@ def main(argv: list) -> int:
     if args.dry_run:
         sent = [dict(t, exit=None, state="planned", output="") for t in targets]
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(WORKERS, len(targets)))) as pool:
             sent = list(pool.map(lambda t: deliver(t, tail, tag), targets))
     failed = [r for r in sent if r["exit"] not in (0, None)]
     if args.json:

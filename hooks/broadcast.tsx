@@ -10,7 +10,7 @@ import type { EngineInterface } from 'claude-code'
 
 type Api = EngineInterface
 
-const CALL_TIMEOUT_MS = 300000 // the CLI gives each tell 120 s, 32 at a time: two waves
+const CALL_TIMEOUT_MS = 300000 // the CLI gives each tell 120 s, 64 at a time: two waves, 128 recipients
 const FLAGS = new Set(['--urgent', '--question', '--this-home', '--include-self', '--dry-run'])
 
 export type BroadcastArgs = { flags: string[]; text: string }

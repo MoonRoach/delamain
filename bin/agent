@@ -87,7 +87,8 @@ keeps its registration (it holds the index; `git worktree prune` is never run). 
 ancestry, a squash-merged one only with --delete-branches; either only at the verified commit (`git update-ref -d`) and
 when no worktree has it checked out. --dry-run prints what would go. --prune runs `git fetch --prune origin` first and
 removes nothing when the fetch fails or with --no-fetch (the candidates are shown as kept: refs not fresh); a listing
-fetches only with --fetch. Paths compare by directory identity, not spelling. --no-gh skips the pull-request lookup.
+fetches only with --fetch, which contradicts --no-fetch. Just before removing it looks again at the processes, the HEAD
+and the worktrees registered inside. Paths compare by directory identity, not spelling. --no-gh skips the pull-request lookup.
 Files git ignores (build output, a local .env) go with the worktree.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.

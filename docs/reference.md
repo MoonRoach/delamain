@@ -215,7 +215,9 @@ moved by hand or on an unmounted disk looks the same, and the registration holds
 `git worktree prune` is never run (`git worktree repair <new path>` brings a moved one back). Before it decides,
 `--prune` runs `git fetch --prune origin`; when the fetch fails, or with `--no-fetch`, it removes nothing and shows the
 candidates as kept with `refs not fresh` (a merge the remote has since lost must not count); a listing fetches only with
-`--fetch`. It looks at the processes once more just before removing. The main checkout is listed and never a candidate.
+`--fetch` (`--fetch` with `--no-fetch` is a usage error). Merged and pushed are judged at the HEAD the listing saw, and
+just before removing it looks again: at the processes, at the HEAD (moved — kept) and at the registered worktrees (one
+registered inside since — kept). The main checkout is listed and never a candidate.
 The branch goes with the worktree only when it is merged by ancestry; a squash-merged branch stays unless
 `--delete-branches` (only for a branch whose merged pull request holds all its commits). Either is deleted with
 `git update-ref -d` at the commit that was verified, so a branch that moved meanwhile stays, and only when no worktree

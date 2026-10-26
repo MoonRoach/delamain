@@ -240,6 +240,11 @@ LISTING --prune --idle-for 0s > $P/p10b.out 2>&1; check $? 0 "--prune with a dir
 rm $WT/feat/outer/.worktrees/inner/wip.txt
 LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/outer/.worktrees/inner ] && [ -d $WT/feat/outer ]; check $? 0 "positive control: clean, the inner one goes (the outer one waits for the next run)"
 LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/outer ]; check $? 0 "…and the next run removes the outer one"
+sq sqnest; pr_json sqnest 15 "$(git -C $WT/sqnest rev-parse HEAD)"                     # one registered inside it while the ledger is built
+printf 'git -C %s worktree add -q -b feat/late %s origin/main\necho wip > %s/wip.txt\n' $REPO $WT/sqnest/.worktrees/late $WT/sqnest/.worktrees/late > $GHDIR/sqnest.hook
+LISTING --prune --idle-for 0s > $P/p10b2.out 2>&1
+[ -f $WT/sqnest/.worktrees/late/wip.txt ]; check $? 0 "a worktree registered inside a candidate after the listing: its file survives"
+grep -q 'sqnest — holds the worktree .worktrees/sqnest/.worktrees/late (registered while pruning)' $P/p10b2.out; check $? 0 "…the candidate is kept, said so"
 # 10c. refs that could not be refreshed decide nothing: a failed fetch or --no-fetch removes nothing
 add_wt feat/net main; commit_in feat/net n.txt; merge_into_main feat/net   # from local main: 8c left it ahead of origin/main
 git -C $REMOTE update-ref refs/heads/main "$(git -C $REPO rev-parse feat/net~1)"   # the server took the merge back
@@ -270,6 +275,22 @@ printf 'git -C %s checkout -q --detach\ngit -C %s worktree add -q %s sqbusy\n' $
 LISTING --prune --delete-branches --idle-for 0s > $P/p10d2.out 2>&1
 branch_exists sqbusy && [ "$(git -C $P/sqbusy-2 symbolic-ref -q HEAD)" = refs/heads/sqbusy ]; check $? 0 "a branch checked out in another worktree meanwhile is not deleted"
 grep -q 'branch sqbusy kept (checked out in' $P/p10d2.out; check $? 0 "…said so"
+# 10f. merged and pushed are judged at the HEAD of the snapshot — the commit a branch is later deleted at — not at
+#      whatever HEAD the worktree has while it is inspected
+add_wt feat/snap; commit_in feat/snap snap.txt                                          # unpushed, not merged
+SNAP=$(git -C $WT/feat/snap rev-parse HEAD); git -C $WT/feat/snap checkout -q --detach origin/main
+python3 - $B $REPO $WT/feat/snap $SNAP > $P/p10f.out 2>&1 <<'PY2'
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import worktrees as wt
+w = wt.Worktree(path=Path(sys.argv[3]), real=wt._real(sys.argv[3]), head=sys.argv[4], branch="feat/snap")
+wt._inspect(Path(sys.argv[2]), w, "origin/main")
+print(w.merged, w.unpushed)
+PY2
+check "$(cat $P/p10f.out)" "False 1" "a worktree moved off its snapshot HEAD meanwhile: judged at the snapshot (not merged, 1 unpushed)"
+git -C $WT/feat/snap checkout -q feat/snap
+LISTING --prune --fetch --no-fetch > $P/u7.out 2>&1; check $? 2 "--fetch with --no-fetch is a usage error (--no-fetch must not be overridden)"
 # 10e. paths compare by identity, not by spelling: a case-insensitive file system (macOS) spells one directory many ways
 mkdir -p $P/CaseDir
 if [ ! -d $P/casedir ]; then echo "SKIP paths of another case (a case-sensitive file system)"

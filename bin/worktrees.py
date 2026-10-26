@@ -327,8 +327,20 @@ def _nest(main: Path, items: list) -> None:
     for o in items:
         for d in Path(o.real).parents:
             w = by_ident.get(ident(str(d)))
-            if w is not None and w is not o:
+            if w is not None and w is not o and not w.is_main:
                 w.holds.append(_rel(main, o))
+
+
+def _registered_inside(main: Path, w: Worktree) -> Optional[list]:
+    """The worktrees registered now inside `w`'s directory (one may have been added since the listing); None when git
+    cannot say."""
+    try:
+        now = list_worktrees(main)
+    except hc.Failure:
+        return None
+    ident = _idents()
+    return [_rel(main, o) for o in now if o.ident != w.ident
+            and any(ident(str(d)) == w.ident for d in Path(o.real).parents)]
 
 
 def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Optional[list]) -> None:
@@ -438,14 +450,15 @@ def _inspect(main: Path, w: Worktree, default_ref: Optional[str]) -> None:
     except OSError:
         pass
     if w.head and not set(w.head) <= {"0"}:
-        ahead = _out(_git(w.path, "rev-list", "--count", "HEAD", "--not", "--remotes"))
+        # every check on the snapshot's HEAD: it is the commit prune verifies again and deletes a branch at
+        ahead = _out(_git(w.path, "rev-list", "--count", w.head, "--not", "--remotes"))
         if ahead is not None and ahead.isdigit():
             w.unpushed = w.unpushed_raw = int(ahead)
-        stamp = _out(_git(w.path, "log", "-1", "--format=%ct", "HEAD"))
+        stamp = _out(_git(w.path, "log", "-1", "--format=%ct", w.head))
         if stamp and stamp.isdigit():
             stamps.append(float(stamp))
         if default_ref and not w.is_main:
-            res = _git(w.path, "merge-base", "--is-ancestor", "HEAD", default_ref)
+            res = _git(w.path, "merge-base", "--is-ancestor", w.head, default_ref)
             if res is not None and res.returncode in (0, 1):
                 w.merged = res.returncode == 0
                 if w.merged:
@@ -660,6 +673,12 @@ def prune(ledger: Ledger, dry_run: bool, delete_branches: bool) -> Outcome:
         if now_head != w.head:
             kept.append((w, [("operation", "its HEAD moved while pruning")]))
             continue
+        inner = _registered_inside(main, w)
+        if inner is None or inner:
+            kept.append((w, [("nested", "could not list the registered worktrees again" if inner is None else
+                              "holds the worktree" + ("s " if len(inner) > 1 else " ") + ", ".join(inner)
+                              + " (registered while pruning)")]))
+            continue
         res = _git(main, "worktree", "remove", str(w.path))
         if res is None or res.returncode != 0:
             kept.append((w, [("dirty", f"git refused to remove it: {_first_line(res)}")]))
@@ -832,6 +851,8 @@ def run(a, alive: Callable[[dict], bool]) -> int:
     """`agent worktrees` (the argument parser is bin/agent's)."""
     if (a.dry_run or a.delete_branches or a.no_fetch) and not a.prune:
         raise hc.UsageError("--dry-run, --delete-branches and --no-fetch go with --prune (without it the command only lists)")
+    if a.fetch and a.no_fetch:
+        raise hc.UsageError("--fetch and --no-fetch contradict each other")
     idle = hc.parse_duration(a.idle_for)
     try:
         caller = Path.cwd()

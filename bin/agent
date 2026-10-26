@@ -6,7 +6,7 @@ Long work (a merge steward, a release rehearsal, anything > 1 h) runs as a detac
 session instead of a hub sub-agent: it survives the hub's handoff, and any hub can talk to it.
 
   agent spawn --role R --cwd DIR --model MODEL [--effort LEVEL] --brief FILE
-              [--worktree [BRANCH] [--base REF]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
+              [--worktree [BRANCH] [--base REF] [--no-prepare]] [--stage S] [--tag T] [--title "…"] [--reason "…"]
               [--permission-mode MODE] [--mcp inherit|none|FILE[,FILE]] [--ignore-hold]
   agent status [R] [--stage S] [--all]
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
@@ -65,6 +65,13 @@ falls back to the local ref with a note, and a repository with no origin starts 
 An existing branch or worktree is used as it is (--base is ignored with a note). The "worktree … created" line names
 the base. status and stop name the worktree; nothing removes it — `git worktree remove` once the branch is
 merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
+A repository may prepare its worktrees (Delta's file names): `.agents/linked` lists git-ignored paths (one relative
+path per line) that are symlinked in the worktree to the primary checkout's copy, `.agents/prepare` is an executable
+run once in a new worktree before the agent starts (cwd = the worktree, output in <agent dir>/prepare.log, at most
+$AGENT_HUB_PREPARE_TIMEOUT seconds, default 300). A prepare that fails or times out fails the spawn (exit 1, the last
+lines of its log; a journal line); --no-prepare starts the agent anyway and leaves the prepare for the next spawn into
+that worktree. Every worktree has a slot, a number unique among the repository's live worktrees and stable for the
+worktree: $AGENT_HUB_SLOT for the agent and for prepare, shown by status. See docs/reference.md.
 status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
 agent was resumed), the context size (ctx, the last model call's input), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
@@ -102,6 +109,7 @@ import engines  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
 import limit_pace  # noqa: E402
+import worktree_prep  # noqa: E402
 import provenance  # noqa: E402
 
 import importlib.machinery  # noqa: E402
@@ -141,7 +149,7 @@ model_map = hc.model_map
 
 
 STRIP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SSE_PORT",
-             "CODEX_THREAD_ID", "AGENT_SESSION_ID", "AGENT_HUB_CODEX_MODEL", "AGENT_HUB_CODEX_EFFORT") + engines.CODEX_APP_ENV
+             "CODEX_THREAD_ID", "AGENT_SESSION_ID", "AGENT_HUB_SLOT", "AGENT_HUB_CODEX_MODEL", "AGENT_HUB_CODEX_EFFORT") + engines.CODEX_APP_ENV
 
 FOOTER = """
 ---
@@ -300,6 +308,60 @@ def worktree_note(meta: dict) -> str:
     if not wt:
         return ""
     return f"worktree {wt['path']} ({wt['branch']}) — `git worktree remove {wt['path']}` once the branch is merged"
+
+
+def set_aside(d: Path, label: str) -> Path:
+    """Rename the agent directory `d` to `<role>.<label><timestamp>`, with `-2`, `-3`… added when two failures of the
+    same role fall in the same second (the rename would otherwise fail and leave `d` in the way of the next spawn)."""
+    base = f"{d.name}.{label}{time.strftime('%Y%m%d-%H%M%S')}"
+    target, n = d.with_name(base), 1
+    while target.exists():
+        n += 1
+        target = d.with_name(f"{base}-{n}")
+    return d.rename(target)
+
+
+def slot_text(wt: dict) -> str:
+    return f", slot {wt['slot']}" if wt.get("slot") else ""
+
+
+def prepare_worktree(stage: str, tag: str, meta: dict, common, prepared: bool, timeout_s: int, skip: bool, d: Path) -> None:
+    """Run the worktree's .agents/prepare before the agent starts, when it has not succeeded there yet (a worktree
+    created by this spawn, or one whose earlier prepare failed). A failure moves the agent directory to
+    `<role>.failed-…`, journals one line and fails the spawn with the end of the log; skip (--no-prepare) starts the
+    agent anyway and leaves the prepare for the next spawn."""
+    wt = Path(meta["worktree"]["path"])
+    state = worktree_prep.prepare_state(wt)
+    if state == "absent" or prepared:
+        if common is not None and not prepared:
+            worktree_prep.mark_prepared(common, wt)
+        return
+    if skip:
+        print(f"note: --no-prepare: {worktree_prep.PREPARE} not run; the next spawn into this worktree runs it",
+              file=sys.stderr)
+        return
+    if state == "not-executable":
+        print(f"note: {wt / worktree_prep.PREPARE} exists but is not executable (chmod +x): not run", file=sys.stderr)
+        return
+    env = child_env(stage, tag)
+    env.update({"AGENT_ROLE": meta["role"], "AGENT_HUB_ENGINE": meta.get("engine", "claude"),
+                "AGENT_HUB_SLOT": str(meta["worktree"].get("slot", "")), "AGENT_HUB_WORKTREE": str(wt),
+                "AGENT_HUB_BRANCH": meta["worktree"]["branch"]})
+    main = worktree_prep.main_checkout(common) if common is not None else None
+    if main is not None:
+        env["AGENT_HUB_MAIN_CHECKOUT"] = str(main)
+    log = d / "prepare.log"
+    try:
+        worktree_prep.run_prepare(wt, log, env, timeout_s)
+    except worktree_prep.PrepareFailed as e:
+        failed = set_aside(d, "failed-")
+        journal(stage, tag, f"worktree prepare of {wt} failed: {e.why}, log {failed / 'prepare.log'}")
+        raise hc.Failure(f"worktree prepare failed: {e.why}; log {failed / 'prepare.log'}"
+                         + (f"; last lines:\n{e.tail}" if e.tail else "")
+                         + f"\nfix it in the worktree and spawn again (the prepare runs again), or pass --no-prepare") from None
+    if common is not None:
+        worktree_prep.mark_prepared(common, wt)
+    print(f"prepared {wt} (log {log})")
 
 
 def agent_dir(stage: str, role: str) -> Path:
@@ -469,6 +531,14 @@ def init_timeout(cwd=None) -> int:
         raise hc.UsageError("AGENT_INIT_TIMEOUT must be a whole number of seconds") from None
 
 
+def prepare_timeout(cwd=None) -> int:
+    """Seconds `.agents/prepare` may run: AGENT_HUB_PREPARE_TIMEOUT or 300."""
+    raw = str(hc.setting("AGENT_HUB_PREPARE_TIMEOUT", cwd=cwd) or worktree_prep.DEFAULT_PREPARE_TIMEOUT).strip()
+    if not re.fullmatch(r"[0-9]+", raw) or int(raw) < 1:
+        raise hc.UsageError("AGENT_HUB_PREPARE_TIMEOUT must be a whole number of seconds (at least 1)")
+    return int(raw)
+
+
 def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120,
                   engine: str = "claude") -> dict:
     """Block until the run writes its init event for this session and return it; kill the run and fail otherwise."""
@@ -519,6 +589,8 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token, sys.executable] + argv
     env = child_env(meta["stage"], meta["tag"])
     env.update({"AGENT_ROLE": meta["role"], "AGENT_SESSION_ID": meta["session_id"], "AGENT_HUB_ENGINE": engine})
+    if (meta.get("worktree") or {}).get("slot"):
+        env["AGENT_HUB_SLOT"] = str(meta["worktree"]["slot"])
     if engine == "codex" and meta.get("sandbox") == "workspace-write" and not is_review_role(meta):
         engines.prepare_worktree_sandbox(meta, env)
     run_id = uuid.uuid4().hex[:12]
@@ -680,6 +752,9 @@ def cmd_spawn(a) -> int:
         raise hc.UsageError(f"--brief {brief}: no such file")
     if a.base and a.worktree is None:
         raise hc.UsageError("--base goes with --worktree: it names the commit the worktree's new branch starts from")
+    if a.no_prepare and a.worktree is None:
+        raise hc.UsageError("--no-prepare goes with --worktree: it skips the repository's .agents/prepare")
+    prep_timeout = prepare_timeout(cwd) if a.worktree is not None else 0  # a bad value fails before any worktree exists
     if engine == "claude":
         cli = hc.find_claude(cwd)
         if cli is None:
@@ -712,15 +787,20 @@ def cmd_spawn(a) -> int:
         old = load_meta(stage, a.role)
         if alive(old):
             raise hc.Failure(f"agent {a.role} is already running (pid {old['pid']}); agent stop {a.role} or pick another name")
-    wt = None
+    wt, wt_common, wt_prepared = None, None, True
     if a.worktree is not None:
         path, branch, how = make_worktree(cwd, a.role, a.worktree or None, a.base)
         wt = {"path": str(path), "branch": branch}
         print(f"worktree {path} on {branch} ({how})")
         cwd = path
+        wt_common = worktree_prep.common_dir(path)
+        if wt_common is not None:
+            wt["slot"], wt_prepared = worktree_prep.claim_slot(wt_common, path, how != "reused")
+            for ln in worktree_prep.link_shared(path, worktree_prep.main_checkout(wt_common)):
+                print(ln, file=sys.stderr if ln.startswith("note:") else sys.stdout)
     if (d / "meta.json").exists():
         # a finished agent of the same name: keep its files, start a clean directory
-        d.rename(d.with_name(f"{a.role}.{time.strftime('%Y%m%d-%H%M%S')}"))
+        set_aside(d, "")
     d.mkdir(parents=True)
     hc.register_home()  # the stage now has an agents/ directory: its home is one agent-top lists (registry of homes)
     tag = a.tag or a.role
@@ -750,15 +830,20 @@ def cmd_spawn(a) -> int:
             meta["sandbox_policy"] = policy
     if wt:
         meta["worktree"] = wt
+    if wt:
+        prepare_worktree(stage, tag, meta, wt_common, wt_prepared, prep_timeout, a.no_prepare, d)
     prompt = brief.read_text(encoding="utf-8") + footer(stage, cwd, engine=engine, role=a.role, tag=tag, report=report,
                                                        inbox=d / "inbox.md")
     if meta.get("sandbox_git_roots"):
         prompt += "\n" + engines.WORKTREE_SANDBOX_NOTE + "\n"
+    if wt and wt.get("slot"):
+        prompt += (f"\n- Your worktree's slot is {wt['slot']} ($AGENT_HUB_SLOT): derive ports and database names from it "
+                   "if you start servers, so agents in other worktrees of this repository do not collide with you.\n")
     save_meta(stage, a.role, meta)
     try:
         pid = launch(meta, prompt, resume=False)
     except hc.Failure:
-        d.rename(d.with_name(f"{a.role}.failed-{time.strftime('%Y%m%d-%H%M%S')}"))
+        set_aside(d, "failed-")
         raise
     save_meta(stage, a.role, meta)  # launch recorded the pid and the run; this keeps the init event's session id
     roles_cli.set_role(stage, a.role, meta["session_id"], "headless", tag=tag, title=meta["title"],
@@ -773,7 +858,7 @@ def cmd_spawn(a) -> int:
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
-                               + (f", worktree {wt['path']} ({wt['branch']})" if wt else "")
+                               + (f", worktree {wt['path']} ({wt['branch']}){slot_text(wt)}" if wt else "")
                                + (f", MCP {mcp_text(mcp)}" if mcp and mcp != MCP_DEFAULT else "")
                                + (f", reason: {reason}" if reason else "")
                                + (f", {pace_note}" if pace_note else ""))
@@ -1056,7 +1141,7 @@ def status_line(stage: str, role: str) -> str:
     engine = meta.get("engine", "claude")
     return (f"{role} [{meta['tag']}] {engine}/{model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
             f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
-            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']})" if wt else ""))
+            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']}){slot_text(wt)}" if wt else ""))
 
 
 def cmd_status(a) -> int:
@@ -1311,6 +1396,9 @@ def main(argv: list) -> int:
     s.add_argument("--worktree", nargs="?", const="", default=None, metavar="BRANCH",
                    help="run in a worktree of BRANCH (default agent/<role>): the existing one, else <repo>/.worktrees/<BRANCH> "
                         "on a new branch from origin's default branch (--base)")
+    s.add_argument("--no-prepare", action="store_true",
+                   help="with --worktree: do not run the repository's .agents/prepare now (the next spawn into the "
+                        "worktree runs it)")
     s.add_argument("--base", metavar="REF", help="with --worktree: start a new branch from REF (default: origin's default "
                    "branch after a fetch; --base HEAD is the checked-out commit of --cwd)")
     s.add_argument("--tag")

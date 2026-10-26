@@ -13,7 +13,7 @@ prompt = sys.stdin.read() if args[-1]=='-' else args[-1]  # `-` = read the promp
 with open('codex-argv.jsonl','a') as f:
  f.write(json.dumps(args[:-1])+'\n')
 with open('codex-env.jsonl','a') as f:
- f.write(json.dumps({k:os.environ.get(k) for k in ('AGENT_HUB_ENGINE','CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','HUB_BIN','AGENT_HUB_HOME')})+'\n')
+ f.write(json.dumps({k:os.environ.get(k) for k in ('AGENT_HUB_ENGINE','CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','HUB_BIN','AGENT_HUB_HOME','AGENT_HUB_SLOT')})+'\n')
 with open('codex-prompts.log','a') as f:
  f.write(prompt+'\n')
 if os.environ.get('FAKE_CODEX')=='die':

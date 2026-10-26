@@ -11,6 +11,17 @@
   and journal lines around the commit; a commit without trailers gets a guess marked as one, from the agent's worktree
   and branch reflogs, or "not an agent commit". `AGENT_HUB_PROVENANCE=off` turns the shim off
   ([Commit provenance](docs/reference.md#commit-provenance)).
+- **A new agent worktree prepares itself.** `agent spawn --worktree` now reads two committed files of the repository
+  (Delta's names, so a repository prepared for Delta works unchanged): `.agents/linked` lists git-ignored paths
+  (`.env`, local configs) that are symlinked to the primary checkout's copies, and `.agents/prepare` is an executable
+  run once in the new worktree before the agent starts, for Claude and Codex alike. A failing or timed-out prepare
+  (`AGENT_HUB_PREPARE_TIMEOUT`, 300 s) fails the spawn with the exit code and the last log lines, never silently;
+  `--no-prepare` defers it to the next spawn into that worktree. The script runs with the hub user's rights, outside the
+  agent's sandbox. A linked path that git does not ignore is not linked (a note says so). Every worktree also gets a
+  slot, a number unique among the repository's live worktrees and stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
+  shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
+  behaves as before. See *Preparing worktrees* in `docs/reference.md`.
+  Two spawns of one role within a second no longer collide on the name of the set-aside run directory.
 
 ## 1.0.20 — 2026-10-26
 

@@ -12,6 +12,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
   agent send [--stage S] [--resume-anyway] R "msg"   (the options may stand anywhere before `--`; everything after the role
                                                       is the message, a word starting with `-` included)
   agent stop R [--stage S]
+  agent worktrees [--repo PATH] [--json] [--fetch] [--no-gh] [--prune [--dry-run] [--delete-branches] [--idle-for DUR]]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
 brief.md (copy of the brief), inbox.md (messages while the agent runs), prompt-<run>.txt (the prompt of each run, written once).
@@ -60,8 +61,9 @@ origin's default branch (origin/HEAD, else origin/main, else origin/master) afte
 falls back to the local ref with a note, and a repository with no origin starts from its local main/master, else HEAD.
 --base REF starts the new branch from REF instead (--base HEAD: the checked-out commit of --cwd, the old behaviour).
 An existing branch or worktree is used as it is (--base is ignored with a note). The "worktree … created" line names
-the base. status and stop name the worktree; nothing removes it — `git worktree remove` once the branch is
-merged. Two agents in one checkout overwrite each other's files: give each writer its own worktree.
+the base. status and stop name the worktree. Two agents in one checkout overwrite each other's files: give each writer
+its own worktree. `agent worktrees` lists every worktree of the repository (path, branch, who made it, in use or not,
+dirty or not, on a remote or not, merged or not, age) and, with --prune, removes the finished ones.
 status: alive or not, the model, age of the last log event, model turns (of the last run, with the total once the
 agent was resumed), the context size (ctx, the last model call's input), the last assistant text line.
 send: alive → appended to inbox.md, journaled as "@<tag> msg" and kept as unread; process gone →
@@ -72,6 +74,17 @@ agent status flags them). spawn and resume succeed only once the run writes its 
 A resume is refused while the agent's context is above $AGENT_HUB_RESUME_MAX_CTX (default 250k tokens): spawn a fresh
 agent from a handoff file; --resume-anyway overrides.
 stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
+worktrees: the ledger of one repository's git worktrees (--repo PATH, default the repository of the working directory),
+read-only unless --prune; --json for the same table as data. Who made a worktree: an agent run (meta.json of any known
+hub home), a hub (`<repo>/.claude/worktrees/<stage>-hub-<n>`), a registered role, else "other" (Desktop, manual). In use:
+a live agent, the stage's registered hub, or any process whose working directory is inside it ("unknown" for a worktree
+none of these knows). Merged: the branch is an ancestor of the remote default branch, or its HEAD is inside a pull
+request merged into it (`gh pr list --state merged --head BRANCH`; a squash merge leaves no ancestry). --prune removes a
+worktree (`git worktree remove`, never --force) only when it is merged, clean, has nothing unpushed, no git operation
+under way, is not locked, not your working directory, not in use — and, where use is "unknown", has not changed for
+--idle-for (default 24h); then `git worktree prune`. Its branch goes with it when merged by ancestry (`git branch -d`);
+a squash-merged branch stays unless --delete-branches. --dry-run prints what would go; --fetch runs `git fetch origin`
+first (the remote refs are otherwise as last fetched); --no-gh skips the pull-request lookup.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
@@ -99,6 +112,7 @@ import engines  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
 import limit_pace  # noqa: E402
+import worktrees  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -1072,6 +1086,10 @@ def cmd_status(a) -> int:
     return 0
 
 
+def cmd_worktrees(a) -> int:
+    return worktrees.run(a, alive)
+
+
 def cmd_send(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
     msg = hc.one_line(" ".join(a.text))
@@ -1333,6 +1351,19 @@ def main(argv: list) -> int:
     sp = sub.add_parser("stop", help="stop the agent and retire its role")
     sp.add_argument("role")
     sp.add_argument("--stage")
+    wt = sub.add_parser("worktrees", help="list the repository's worktrees; --prune removes the finished ones")
+    wt.add_argument("--repo", metavar="PATH", help="a path inside the repository (default: the working directory's)")
+    wt.add_argument("--json", action="store_true", help="the same ledger as JSON")
+    wt.add_argument("--fetch", action="store_true", help="git fetch origin first: the remote refs are otherwise as last fetched")
+    wt.add_argument("--no-gh", action="store_true", help="do not ask GitHub (gh) whether a branch's pull request was merged")
+    wt.add_argument("--prune", action="store_true",
+                    help="remove the worktrees that are merged, clean, fully pushed and not in use; nothing else")
+    wt.add_argument("--dry-run", action="store_true", help="with --prune: say what would be removed, remove nothing")
+    wt.add_argument("--delete-branches", action="store_true",
+                    help="with --prune: also delete the branch of a squash-merged worktree (git branch -D; its merged pull "
+                         "request holds every commit); a branch merged by ancestry always goes (git branch -d)")
+    wt.add_argument("--idle-for", metavar="DUR", default=worktrees.DEFAULT_IDLE,
+                    help=f"a worktree whose use is unknown counts as free after this long without a change (default {worktrees.DEFAULT_IDLE})")
     en = sub.add_parser("exit-note", help="(internal) journal an EXIT line after the agent process exits")
     en.add_argument("role")
     en.add_argument("--stage")
@@ -1340,7 +1371,7 @@ def main(argv: list) -> int:
     a = parse_send(argv) if argv[:1] == ["send"] and not {"-h", "--help"} & set(argv[:argv.index("--")] if "--" in argv else argv) \
         else p.parse_args(argv)
     return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "stop": cmd_stop,
-            "exit-note": cmd_exit_note}[a.cmd](a)
+            "worktrees": cmd_worktrees, "exit-note": cmd_exit_note}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,9 @@
   `TIMEOUT` or an `--on` word; detached `await` is unchanged. A failure can no longer carry the success word: `--ok
   FAILED|TIMEOUT`, `--on 0=WORD` and `--on RC=<the --ok word>` are usage errors, and options are exact (`--wai` is an error).
   The polling guard no longer denies a single detached `await … -- gh pr checks N --watch`, the form the hub skill
-  recommends; it still denies `await --wait` (also quoted), and the exception ends at any `&`, `;`, `&&`, `||`, `|`, group or
-  substitution after the `await`. See *Waiting for CI* in
+  recommends, and only that: the exception holds for one command made of plain words (a quoted value of `--label` aside) and
+  is fail-closed, so `--wait` in any spelling, a redirection, `&` `;` `|`, a quote elsewhere, an expansion, a glob, a wrapper
+  or a comment bring back the ordinary rules. See *Waiting for CI* in
   `docs/launch-modes.md`.
 
 ## 1.0.21 — 2026-10-26

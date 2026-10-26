@@ -5,6 +5,8 @@ FAKE_CLAUDE=ok (default): init event, FAKE_HOLD seconds of work, one assistant l
 FAKE_CLAUDE=die: no init, exits 1 after 2 s (a CLI that rejects its flags slowly).
 FAKE_CLAUDE=hang: alive for 60 s without an init event. FAKE_INIT_DELAY=<s>: that long before the init event.
 FAKE_READ_INBOX=1: a Bash tool call on inbox.md after the hold; FAKE_FINAL=<text>: the last answer.
+FAKE_SHELL=<command>: run by /bin/sh after the hold in the agent's cwd and environment (a Bash tool call); its output
+and "exit=<code>" go to ./shell.log.
 FAKE_TURNS=<n>: n extra assistant messages (distinct ids) before the last answer.
 `--version` prints FAKE_VERSION (default 2.1.287) like the real CLI and exits, leaving no log: FAKE_VERSION_BANNER
 is printed on a line before it (a version manager's shim), FAKE_VERSION_LOG is a file that gets one line per call.
@@ -64,6 +66,11 @@ model = os.environ.get("FAKE_MODEL") or ALIASES.get(opt("--model") or "", opt("-
 time.sleep(float(os.environ.get("FAKE_INIT_DELAY", "0")))  # a slow start: MCP servers connecting
 emit({"type": "system", "subtype": "init", "session_id": sid, "model": model})
 time.sleep(float(os.environ.get("FAKE_HOLD", "0")))
+if os.environ.get("FAKE_SHELL"):  # a Bash tool call: the command runs in the agent's cwd and environment
+    import subprocess
+    with open("shell.log", "a", encoding="utf-8") as fh:
+        rc = subprocess.run(["/bin/sh", "-c", os.environ["FAKE_SHELL"]], stdout=fh, stderr=fh).returncode
+        fh.write(f"exit={rc}\n")
 if os.environ.get("FAKE_READ_INBOX"):
     emit({"type": "assistant", "message": {"id": "mr", "content": [{"type": "tool_use", "name": "Bash",
           "input": {"command": "cat /x/agents/r/inbox.md"}}]}, "session_id": sid})

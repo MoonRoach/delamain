@@ -50,6 +50,7 @@ import bisect
 import json
 import os
 import re
+import shlex
 import sys
 
 DEFAULTS = {"max_sleep": 30, "max_bounded_wait": 90, "escape": "poll-ok"}
@@ -211,6 +212,9 @@ _HEREDOC_MARK = "<<_HEREDOC_"  # stands for a heredoc whose body is dropped, whe
 _PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
 _AWAIT = re.compile(_CMD_PREFIX + r"(?:\S*/)?await\s")
+# shlex(punctuation_chars=True) hands operators over as tokens: a control operator is `&`, `&&`, `||`, `|`, `|&`, `;`,
+# `;;`, a parenthesis; `>&`, `&>`, `2>` and the like are redirections and stay allowed.
+_CONTROL = re.compile(r"&+|[|;()&]*[|;()][|;()&]*")
 # The same, separators kept in the result; a `|` at the end of a line (`echo '…' |⏎ bash`) is a pipe too, and
 # bash takes any number of blank lines after it.
 _SEGMENT_SPLIT = re.compile(r"(\|\||&&|\|\s*\n|[;|\n])")
@@ -586,18 +590,30 @@ def wait_reason(command: str, cfg: Config, raw: str = None):
     return None
 
 
-def detached_await(seg: str) -> bool:
-    """`await [options] -- COMMAND` without `--wait`: it returns at once and its supervisor does the waiting, which is
-    what the guard's message asks for. COMMAND being `gh pr checks N --watch` is then not a status read by hand."""
-    m = _AWAIT.match(seg)
-    return bool(m) and "--wait" not in seg[m.end():].split(" -- ", 1)[0].split()
+def detached_await(command: str) -> bool:
+    """The whole command is ONE `await [options] -- COMMAND` without `--wait`: it returns at once and its supervisor does
+    the waiting, which is what the guard's message asks for, so COMMAND being `gh pr checks N --watch` is not a status
+    read by hand. Read from the shell's own tokens (quotes removed: `"--wait"` is `--wait`), and refused when in doubt:
+    any control operator after it (`&`, `;`, `&&`, `||`, `|`, a group, a newline), any substitution (`$(…)`, a backtick),
+    a `--wait` among its options, or a quote the tokenizer cannot close. `await` takes no abbreviations, so `--wai` is
+    a usage error there, not a wait."""
+    m = _AWAIT.match(command)
+    if not m or re.search(r"[\n\r`]|\$\(|[<>]\(", command):
+        return False
+    try:
+        lex = shlex.shlex(command[m.end():], posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return False
+    if any(_CONTROL.fullmatch(t) for t in tokens) or "--" not in tokens:
+        return False
+    return "--wait" not in tokens[:tokens.index("--")]
 
 
 def ci_reason(command: str, cfg: Config):
     """Why a (printing-stripped) command is a one-off CI status read, or None."""
     for seg in _SEGMENT_SEP.split(command):
-        if detached_await(seg):
-            continue
         if any(p.search(seg) for p in cfg.ci_deny) and not any(p.search(seg) for p in cfg.ci_allow):
             return f"This is `{seg.strip()}` — reading CI status by hand."
     return None
@@ -612,7 +628,7 @@ def check(command: str, background: bool, cfg: Config):
     if r:
         return "wait", r
     try:
-        r = ci_reason(ci_cmd, cfg)
+        r = None if detached_await(command) else ci_reason(ci_cmd, cfg)
     except Exception:  # noqa: BLE001 — fail-open
         r = None
     return ("ci", r) if r else None

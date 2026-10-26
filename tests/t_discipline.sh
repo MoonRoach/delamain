@@ -79,6 +79,18 @@ denied '$HUB_BIN/await --ok PASSED --label x --on 2=TIMEOUT -- gh run watch 123 
 denied 'await --wait --ok PASSED --label x -- gh pr checks 12 --watch'; check $? 0 "poll: await --wait in the foreground is still denied"
 denied 'await --ok DONE -- gh pr checks 12 --watch; gh pr checks 12'; check $? 0 "poll: …a read next to a detached await is still denied"
 denied 'echo await -- gh pr checks 12'; check $? 1 "poll: (control) text of echo is not read"
+# review of PR #140: the exception is for ONE detached await, read from the shell's own tokens
+denied 'await "--wait" -- gh pr checks 12 --watch'; check $? 0 "poll: a quoted \"--wait\" is still --wait"
+denied "await '--wait' -- gh pr checks 12 --watch"; check $? 0 "poll: …single quotes too"
+denied 'await --wait -- gh pr checks 12 --watch'; check $? 0 "poll: …and the plain --wait"
+for op in '&' ';' '&&' '||' '|' $'\n'; do
+  denied "await --ok DONE -- true $op gh pr checks 12"; check $? 0 "poll: a control operator [$op] after a detached await ends the exception"
+done
+denied 'await -- true $(gh pr checks 12)'; check $? 0 "poll: a substitution inside a detached await is a read by hand"
+denied 'await -- true `gh pr checks 12`'; check $? 0 "poll: …a backtick too"
+denied '(await -- true) & gh pr checks 12'; check $? 0 "poll: a group around it does not keep the exception"
+denied 'await --ok PASSED --label "PR 12" -- gh pr checks 12 --watch >/tmp/w.out 2>&1'; check $? 1 "poll: control — redirections do not end the exception"
+denied 'await --ok PASSED -- gh pr checks 12 --watch &>/tmp/w.out'; check $? 1 "poll: …nor &>"
 pg "${BLOCKED[0]}" | grep -q 'matches the waiting shell'; check $? 0 "poll: pgrep -f self-match is named"
 pg "${BLOCKED[4]}" > $R/pg.out
 grep -q 'jwait' $R/pg.out && grep -q 'run_in_background' $R/pg.out && grep -q 'poll-ok' $R/pg.out; check $? 0 "poll: the message names jwait, run_in_background and the marker"

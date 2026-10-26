@@ -212,7 +212,7 @@ Added with the CI-wait tool; the core `SKILL.md` carries the short form.
 2. `await` journals nothing while the command runs and exactly one line `@hub MERGED|DONE|FAILED|TIMEOUT|<--on word> …
    <link>` when it ends; that line is the hub's wake. FAILED/TIMEOUT/CONFLICT are decisions for the hub, not retries.
 3. An executor that waits on CI uses the same `await` (its line is `<tag>-await`, so it reaches the hub's `jwait`). A
-   headless one adds `--wait`, which prints the line and exits 0 only on the `--ok` word, 3 on any other
+   headless one adds `--wait`, which prints the line and exits 0 only when the command itself succeeded, 3 otherwise
    (FAILED/TIMEOUT/…): trust that exit code or the word, not "it returned". On GitHub the command is
    `gh pr checks N --watch --fail-fast` (see *Waiting for CI* in `docs/launch-modes.md`).
 4. `kill <supervisor pid>` (printed by `await`) stops a wait; a missing line after the deadline means the supervisor was

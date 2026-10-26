@@ -154,8 +154,10 @@ The hub's single `jwait` (`--tag hub-<N> --tag hub --hub-events`) wakes on it: `
 gets SIGTERM, then SIGKILL after 5 s, also for a grandchild that ignores SIGTERM) → `TIMEOUT`; any other exit code,
 a command that cannot start, a signal → `FAILED`; `--on RC=WORD` adds words such as `CONFLICT` for a command that
 distinguishes them. A headless executor must keep its commands attached, so it runs the wait with `--wait`: `await`
-then prints the line it journaled and exits 0 only when the word is the `--ok` word, 3 for any other (`FAILED`,
-`TIMEOUT`, an `--on` word), 1 when the journal could not be written. Read that exit code or the printed word, never
+then prints the line it journaled and exits 0 only when the command itself exited 0 (not a timeout, a signal or an
+interruption), 3 otherwise (`FAILED`, `TIMEOUT`, an `--on` word), 1 when the journal could not be written. The success
+word cannot be put on a failure: `--ok FAILED|TIMEOUT`, `--on 0=WORD` and `--on RC=<the --ok word>` are usage errors (exit
+2), and options are exact (`--wai` is an error, not `--wait`). Read that exit code or the printed word, never
 "the command ended": before 26.10 the exit was 0 whenever the line was written, so `await --wait --ok PASSED -- gh pr
 checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 and the 1.0.21 release PR).
 `--to <its tag>` is for an executor that wants a line for its own `jwait`, the default `--to hub` wakes the hub.
@@ -164,7 +166,7 @@ On GitHub the wait command is `gh pr checks N --watch --fail-fast` (exit 0 only 
 check, for "no checks reported" and for an unknown PR) or `gh run watch <id> --exit-status`:
 
 ```bash
-await --ok MERGED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # detached; the polling guard lets it through
+await --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # detached; the polling guard lets it through (MERGED is for waiting on the merge itself)
 await --wait --ok PASSED --label "PR #12" -- gh pr checks 12 --watch --fail-fast   # attached: run_in_background, exit 3 = not passed
 ```
 

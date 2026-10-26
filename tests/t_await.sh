@@ -88,6 +88,19 @@ check "$(grep -c '@hub FAILED ' $O/gh.out)" 1 "…FAILED"
 ghwait killed; check $? 3 "gh killed by a signal: not ok"
 grep -q '@hub FAILED .*killed by signal 9' $O/gh.out; check $? 0 "…FAILED, saying so"
 : > $J; PATH=$O/ghbin:$PATH GH_CHECKS=fail $B/await --wait --on 1=CONFLICT -- gh pr checks 1 > $O/gh.out 2>&1; check $? 3 "an --on word is not the ok word either"
+# review of PR #140: success is the command's own outcome, never a word an option can paint over it
+ghwait_args(){ : > $J; GH_CHECKS=$1 PATH=$O/ghbin:$PATH $B/await --wait "${@:2}" -- gh pr checks 1 --watch > $O/gh.out 2>&1; }
+ghwait_args fail --ok PASSED --on 1=PASSED; check $? 2 "--on 1=<the --ok word> is refused as usage (exit 2)"
+check "$(grep -c '' $J)" 0 "…before anything runs or is journaled"
+grep -q -- '--on 1=PASSED' $O/gh.out; check $? 0 "…saying which option"
+ghwait_args fail --ok TIMEOUT; check $? 2 "--ok TIMEOUT is refused"
+ghwait_args fail --ok FAILED; check $? 2 "--ok FAILED is refused"
+ghwait_args pass --on 0=CONFLICT; check $? 2 "--on 0=WORD is refused (exit 0 is the --ok word)"
+ghwait_args pass --ok PASSED --on 1=CONFLICT; check $? 0 "control: the same options with a different word are fine on success"
+ghwait_args fail --ok PASSED --on 1=CONFLICT; check $? 3 "…and a failure with its own word still exits 3"
+# options are exact: --wai is not a spelling of --wait
+: > $J; PATH=$O/ghbin:$PATH GH_CHECKS=pass $B/await --wai --label abbrev -- gh pr checks 1 > $O/gh.out 2>&1; check $? 2 "an abbreviation of an option is a usage error"
+check "$(grep -c '' $J)" 0 "…nothing started, nothing journaled"
 # detached mode is unchanged: it returns at once with 0 whatever the wait later says, and the supervisor writes no
 # stdout of its own into the caller's output
 : > $J; GH_CHECKS=fail PATH=$O/ghbin:$PATH $B/await --ok PASSED --label detached-fail -- gh pr checks 1 --watch > $O/gh.out 2>&1; check $? 0 "detached: await returns 0 at once"
@@ -226,7 +239,7 @@ real(p.pid, signal.SIGKILL); p.wait()
 # c) ...and the line's detail says so instead of "stopped"
 seen.clear()
 args = argparse.Namespace(timeout="1s", ok="DONE")
-word, detail = mod.run_wait(args, ["/bin/sleep", "300"], __import__("pathlib").Path(work + "/c.log"), {})
+word, detail, ok = mod.run_wait(args, ["/bin/sleep", "300"], __import__("pathlib").Path(work + "/c.log"), {})
 print("detail:", word, detail)
 for pg in seen:
     try:

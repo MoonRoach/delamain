@@ -149,6 +149,10 @@ rm $FR/.worktrees/agent/bad/fixed.txt
 spawn bad $FR > /dev/null 2>&1; wait_dead bad
 [ ! -e $FR/.worktrees/agent/bad/fixed.txt ]; check $? 0 "…and only once: a successful prepare is not repeated"
 
+# two failures of one role within a second leave two directories, and the next spawn is not in their way
+spawn bad2 $FR > /dev/null 2>&1; spawn bad2 $FR > /dev/null 2>&1; spawn bad2 $FR > /dev/null 2>&1
+[ "$(ls -d $R/stage-a/agents/bad2.failed-* | wc -l | tr -d ' ')" = 3 ] && [ ! -e $R/stage-a/agents/bad2 ]; check $? 0 "three failures of one role in quick succession keep three run directories"
+
 # ---- 8. prepare times out
 TR=$P/slow; mkrepo $TR; mkdir $TR/.agents
 printf '#!/bin/sh\nsleep 40 &\nwait\n' > $TR/.agents/prepare; chmod +x $TR/.agents/prepare; commit_all $TR prep

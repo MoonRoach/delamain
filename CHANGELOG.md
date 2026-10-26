@@ -12,6 +12,7 @@
   slot, a number unique among the repository's live worktrees and stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
   shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
   behaves as before. See *Preparing worktrees* in `docs/reference.md`.
+  Two spawns of one role within a second no longer collide on the name of the set-aside run directory.
 
 ## 1.0.20 — 2026-10-26
 

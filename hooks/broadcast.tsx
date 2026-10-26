@@ -1,16 +1,16 @@
 // /broadcast, a command of the plugin's mod (hooks/agent-top.tsx registers it): one line to the hub of every open stage, from the prompt of any session.
 //
-//   /broadcast "text" [--urgent | --question] [--this-home] [--exclude S]   sends through `bin/broadcast`, answers with its summary
+//   /broadcast [--urgent | --question] [--this-home] [--exclude S] text   sends through `bin/broadcast`, answers with its summary
 //   /broadcast                                                              (bare) lists the recipients, writes nothing (--dry-run)
 //
 // The module holds no state and writes nothing itself: every send is `bin/broadcast` of the Delamain plugin, which runs
-// `tell` per stage. Leading words that are the CLI's flags are passed as flags; everything after them is the text, after
+// `tell` per stage. Flags go before the text: leading words that are the CLI's flags are passed as flags; everything after them is the text, after
 // `--`, so a text may start with a dash. Needs Claude Code with mods (2.1.287+); elsewhere the console `broadcast` stays.
 import type { EngineInterface } from 'claude-code'
 
 type Api = EngineInterface
 
-const CALL_TIMEOUT_MS = 150000 // the CLI gives each tell 120 s, eight at a time
+const CALL_TIMEOUT_MS = 300000 // the CLI gives each tell 120 s, 32 at a time: two waves
 const FLAGS = new Set(['--urgent', '--question', '--this-home', '--include-self', '--dry-run'])
 
 export type BroadcastArgs = { flags: string[]; text: string }
@@ -30,11 +30,11 @@ export function parseBroadcastArgs(raw: string): BroadcastArgs {
     if (FLAGS.has(word)) {
       flags.push(word)
     } else if (word.startsWith('--exclude=') && word.length > '--exclude='.length) {
-      flags.push('--exclude', word.slice('--exclude='.length))
+      flags.push('--exclude', word.slice('--exclude='.length).replace(/^(["'])(.*)\1$/, '$2'))
     } else if (word === '--exclude') {
-      const n = /^--exclude\s+(\S+)(?:\s+|$)/.exec(rest)
+      const n = /^--exclude\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+|$)/.exec(rest)
       if (!n) break
-      flags.push('--exclude', n[1])
+      flags.push('--exclude', n[1] ?? n[2] ?? n[3])
       rest = rest.slice(n[0].length)
       continue
     } else {
@@ -79,7 +79,7 @@ export async function registerBroadcast($: Api): Promise<void> {
     await $.command.register({
       name: 'broadcast',
       description: 'Write one line to the hub of every open stage (bare: list who would get it)',
-      argumentHint: '"text" [--urgent|--question] [--this-home] [--exclude S]',
+      argumentHint: '[--urgent|--question] [--this-home] [--exclude S] text',
       immediate: true,
     })
   } catch (err) {

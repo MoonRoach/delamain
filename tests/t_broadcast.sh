@@ -70,4 +70,22 @@ grep -q 'direct address' $A/t1.txt; check $? 1 "…prints no address"
 grep -q '@hub quiet$' $JC; check $? 0 "…and writes the line"
 HUB_STAGE=bc-dolya CLAUDE_CODE_SESSION_ID=$ME $B/tell bc-core --address --no-address > $A/t2.txt 2>&1; check $? 2 "tell --address --no-address → exit 2"
 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import hubcore as hc; sys.exit(0 if "broadcast" in hc.plugin_tools() else 1)' $B; check $? 0 "plugin_tools() lists broadcast"
+# 8. a tell that hangs: stopped with its children after the timeout, reported unknown; the child never delivers late
+FB=$A/fakebin; mkdir -p $FB; LATE=$A/late.txt
+cat > $FB/tell <<EOF
+import subprocess, time   # broadcast runs tell with python: a child that would deliver late, then a hang
+subprocess.Popen(["sh", "-c", "sleep 3; echo late > $LATE"])
+time.sleep(30)
+EOF
+chmod +x $FB/tell
+python3 - $B $FB > $A/o13.txt 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, pathlib, sys
+loader = importlib.machinery.SourceFileLoader("broadcast_mod", sys.argv[1] + "/broadcast")
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("broadcast_mod", loader)); loader.exec_module(mod)
+mod.hc.BIN = pathlib.Path(sys.argv[2]); mod.TELL_TIMEOUT_S = 1
+r = mod.deliver({"home": "/nonexistent", "stage": "x"}, ["--", "hi"], "owner")
+print(r["state"], r["exit"])
+PY2
+grep -q '^unknown 1$' $A/o13.txt; check $? 0 "a hanging tell → state unknown, exit 1"
+sleep 4; [ ! -e $LATE ]; check $? 0 "…and its child was stopped with it (nothing delivered after the report)"
 exit $fail

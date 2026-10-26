@@ -15,6 +15,9 @@ test('leading flags become CLI flags, the rest of the line is the text after --'
   expect(parseBroadcastArgs('--urgent stop merging')).toEqual({ flags: ['--urgent'], text: 'stop merging' })
   expect(parseBroadcastArgs('  --this-home --exclude core-c   release is out ')).toEqual({ flags: ['--this-home', '--exclude', 'core-c'], text: 'release is out' })
   expect(parseBroadcastArgs('--exclude=web hi')).toEqual({ flags: ['--exclude', 'web'], text: 'hi' })
+  expect(parseBroadcastArgs('--exclude "web" hi')).toEqual({ flags: ['--exclude', 'web'], text: 'hi' }) // quotes are the typing's
+  expect(parseBroadcastArgs("--exclude 'web' hi")).toEqual({ flags: ['--exclude', 'web'], text: 'hi' })
+  expect(parseBroadcastArgs('--exclude="web" hi')).toEqual({ flags: ['--exclude', 'web'], text: 'hi' })
   expect(parseBroadcastArgs('"quoted --urgent text"')).toEqual({ flags: [], text: 'quoted --urgent text' })
   expect(parseBroadcastArgs('hello --urgent')).toEqual({ flags: [], text: 'hello --urgent' }) // a flag after the text is text
   expect(parseBroadcastArgs('-- --urgent is the text')).toEqual({ flags: [], text: '--urgent is the text' })

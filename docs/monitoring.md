@@ -59,7 +59,8 @@ Desktop Code tab:
   appears when an agent finishes, fails or dies and when a new owner question opens; what was already there when the
   session started is never announced. With the pane closed the mod looks every 15 s.
 - **`/broadcast "text"` writes to every hub.** The same mod registers `/broadcast` (and `/delamain:broadcast`): it runs
-  `bin/broadcast` with the leading flags you type (`--urgent`, `--question`, `--this-home`, `--exclude S`) and answers
+  `bin/broadcast` with the flags you type before the text (`--urgent`, `--question`, `--this-home`, `--exclude S`; a flag
+  after the text is part of the text) and answers
   with its summary: one line per recipient, the skipped stages and the counts. A bare `/broadcast` lists who would get
   it and sends nothing. From a session that is not a registered hub the line is signed `owner`.
 - **Read-only otherwise.** No send, stop or message button. The pane writes nothing: it runs `bin/agent-top --json` and draws the

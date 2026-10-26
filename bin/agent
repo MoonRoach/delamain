@@ -841,7 +841,7 @@ def cmd_spawn(a) -> int:
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
                                f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
-                               + (f", worktree {wt['path']} ({wt['branch']}{slot_text(wt)})" if wt else "")
+                               + (f", worktree {wt['path']} ({wt['branch']}){slot_text(wt)}" if wt else "")
                                + (f", MCP {mcp_text(mcp)}" if mcp and mcp != MCP_DEFAULT else "")
                                + (f", reason: {reason}" if reason else "")
                                + (f", {pace_note}" if pace_note else ""))

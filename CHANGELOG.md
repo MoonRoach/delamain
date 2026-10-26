@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A new agent worktree prepares itself.** `agent spawn --worktree` now reads two committed files of the repository
+  (Delta's names, so a repository prepared for Delta works unchanged): `.agents/linked` lists git-ignored paths
+  (`.env`, local configs) that are symlinked to the primary checkout's copies, and `.agents/prepare` is an executable
+  run once in the new worktree before the agent starts, for Claude and Codex alike. A failing or timed-out prepare
+  (`AGENT_HUB_PREPARE_TIMEOUT`, 300 s) fails the spawn with the exit code and the last log lines, never silently;
+  `--no-prepare` skips it. Every worktree also gets a slot, a number unique among the repository's live worktrees and
+  stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
+  shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
+  behaves as before. See *Preparing worktrees* in `docs/reference.md`.
+
 ## 1.0.19 — 2026-10-26
 
 - **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke

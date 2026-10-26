@@ -131,7 +131,37 @@ not exist yet starts from origin's default branch (after a bounded `git fetch`; 
 fetch fails; the local main/master without an origin), not from the commit `--cwd` has checked out — `--base REF`
 chooses another start (`--base HEAD`: the old behaviour). Two agents writing
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
-branch is merged, `git worktree remove <path>`.
+branch is merged, `git worktree remove <path>`. A repository can prepare its worktrees, and every worktree has a slot:
+see *Preparing worktrees* below.
+
+### Preparing worktrees
+
+`agent spawn --worktree` works out two committed files of the repository (the names are Delta's, so a repository
+prepared for Delta works unchanged) and a slot, before the agent starts, for both engines. A repository without the
+files behaves as before, except for the slot.
+
+- **`.agents/linked`** — git-ignored paths shared by all worktrees of the machine: one path relative to the repository
+  root per line, `#` comments and blank lines ignored. Each is symlinked in the worktree to the same path of the
+  repository's primary checkout (where `.env` lives), so every worktree sees the same values. An absolute path, a
+  path with `..` and a path into `.git` are refused with a message. A path missing in the primary checkout is a
+  note, not a failure. A path that already exists in the worktree as a real file or directory is reported and kept.
+  Linking runs for a created and for a reused worktree (an existing link is left alone, a missing one is made), so a
+  `.env` added to the primary checkout later reaches a worktree on its next spawn.
+- **`.agents/prepare`** — an executable at the repository root, run once in a new worktree before the agent starts, with
+  the worktree as cwd, stdin closed and the environment `AGENT_HUB_SLOT`, `AGENT_HUB_WORKTREE`, `AGENT_HUB_BRANCH`,
+  `AGENT_HUB_MAIN_CHECKOUT`, `AGENT_ROLE`, `AGENT_HUB_ENGINE`, `HUB_STAGE`, `HUB_TAG`. Keep it fast: no dependency
+  installs. Its output goes to `prepare.log` in the agent's directory, not to the hub. It runs when the worktree is
+  created by this spawn, and again on a later spawn into the same worktree until it has succeeded once; a worktree
+  that was already there (made by hand, or before this feature) is not prepared. A non-zero exit or running past
+  `AGENT_HUB_PREPARE_TIMEOUT` seconds (default 300, killed) fails the spawn (exit 1) with the exit code and the last
+  lines of the log, keeps the agent's directory as `<role>.failed-…` and journals one line; the worktree stays, and
+  fixing the script there and spawning again retries. `--no-prepare` starts the agent without running it (the next
+  spawn runs it). A file that is not executable is reported, not run.
+- **Slot** — a number (1, 2, …) per worktree, unique among the repository's live worktrees (the main checkout is
+  not one), stable for the worktree's life, so a re-spawn keeps it; the number of a removed worktree is free again.
+  The agent gets it as `AGENT_HUB_SLOT` (every run, resumes included), its prompt says so in one line, and
+  `agent status` shows it. Derive ports and database names from it (`PORT=$((3000 + 10 * AGENT_HUB_SLOT))`). It is
+  recorded in `<git common dir>/delamain-worktrees.json` under a lock.
 
 **Names.** A stage called `hub-09` shows as "Hub hub-09 #1", signs `hub-09-hub-1` in other stages' journals and puts
 "(hub-09)" on every agent title, and nothing says what it does. `hub start` therefore exits 2 for a stage name made only
@@ -567,6 +597,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub start` and `hub takeover` take the hub repository's main-merge when it is free (absent or expired), and `hub takeover` also when an earlier hub of the same stage holds it, as if `--take-main-merge` were given. A lock held by anyone else (another stage's hub, a steward) is left alone with the hint to use `--take-main-merge`, whatever this says; so is any held lock on `hub start`. The explicit flag takes it from anyone and prints an `ATTENTION` line with the holder's stage and the age of its latest journal line. Without the setting, a free main-merge of a configured hub repository is reported in the digest. |
 | `CLAUDE_BIN` | the newer of `claude` on PATH and the CLI bundled with Claude Desktop | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
+| `AGENT_HUB_PREPARE_TIMEOUT` | `300` | Seconds the repository's `.agents/prepare` may run in a new worktree before it is killed and the spawn fails. |
 | `AGENT_HUB_REVIEWERS` | one `agent` entry | Ordered JSON list of reviewers, first available wins (`hub reviewer`); entries are agents or reviewer skills, with an optional `check` command, `until` date, change classes and `second` flag (an entry only for `hub reviewer --second`). A `check` is never run from a repository's config. [docs/reviewers.md](reviewers.md). |
 | `AGENT_HUB_REVIEW_MODEL`, `AGENT_HUB_REVIEW_EFFORT` | `opus`, `high` | Model and effort of an `agent` reviewer that names none. Pick a model other than your executors' (the reviewer is not the author). |
 | `AGENT_HUB_AGY_BIN` | `agy` on PATH | The Antigravity CLI that `agy-review` runs. Hub-wide: the environment or the hub home's `config.json`, never a repository's. |

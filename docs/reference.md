@@ -195,28 +195,31 @@ One line per worktree of the repository (`git worktree list`, the main checkout 
 
 | Column | Meaning |
 |---|---|
-| PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. |
+| PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. A registered worktree whose directory is missing shows `missing` in DIRTY and is kept. |
 | WHO | `agent <role> (stage S)` when an agent run's `meta.json` in any known hub home names the worktree as its worktree or working directory; `hub of S #n` for a hub's `<stage>-hub-<n>` directory under `.claude/worktrees/` or `.worktrees/`, or a registered hub whose recorded worktree it is; another registered role by its name; otherwise `other` (Desktop, Codex app, manual). |
-| LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
+| LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out; directories compare by identity — device and inode — so a symlink or another case of the same path on macOS is the same directory). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
 | DIRTY | `git status --porcelain`: untracked files count, ignored ones do not (build output or a local `.env` goes with the worktree). Files marked `skip-worktree` or `assume-unchanged` that exist on disk count too: git does not show an edit to them. |
-| ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch origin` first). A branch whose merged pull request holds all its commits shows `PR #n`. |
+| ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch --prune origin` first, so a branch deleted on the server no longer counts). A branch whose merged pull request holds all its commits shows `PR #n`. |
 | MERGED | `yes` — HEAD is an ancestor of the remote default branch (`origin/HEAD`, else `origin/main`, else `origin/master`); `PR #n` — a pull request from this branch was merged into the default branch and HEAD is inside its head commit (`gh pr list --state merged --head BRANCH`; a squash or rebase merge leaves no ancestry). `no` — neither; a commit made after the pull request was merged keeps the branch "not merged". `?` — the merge state of a squash-merged branch cannot be told without `gh` (not installed, not logged in, or `--no-gh`); said once, as a note under the table. |
 | AGE | Since the last change, whichever is latest: the last commit, the worktree's newest reflog entry, one of its uncommitted files (the first 200 are looked at), its top directory. |
 | PRUNE | `removable`, or `kept:` with every reason. |
 
 `--prune` removes a worktree only when **all** of this holds: merged, clean (nothing changed, nothing untracked), no
 commit on no remote, no git operation under way (rebase, merge, cherry-pick, revert, bisect, a running git command),
-not locked, not the working directory of the caller (nor one inside it), not in use — and where use is `unknown`, no
-change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never removed, with any flag. It runs
-`git worktree remove` (never `--force`; git's own refusal keeps the worktree and is reported), then
-`git worktree prune --expire=<the idle limit>`, which clears the entries whose directory has been gone that long (a
-worktree moved by hand or on an unmounted disk looks the same, and its entry holds its index, so a younger one is kept
-and said so). Before it decides, `--prune` runs `git fetch origin` (`--no-fetch` skips it; a listing fetches only with
-`--fetch`), so a merge that the remote has since lost does not count, and it looks at the processes once more just
-before removing. The main checkout is listed and never a
-candidate. The branch goes with the worktree only when it is merged by ancestry (`git branch -d`); a squash-merged
-branch stays unless `--delete-branches` (`git branch -D`, only for a branch whose merged pull request holds all its
-commits); the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by
+not locked, not the working directory of the caller (nor one inside it), not in use, holding no other registered
+worktree at any depth (removing a directory removes everything inside it; run `--prune` again once the inner one is
+gone) — and where use is `unknown`, no change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never
+removed, with any flag. It runs `git worktree remove` (never `--force`; git's own refusal keeps the worktree and is
+reported). A registered worktree whose directory is missing is kept as `missing` with its registration: a worktree
+moved by hand or on an unmounted disk looks the same, and the registration holds its index and HEAD, so
+`git worktree prune` is never run (`git worktree repair <new path>` brings a moved one back). Before it decides,
+`--prune` runs `git fetch --prune origin`; when the fetch fails, or with `--no-fetch`, it removes nothing and shows the
+candidates as kept with `refs not fresh` (a merge the remote has since lost must not count); a listing fetches only with
+`--fetch`. It looks at the processes once more just before removing. The main checkout is listed and never a candidate.
+The branch goes with the worktree only when it is merged by ancestry; a squash-merged branch stays unless
+`--delete-branches` (only for a branch whose merged pull request holds all its commits). Either is deleted with
+`git update-ref -d` at the commit that was verified, so a branch that moved meanwhile stays, and only when no worktree
+has it checked out; the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by
 their first reason. `--dry-run` prints the same and removes nothing. The listing is read-only; `--json` adds
 `removable` and `keep` per worktree (and a `prune` object with `--prune`). Exit 0 whenever the command ran, 2 for a usage
 error (not a repository, `--dry-run` without `--prune`).

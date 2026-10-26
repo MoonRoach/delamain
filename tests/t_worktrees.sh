@@ -44,7 +44,7 @@ print(json.dumps(w[0][sys.argv[3]]) if w else "MISSING")
 PY
 }
 
-# ---- 1. merged and clean: removed, and its branch with it (git branch -d)
+# ---- 1. merged and clean: removed, and its branch with it
 add_wt feat/merged; commit_in feat/merged m.txt; merge_into_main feat/merged
 add_wt feat/dirty; commit_in feat/dirty d.txt; merge_into_main feat/dirty; echo scratch > $WT/feat/dirty/untracked.txt
 LISTING --json --idle-for 0s > $P/l1.json 2> $P/l1.err; check $? 0 "the listing works (--json)"
@@ -57,7 +57,7 @@ grep -q 'would remove' $P/dry.out && grep -q 'feat/merged' $P/dry.out; check $? 
 [ "$(listed)" = "$before" ] && [ -d $WT/feat/merged ] && branch_exists feat/merged; check $? 0 "…and removes nothing (worktrees and branch still there)"
 LISTING --prune --idle-for 0s > $P/p1.out 2>&1; check $? 0 "--prune"
 [ ! -e $WT/feat/merged ]; check $? 0 "the merged, clean worktree is gone"
-! branch_exists feat/merged; check $? 0 "…with its branch (merged by ancestry: git branch -d)"
+! branch_exists feat/merged; check $? 0 "…with its branch (merged by ancestry)"
 [ -d $WT/feat/dirty ] && [ -f $WT/feat/dirty/untracked.txt ]; check $? 0 "control: the dirty worktree survives --prune, its file intact"
 grep -q 'dirty: 1 changed file' $P/p1.out; check $? 0 "…and the output says why"
 grep -q 'removed 1, kept 1 (dirty 1)' $P/p1.out; check $? 0 "the summary counts removed and kept by reason"
@@ -117,7 +117,7 @@ branch_exists squash1 && branch_exists squash2; check $? 0 "…their branches ar
 grep -q 'squash-merged; --delete-branches removes it' $P/p4.out; check $? 0 "…and the output says so"
 [ -d $WT/squash3 ] && [ -d $WT/squash4 ] && [ -d $WT/squash5 ]; check $? 0 "control: worktrees not covered by a merged PR survive"
 grep -q 'does not contain' $P/p4.out; check $? 0 "…squash3 says why"
-# --delete-branches: git branch -D, for a branch whose merged PR holds everything
+# --delete-branches: the branch of a squash-merged worktree, for a branch whose merged PR holds everything
 sq squash6; pr_json squash6 11 "$(git -C $WT/squash6 rev-parse HEAD)"
 LISTING --prune --delete-branches --idle-for 0s > $P/p4b.out 2>&1; check $? 0 "--prune --delete-branches"
 [ ! -e $WT/squash6 ] && ! branch_exists squash6; check $? 0 "…removes the worktree and the squash-merged branch"

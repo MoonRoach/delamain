@@ -81,12 +81,14 @@ a live agent, the stage's registered hub, or any process whose working directory
 none of these knows). Merged: the branch is an ancestor of the remote default branch, or its HEAD is inside a pull
 request merged into it (`gh pr list --state merged --head BRANCH`; a squash merge leaves no ancestry). --prune removes a
 worktree (`git worktree remove`, never --force) only when it is merged, clean, has nothing unpushed, no git operation
-under way, is not locked, not your working directory, not in use — and, where use is "unknown", has not changed for
---idle-for (default 24h); then `git worktree prune`. Its branch goes with it when merged by ancestry (`git branch -d`);
-a squash-merged branch stays unless --delete-branches. `git worktree prune --expire=<idle limit>` clears the entries
-of directories that have been gone that long (a moved worktree looks the same, sooner). --dry-run prints what would go.
-The remote refs are as last fetched: --fetch runs `git fetch origin` first for a listing, and --prune does it unless
---no-fetch. --no-gh skips the pull-request lookup. Files git ignores (build output, a local .env) go with the worktree.
+under way, is not locked, not your working directory, not in use, holds no other worktree — and, where use is
+"unknown", has not changed for --idle-for (default 24h). A worktree whose directory is missing is listed as missing and
+keeps its registration (it holds the index; `git worktree prune` is never run). Its branch goes with it when merged by
+ancestry, a squash-merged one only with --delete-branches; either only at the verified commit (`git update-ref -d`) and
+when no worktree has it checked out. --dry-run prints what would go. --prune runs `git fetch --prune origin` first and
+removes nothing when the fetch fails or with --no-fetch (the candidates are shown as kept: refs not fresh); a listing
+fetches only with --fetch. Paths compare by directory identity, not spelling. --no-gh skips the pull-request lookup.
+Files git ignores (build output, a local .env) go with the worktree.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
@@ -1356,15 +1358,15 @@ def main(argv: list) -> int:
     wt = sub.add_parser("worktrees", help="list the repository's worktrees; --prune removes the finished ones")
     wt.add_argument("--repo", metavar="PATH", help="a path inside the repository (default: the working directory's)")
     wt.add_argument("--json", action="store_true", help="the same ledger as JSON")
-    wt.add_argument("--fetch", action="store_true", help="git fetch origin first (--prune does it by itself): the remote refs are otherwise as last fetched")
+    wt.add_argument("--fetch", action="store_true", help="git fetch --prune origin first (--prune does it by itself): the remote refs are otherwise as last fetched")
     wt.add_argument("--no-gh", action="store_true", help="do not ask GitHub (gh) whether a branch's pull request was merged")
     wt.add_argument("--prune", action="store_true",
                     help="remove the worktrees that are merged, clean, fully pushed and not in use; nothing else")
     wt.add_argument("--dry-run", action="store_true", help="with --prune: say what would be removed, remove nothing")
-    wt.add_argument("--no-fetch", action="store_true", help="with --prune: do not run `git fetch origin` first")
+    wt.add_argument("--no-fetch", action="store_true", help="with --prune: do not fetch first; then nothing is removed, the candidates are only shown")
     wt.add_argument("--delete-branches", action="store_true",
-                    help="with --prune: also delete the branch of a squash-merged worktree (git branch -D; its merged pull "
-                         "request holds every commit); a branch merged by ancestry always goes (git branch -d)")
+                    help="with --prune: also delete the branch of a squash-merged worktree (its merged pull request holds every "
+                         "commit); a branch merged by ancestry always goes; both only at the verified commit")
     wt.add_argument("--idle-for", metavar="DUR", default=worktrees.DEFAULT_IDLE,
                     help=f"a worktree whose use is unknown counts as free after this long without a change (default {worktrees.DEFAULT_IDLE})")
     en = sub.add_parser("exit-note", help="(internal) journal an EXIT line after the agent process exits")

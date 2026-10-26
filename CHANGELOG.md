@@ -12,9 +12,13 @@
   worktrees that are merged, clean, fully pushed, not in use and not under a git operation, with `git worktree remove`
   and never `--force`; where use is unknown it also waits for `--idle-for` (24 h) without a change. Unpushed or
   uncommitted work is never removed, with any flag (an edit hidden by `skip-worktree` counts); the main checkout and
-  the caller's own directory are never candidates. `--prune` fetches `origin` first (`--no-fetch` skips it) and clears
-  the entry of a missing directory only after `--idle-for`, since a worktree moved by hand looks the same. The branch goes with a worktree merged by ancestry (`git branch -d`); a squash-merged one stays unless
-  `--delete-branches`. The hub handoff draft and the hub skill point to `agent worktrees --prune --dry-run` instead of
+  the caller's own directory are never candidates, nor a worktree that holds another one inside it. `--prune` runs
+  `git fetch --prune origin` first and removes nothing when the fetch fails or with `--no-fetch` (it shows the candidates
+  as `refs not fresh`). A worktree whose directory is missing is listed as `missing` and keeps its registration (a
+  worktree moved by hand looks the same, and the registration holds its index): `git worktree prune` is never run. The
+  branch goes with a worktree merged by ancestry, a squash-merged one only with `--delete-branches`, either with
+  `git update-ref -d` at the verified commit and only when no worktree has it checked out. Paths compare by directory
+  identity, so another case of the same path on macOS is the same worktree. The hub handoff draft and the hub skill point to `agent worktrees --prune --dry-run` instead of
   a manual `git worktree remove`; handoff does not prune by itself.
 
 ## 1.0.20 — 2026-10-26

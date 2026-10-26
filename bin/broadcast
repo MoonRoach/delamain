@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Write one line to every stage's hub at once: `tell` to each open stage that has a holder of the role.
+
+  broadcast "text" [--question | --urgent] [--role hub] [--this-home] [--exclude STAGE]… [--include-self]
+  broadcast --dry-run [options]               list the recipients, write nothing
+  broadcast [options] -- "-text that starts with a dash"
+
+Recipients: every stage of every known hub home (the homes agent-top shows; --this-home: only the resolved one) whose
+registry has a live holder of the role (default hub). A closed stage has none and is not written to. The caller's own
+hub is left out (the holder whose session is this one) unless --include-self.
+Each recipient is reached exactly as `tell <stage> "text"` reaches it, run in that stage's home: a journal line
+`@hub text` (a headless holder through `agent send`, a non-detached Codex holder through its app-server proxy), so the
+wake rules are tell's: a plain line from another stage's hub is held until that hub's next wake (at most ~30 minutes);
+--urgent and --question wake it at once.
+The line is signed once for all recipients: $HUB_TAG (qualified with $HUB_STAGE when set), else this session's stage-
+qualified tag from the registry of its own stage, else `owner` — a terminal or the Desktop `/broadcast` command of the
+owner, as `hub close` signs a close from the agent-top pane.
+A tell that gives no answer in 120 s is stopped with its children and reported `????` (unknown: the line may be there,
+and a headless hub that `agent send` had already resumed may still read it; look before sending again).
+Exit: 0 every recipient took the line, 1 a delivery failed or is unknown, or there is no recipient, 2 usage.
+"""
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import json
+import os
+import signal
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import hubcore as hc  # noqa: E402
+
+TELL_TIMEOUT_S = 120
+WORKERS = 64  # one wave up to 64 recipients, so the run stays within about one TELL_TIMEOUT_S (the mod waits two: 300 s)
+
+
+def own_tag() -> str:
+    """The stage-qualified tag every line is signed with (see the module doc)."""
+    env_tag = os.environ.get("HUB_TAG", "").strip()
+    env_stage = os.environ.get("HUB_STAGE", "").strip()
+    if env_tag:
+        if env_stage and hc.STAGE_RE.fullmatch(env_stage):
+            return f"{env_stage}-{env_tag}"
+        found = hc.other_stage_tag("", env_tag)  # registered under that tag in one stage of this home
+        return f"{found[0]}-{env_tag}" if found else env_tag
+    if env_stage:
+        tag = hc.registered_tag(env_stage)
+        if tag:
+            return f"{env_stage}-{tag}"
+    found = hc.other_stage_tag("")  # the one stage of this home that lists this session; None when none or several
+    return f"{found[0]}-{found[1]}" if found else "owner"
+
+
+def is_self(rec: dict) -> bool:
+    """Whether `rec` is this session: by id, or a Desktop session whose CLI restarted under the same `local_…` id
+    (verified against Desktop's own record, as role_for_caller does; read-only here)."""
+    sid = hc.session_id()
+    host = os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "").strip() if sid == os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() else ""
+    return hc.session_matches(rec, sid, host)
+
+
+def recipients(role: str, all_homes: bool, exclude: set, include_self: bool) -> tuple:
+    """([{home, stage, kind, engine, title}], [skipped {home, stage, why}]) over the chosen homes, in a stable order."""
+    homes = [h.path for h in hc.known_homes()] if all_homes else [hc.root()]
+    seen, found, skipped = set(), [], []
+    for path in homes:
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        seen.add(real)
+        with hc.in_home(path):
+            try:
+                dirs = sorted(d for d in hc.root().iterdir() if (d / "roles.json").is_file())
+            except OSError:
+                continue
+            for d in dirs:
+                row = {"home": str(path), "stage": d.name}
+                try:
+                    rec = hc.roles_load(d.name)["roles"].get(role)
+                    closed = hc.stage_closed(d.name)
+                except (hc.Failure, hc.UsageError, OSError, ValueError):
+                    continue
+                if not rec:
+                    continue
+                if closed:
+                    skipped.append(dict(row, why="closed"))
+                elif d.name in exclude:
+                    skipped.append(dict(row, why="excluded"))
+                elif is_self(rec) and not include_self:
+                    skipped.append(dict(row, why="your own"))
+                else:
+                    found.append(dict(row, kind=rec.get("kind") or "?", engine=rec.get("engine") or "claude",
+                                      title=rec.get("title") or role))
+    return found, skipped
+
+
+def deliver(target: dict, argv_tail: list, tag: str) -> dict:
+    """`tell <stage> … --no-address` in the target's home; its exit code and output."""
+    env = dict(os.environ, AGENT_HUB_HOME=target["home"], HUB_TAG=tag)
+    env.pop("HUB_STAGE", None)  # the tag is already qualified: tell must not qualify it again
+    cmd = [sys.executable, str(hc.BIN / "tell"), target["stage"], "--no-address", *argv_tail]
+    try:
+        # its own process group: on a timeout tell's children (agent send waiting for a lock) go with it, so nothing
+        # delivers after the report says it did not
+        proc = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+    except OSError as e:
+        return dict(target, exit=1, state="failed", output=f"could not run tell: {e}")
+    try:
+        out, err = proc.communicate(timeout=TELL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return dict(target, exit=1, state="unknown",
+                    output=f"tell gave no answer in {TELL_TIMEOUT_S} s and was stopped; the line may or may not be there: "
+                           f"read the stage's journal before sending again")
+    return dict(target, exit=proc.returncode, state="sent" if proc.returncode == 0 else "failed",
+                output=(out + err).strip())
+
+
+def label(row: dict, many_homes: bool) -> str:
+    return f"{row['stage']} ({row['home']})" if many_homes else row["stage"]
+
+
+def main(argv: list) -> int:
+    p = argparse.ArgumentParser(prog="broadcast", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("text", nargs="*", help="line text (newlines are collapsed); a text starting with '-' goes after --")
+    p.add_argument("--question", action="store_true", help="prefix the text with QUESTION (wakes every hub)")
+    p.add_argument("--urgent", action="store_true", help="prefix the text with URGENT (wakes every hub)")
+    p.add_argument("--role", default="hub", help="role to address in every stage (default: hub)")
+    p.add_argument("--this-home", action="store_true", help="only the stages of the resolved hub home")
+    p.add_argument("--exclude", action="append", default=[], metavar="STAGE", help="leave this stage out (repeatable)")
+    p.add_argument("--include-self", action="store_true", help="write to your own stage's holder too")
+    p.add_argument("--dry-run", action="store_true", help="list the recipients and the signature, write nothing")
+    p.add_argument("--json", action="store_true", help="one JSON object: tag, sent, skipped (with each tell's exit and output)")
+    args = p.parse_intermixed_args(argv)
+    text = " ".join(args.text).strip()
+    if not text and not args.dry_run:
+        raise hc.UsageError("empty text")
+    if args.question and args.urgent:
+        raise hc.UsageError("--question and --urgent: pick one (a question wakes the hub too)")
+    tag = own_tag()
+    targets, skipped = recipients(args.role, not args.this_home, set(args.exclude), args.include_self)
+    many = len({t["home"] for t in targets + skipped}) > 1
+    tail = (["--role", args.role] + (["--question"] if args.question else []) + (["--urgent"] if args.urgent else [])
+            + ["--", text])
+    if args.dry_run:
+        sent = [dict(t, exit=None, state="planned", output="") for t in targets]
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(WORKERS, len(targets)))) as pool:
+            sent = list(pool.map(lambda t: deliver(t, tail, tag), targets))
+    failed = [r for r in sent if r["exit"] not in (0, None)]
+    if args.json:
+        print(json.dumps({"tag": tag, "role": args.role, "dry_run": args.dry_run, "sent": sent, "skipped": skipped},
+                         ensure_ascii=False))
+    else:
+        for r in sent:
+            mark = {"planned": "plan", "sent": "ok  ", "unknown": "????"}.get(r["state"], "FAIL")
+            first = next((ln for ln in r["output"].splitlines() if ln.strip()), "")
+            print(f"{mark} {label(r, many)}  [{r['kind']}/{r['engine']}] {r['title']}" + (f"\n     {first}" if first else ""))
+            if r["exit"] not in (0, None):
+                for ln in r["output"].splitlines()[1:]:
+                    print(f"     {ln}")
+        for s in skipped:
+            print(f"skip {label(s, many)}  ({s['why']})")
+        verb = "would send" if args.dry_run else "sent"
+        unknown = sum(r["state"] == "unknown" for r in sent)
+        print(f"broadcast as [{tag}] to @{args.role}: {verb} {len(sent) - len(failed)}, failed {len(failed) - unknown}, "
+              + (f"unknown {unknown}, " if unknown else "") + f"skipped {len(skipped)}")
+    if not targets:
+        print(f"broadcast: no stage has a live {args.role!r} to write to", file=sys.stderr)
+        return 1
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(hc.run_main(main, sys.argv[1:]))

@@ -42,7 +42,8 @@ def common_dir(path: Path) -> Path | None:
 
 
 def main_checkout(common: Path) -> Path | None:
-    """The repository's primary worktree (None for a bare repository)."""
+    """The repository's primary worktree: the parent of `.git`. None when the git dir has another name (a bare
+    repository, or `git init --separate-git-dir`: git itself does not know where the checkout is)."""
     return common.parent if common.name == ".git" else None
 
 
@@ -68,8 +69,9 @@ def _load_slots(file: Path) -> dict:
 
 def claim_slot(common: Path, wt: Path, created: bool) -> tuple[int, bool]:
     """(slot, prepared) of the worktree `wt`: its recorded slot, else the smallest number no live worktree of the
-    repository holds. `prepared` is False for a worktree created by this spawn (its prepare has not succeeded yet) and
-    stays False until mark_prepared; a worktree met for the first time as "reused" (made by hand, or before slots
+    repository holds (a worktree created by this spawn keeps the slot an earlier worktree at the same path had).
+    `prepared` is False for a worktree created by this spawn (its prepare has not succeeded yet) and stays False until
+    mark_prepared; a worktree met for the first time as "reused" (made by hand, or before slots
     existed) counts as prepared."""
     file, key = common / SLOTS_FILE, str(wt.resolve())
     with hc.Flock(common / (SLOTS_FILE + ".lock")):
@@ -82,6 +84,10 @@ def claim_slot(common: Path, wt: Path, created: bool) -> tuple[int, bool]:
             while slot in used:
                 slot += 1
             entry = live[key] = {"slot": slot, "prepared": not created}
+        elif created:
+            # the directory was made again at a path with an old record (`git worktree remove`, then the same role
+            # again): it is a new worktree, its prepare has not run
+            entry["prepared"] = False
         if live != data:
             hc.atomic_write(file, json.dumps(live, indent=1, sort_keys=True) + "\n")
     return entry["slot"], bool(entry.get("prepared", True))
@@ -123,6 +129,17 @@ def read_linked(wt: Path) -> tuple[list[str], list[str]]:
     return paths, bad
 
 
+def is_ignored(wt: Path, rel: str, src: Path) -> bool:
+    """Whether git ignores `rel` in the worktree (a directory is tried with its trailing slash too). Only a definite
+    "not ignored" answer (exit 1) says no: an error of git itself does not stop the link."""
+    for name in ([rel, rel.rstrip("/") + "/"] if src.is_dir() else [rel]):
+        res = subprocess.run(["git", "-C", str(wt), "check-ignore", "-q", "--", name], capture_output=True,
+                             env=hc.git_env())
+        if res.returncode != 1:
+            return True
+    return False
+
+
 def link_shared(wt: Path, main: Path | None) -> list[str]:
     """Symlink every path of .agents/linked in `wt` to the same path of the primary checkout `main`. Returns what to
     tell the hub, one line each (`linked …`, `note: …`). Idempotent: a path that already is that link is silent. A path
@@ -133,7 +150,7 @@ def link_shared(wt: Path, main: Path | None) -> list[str]:
     if not paths:
         return out
     if main is None or main.resolve() == wt.resolve():
-        return out + [f"note: {LINKED}: this repository has no primary checkout to share from: nothing linked"]
+        return out + [f"note: {LINKED}: the git dir of this repository is not `<checkout>/.git` (bare, or --separate-git-dir): no primary checkout to share from, nothing linked"]
     wt_real = wt.resolve()
     for rel in paths:
         src, dst = main / rel, wt / rel
@@ -145,8 +162,11 @@ def link_shared(wt: Path, main: Path | None) -> list[str]:
         elif os.path.lexists(dst):
             out.append(f"note: {rel} exists in the worktree as a real {'directory' if dst.is_dir() else 'file'}: "
                        "not replaced by a link to the shared copy")
-        elif not dst.parent.resolve().is_relative_to(wt_real) and dst.parent.exists():
+        elif not dst.parent.resolve().is_relative_to(wt_real):  # a directory of the path is a link leading out
             out.append(f"note: {rel}: its directory leads out of the worktree: not linked")
+        elif not is_ignored(wt, rel, src):
+            out.append(f"note: {rel} is not git-ignored in this repository: not linked (a link git sees would make "
+                       "`git worktree remove` refuse and `git add -A` commit it); add it to .gitignore")
         else:
             try:
                 dst.parent.mkdir(parents=True, exist_ok=True)

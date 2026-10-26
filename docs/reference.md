@@ -146,12 +146,21 @@ files behaves as before, except for the slot.
   repository's primary checkout (where `.env` lives), so every worktree sees the same values. An absolute path, a
   path with `..` and a path into `.git` are refused with a message. A path missing in the primary checkout is a
   note, not a failure. A path that already exists in the worktree as a real file or directory is reported and kept.
+  A path that git does not ignore is not linked (a note says to add it to `.gitignore`): a link git sees would make
+  `git worktree remove` refuse and `git add -A` commit it. A Codex agent in a `workspace-write` sandbox reads the
+  shared files through the links but cannot write them (the main checkout is outside its sandbox).
+  A repository whose git dir is not `<checkout>/.git` (`--separate-git-dir`, bare) has no primary checkout git can name:
+  nothing is linked, with a note.
   Linking runs for a created and for a reused worktree (an existing link is left alone, a missing one is made), so a
   `.env` added to the primary checkout later reaches a worktree on its next spawn.
 - **`.agents/prepare`** — an executable at the repository root, run once in a new worktree before the agent starts, with
   the worktree as cwd, stdin closed and the environment `AGENT_HUB_SLOT`, `AGENT_HUB_WORKTREE`, `AGENT_HUB_BRANCH`,
   `AGENT_HUB_MAIN_CHECKOUT`, `AGENT_ROLE`, `AGENT_HUB_ENGINE`, `HUB_STAGE`, `HUB_TAG`. Keep it fast: no dependency
-  installs. Its output goes to `prepare.log` in the agent's directory, not to the hub. It runs when the worktree is
+  installs. **It is run by the hub's own process with the hub user's rights and environment, outside the agent's
+  Codex sandbox, from the branch's checkout** (a new branch comes from origin's default branch): whoever can push
+  there runs code on the hub's machine at the next spawn, so trust the branch the way you trust its tests.
+  Its output goes to `prepare.log` in the agent's directory, not to the hub; only when it fails do the last 15 lines
+  come back in the spawn output (so a `set -x` or an `echo` of secrets in it reaches the hub's context). It runs when the worktree is
   created by this spawn, and again on a later spawn into the same worktree until it has succeeded once; a worktree
   that was already there (made by hand, or before this feature) is not prepared. A non-zero exit or running past
   `AGENT_HUB_PREPARE_TIMEOUT` seconds (default 300, killed) fails the spawn (exit 1) with the exit code and the last

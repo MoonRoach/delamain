@@ -15,7 +15,7 @@ commit_all(){ git -C $1 add -A && git -C $1 -c user.email=t@t -c user.name=t com
 
 # ---- 1. a repository with both files
 P=$(cd $P && pwd -P); REPO=$P/app; mkrepo $REPO; mkdir -p $REPO/.agents $REPO/config
-printf '# shared secrets\n.env\n\nconfig/local.json\nmissing.txt\n/etc/passwd\n../outside\n.git/config\n' > $REPO/.agents/linked
+printf '# shared secrets\n.env\n\nconfig/local.json\nmissing.txt\nlocal.cfg\n/etc/passwd\n../outside\n.git/config\n' > $REPO/.agents/linked
 cat > $REPO/.agents/prepare <<'SH'
 #!/bin/sh
 echo "slot=$AGENT_HUB_SLOT role=$AGENT_ROLE stage=$HUB_STAGE tag=$HUB_TAG engine=$AGENT_HUB_ENGINE cwd=$(pwd -P)" > prepared.txt
@@ -23,7 +23,7 @@ echo "prepare output line"
 echo run >> "$AGENT_HUB_MAIN_CHECKOUT/prepare-runs.txt"
 SH
 chmod +x $REPO/.agents/prepare; commit_all $REPO "agents files"
-echo "SECRET=1" > $REPO/.env; echo '{"k":1}' > $REPO/config/local.json
+echo "SECRET=1" > $REPO/.env; echo x > $REPO/local.cfg; echo '{"k":1}' > $REPO/config/local.json
 spawn one $REPO > $P/s1.out 2> $P/s1.err; check $? 0 "spawn --worktree in a repository with .agents/linked and .agents/prepare"
 wait_dead one
 WT=$REPO/.worktrees/agent/one
@@ -33,6 +33,8 @@ WT=$REPO/.worktrees/agent/one
 grep -q "note: .agents/linked: '/etc/passwd' is not linked" $P/s1.err && grep -q "'../outside' is not linked" $P/s1.err; check $? 0 "an absolute path and .. are rejected with a message"
 grep -q "'.git/config' is not linked" $P/s1.err && [ ! -L $WT/.git/config ]; check $? 0 "a path into .git is rejected too"
 grep -q "linked .env -> $REPO/.env" $P/s1.out; check $? 0 "the spawn output names the link"
+grep -q 'note: local.cfg is not git-ignored' $P/s1.err && [ ! -e $WT/local.cfg ]; check $? 0 "a path git does not ignore is not linked, with a note"
+! git -C $WT status --porcelain | grep -q 'local.cfg\|\.env'; check $? 0 "…so git sees no link in the worktree (git worktree remove would not refuse)"
 grep -q 'slot=1 role=one stage=stage-a tag=one engine=claude cwd='"$(cd $WT && pwd -P)" $WT/prepared.txt; check $? 0 "prepare ran in the worktree with the slot, role, stage, tag and engine"
 grep -q 'prepare output line' $R/stage-a/agents/one/prepare.log && ! grep -q 'prepare output line' $P/s1.out; check $? 0 "its output is in the run directory's prepare.log, not in the spawn output"
 check "$(grep -c . $REPO/prepare-runs.txt)" 1 "prepare ran once"
@@ -69,6 +71,30 @@ check "$(meta h 'm["worktree"]["slot"]')" 3 "…but has a slot"
 git -C $REPO worktree remove --force $REPO/.worktrees/agent/two
 spawn four $REPO > /dev/null 2>&1; wait_dead four
 check "$(meta four 'm["worktree"]["slot"]')" 2 "the slot of a removed worktree is free again"
+
+# ---- 4b. the same role again at a path with an old record: a new worktree, prepared again
+spawn rr $REPO > /dev/null 2>&1; wait_dead rr
+RUNS=$(grep -c . $REPO/prepare-runs.txt); SLOT1=$(meta rr 'm["worktree"]["slot"]')
+git -C $REPO worktree remove --force $REPO/.worktrees/agent/rr && git -C $REPO branch -q -D agent/rr
+spawn rr $REPO > $P/rr.out 2>&1; check $? 0 "the role spawned again after its worktree was removed"
+wait_dead rr
+grep -q 'created' $P/rr.out && [ "$(grep -c . $REPO/prepare-runs.txt)" = $((RUNS + 1)) ] && [ -f $REPO/.worktrees/agent/rr/prepared.txt ]; check $? 0 "…the new worktree is prepared again"
+check "$(meta rr 'm["worktree"]["slot"]')" "$SLOT1" "…and keeps the slot of that path"
+spawn rr $REPO > /dev/null 2>&1; wait_dead rr
+check "$(grep -c . $REPO/prepare-runs.txt)" $((RUNS + 1)) "…then, reused, it is not prepared a third time"
+
+# ---- 4c. a link leaves the worktree through a symlinked directory: refused
+ER=$P/esc; mkrepo $ER; mkdir -p $P/victim/sub $ER/.agents; echo v > $P/victim/sub/x.env
+ln -s ../victim $ER/cfg; echo 'cfg/sub/x.env' > $ER/.agents/linked
+commit_all $ER esc
+spawn e $ER > $P/e1.out 2> $P/e1.err; check $? 0 "a worktree whose linked path runs through a symlinked directory"
+grep -q 'cfg/sub/x.env: its directory leads out of the worktree' $P/e1.err && [ ! -e $ER/.worktrees/agent/victim ] && [ ! -e $P/victim/sub/x.env.link ]; check $? 0 "…is refused with a note and nothing is created outside it"
+
+# ---- 4d. a repository whose git dir is elsewhere (--separate-git-dir): no primary checkout to share from, said plainly
+SR=$P/sep; git init -q -b main --separate-git-dir=$P/sep.git $SR; mkdir $SR/.agents; printf '.env\n' > $SR/.gitignore; echo .env > $SR/.agents/linked
+commit_all $SR sep; echo S=1 > $SR/.env
+spawn s $SR > $P/sep.out 2>&1; check $? 0 "a repository with a separate git dir"
+grep -q 'no primary checkout to share from' $P/sep.out && [ ! -e $SR/.worktrees/agent/s/.env ]; check $? 0 "…nothing is linked and a note says why"
 
 # ---- 5. control: without --worktree there is no slot
 $B/agent spawn --role plain --cwd $P --model haiku --brief $P/b.md > /dev/null 2>&1; wait_dead plain

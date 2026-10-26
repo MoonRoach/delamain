@@ -306,8 +306,8 @@ def worktree_note(meta: dict) -> str:
     return f"worktree {wt['path']} ({wt['branch']}) — `git worktree remove {wt['path']}` once the branch is merged"
 
 
-def slot_text(wt: dict, sep: str = ", ") -> str:
-    return f"{sep}slot {wt['slot']}" if wt.get("slot") else ""
+def slot_text(wt: dict) -> str:
+    return f", slot {wt['slot']}" if wt.get("slot") else ""
 
 
 def prepare_worktree(stage: str, tag: str, meta: dict, common, prepared: bool, timeout_s: int, skip: bool, d: Path) -> None:
@@ -1124,7 +1124,7 @@ def status_line(stage: str, role: str) -> str:
     engine = meta.get("engine", "claude")
     return (f"{role} [{meta['tag']}] {engine}/{model_text(meta)}: {state}; last event {hc.age(mtime)} ago; "
             f"turns {turns_text(info)}; " + (f"ctx {spawn_policy.fmt_tokens(info['ctx'])}; " if info["ctx"] else "")
-            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']}){slot_text(wt, ', ')}" if wt else ""))
+            + f"last: {text or '—'}" + (f"; worktree {wt['path']} ({wt['branch']}){slot_text(wt)}" if wt else ""))
 
 
 def cmd_status(a) -> int:

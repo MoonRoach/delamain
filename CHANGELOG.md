@@ -7,8 +7,9 @@
   (`.env`, local configs) that are symlinked to the primary checkout's copies, and `.agents/prepare` is an executable
   run once in the new worktree before the agent starts, for Claude and Codex alike. A failing or timed-out prepare
   (`AGENT_HUB_PREPARE_TIMEOUT`, 300 s) fails the spawn with the exit code and the last log lines, never silently;
-  `--no-prepare` skips it. Every worktree also gets a slot, a number unique among the repository's live worktrees and
-  stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
+  `--no-prepare` defers it to the next spawn into that worktree. The script runs with the hub user's rights, outside the
+  agent's sandbox. A linked path that git does not ignore is not linked (a note says so). Every worktree also gets a
+  slot, a number unique among the repository's live worktrees and stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
   shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
   behaves as before. See *Preparing worktrees* in `docs/reference.md`.
 - **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known

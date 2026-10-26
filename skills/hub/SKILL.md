@@ -64,8 +64,10 @@ When the stage's work is finished and the owner has no more tasks for it, run `r
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
 - **Claude Code:** the digest's `jwait … --stream` as the command of **one** `Monitor` with `timeout_ms: 1800000`. Each
-  batch arrives as an event that already carries the lines: handle it, do not read an output file, do not re-arm. The
-  stream ends with `ALARM` at its 29-minute deadline; then start one new Monitor. Several waiters are never armed at once.
+  batch arrives as an event that already carries the lines: handle it, do not read an output file, do not re-arm.
+  Every `jwait` that ends prints a last line `NEXT WAIT: …`: arm exactly that, nothing else. While an agent or an
+  `await` of the stage runs it is a Monitor stream; when nothing runs it is ONE Bash `run_in_background` long wait
+  (hours), so an idle hub costs no call until a line comes. Several waiters are never armed at once.
 - **Codex:** `references/codex-hub.md` (*Waiting on a Codex hub*).
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
@@ -187,8 +189,8 @@ maps: `references/launch-and-executors.md`.
 
 ## Claude Desktop host
 
-1. A wake with nothing to do ends the turn at once: the Monitor keeps streaming, nothing to restart; after its `ALARM`,
-   start the new Monitor in the same message as the host's `wrap_up`, without `update_plan`.
+1. A wake with nothing to do ends the turn at once: the Monitor keeps streaming, nothing to restart; after an `ALARM`,
+   arm its `NEXT WAIT` in the same message as the host's `wrap_up`, without `update_plan`.
 2. In a worktree that Desktop created, sync with the base through the host's `sync_with_base_branch`, not `git merge`.
 3. A PR whose CI an executor runs is not bound to the host's Auto-fix or monitor: two systems would wake the hub on
    one event.

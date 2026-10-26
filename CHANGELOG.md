@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke
+  twice an hour all night to say "nothing new" (dolya, 26.10). Every journal `jwait` of a Claude hub now ends with a
+  `NEXT WAIT:` line that names the one waiter to arm: a Monitor stream while a headless agent or an `await` supervisor
+  of the stage runs, else one background Bash wait of up to 8 hours (within `BASH_MAX_TIMEOUT_MS`, 2 h unset). A held
+  line ends such a wait after 30 minutes at the latest.
+
 ## 1.0.18 — 2026-10-25
 
 - **A hub's wakes cost about half as much and come less often.** On 25.10 the santinel stage hubs spent more than

@@ -96,8 +96,12 @@ Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
   batch is a Monitor event whose text carries the lines, so a wake is one model call over the context: no output file
   to read, no waiter to re-arm. A background Bash `jwait` costs two (its notification carries only the command, the
   lines sit in a file). The stream ends with `ALARM` at its deadline (29 minutes by default, inside the Monitor's
-  30-minute cap and the one-hour prompt cache); then start one new Monitor. A Claude hub that cannot use Monitor runs
-  the old form: Bash `run_in_background: true`, `timeout: 3600000`, `--for 50m` (`AGENT_HUB_JWAIT_FOR`).
+  30-minute cap and the one-hour prompt cache). Every `jwait` that ends prints `NEXT WAIT: …`, the one waiter to arm
+  next: a Monitor stream while a headless agent or an `await` supervisor of the stage runs; when nothing runs, ONE Bash
+  `run_in_background` wait of up to 8 hours (inside `BASH_MAX_TIMEOUT_MS`; 2 h when it is unset). On 26.10 an idle
+  hub under a Monitor woke every 29 minutes all night to say "nothing new", two or three calls over its context
+  each; a long wait costs one cache re-write when the next line comes. A held line ends a long wait after 30 minutes.
+  The watchdog, not an alarm, wakes a hub whose process died or whose lines wait with no waiter.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
 - `jwait --journal --tag hub-<N> --tag hub --hub-events --stream` —

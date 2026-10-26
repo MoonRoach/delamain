@@ -25,6 +25,10 @@ def emit(x):
 emit({'type':'thread.started','thread_id':sid})
 emit({'type':'turn.started'})
 time.sleep(float(os.environ.get('FAKE_CODEX_HOLD','0.2')))
+if os.environ.get('FAKE_CODEX_SHELL'):  # a shell command of the run, in its cwd and environment; output to codex-shell.log
+ import subprocess
+ with open('codex-shell.log','a') as f:
+  f.write('exit=%d\n' % subprocess.run(['/bin/sh','-c',os.environ['FAKE_CODEX_SHELL']],stdout=f,stderr=f).returncode)
 if os.environ.get('FAKE_CODEX_READ_INBOX'):
  emit({'type':'item.completed','item':{'type':'command_execution','id':'read','command':'cat inbox.md','exit_code':0,'aggregated_output':'read'}})
 final=os.environ.get('FAKE_CODEX_FINAL','fixture answered')

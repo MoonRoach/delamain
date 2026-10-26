@@ -74,6 +74,7 @@ flowchart LR
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub grilling` | `hub grilling start / end / status`: mark that the hub is grilling the owner, so nothing hands it over automatically until the grilling ends ([No automatic handoff in the middle of a grilling](#no-automatic-handoff-in-the-middle-of-a-grilling)). |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
+| `hub why` | `hub why <sha \| file:line> [--cwd DIR] [--json]`: which agent run made a commit (or the line's last commit, through `git blame`) — stage, role, run, engine and model, brief, report, session and transcript, the agent's journal lines within ±30 min. Read-only. A commit without Delamain trailers gets a guess, marked as one, or "not an agent commit" ([Commit provenance](#commit-provenance)). |
 | `agy-review` | The bundled Argon reviewer: `run --cwd <checkout> --brief <file>` starts a read-only review by Gemini 4 Argon through Antigravity CLI (`agy`), detached, in a run directory under `<hub home>/agy-runs/` that ends with an `rc` file (`0` = `final.md` is the review); `limits` reads agy's quota from its `/usage` panel; `check` is the availability test of a reviewer entry (agy installed, Argon's weekly quota not known to be below 20 %). The skill is `delamain:agy-review`. macOS only so far. [docs/reviewers.md](reviewers.md#the-bundled-argon-reviewer-agy-review). |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
@@ -347,6 +348,60 @@ Reviews are configurable: by default a reviewer is an ordinary `agent spawn`, an
 among the reviewers you listed — your own reviewer skills included — and prints how to start it; `--second` adds an
 optional second opinion from another vendor, at the hub's discretion: [docs/reviewers.md](reviewers.md).
 
+### Commit provenance
+
+Every commit an agent makes in the repository it was started in carries three git trailers:
+
+```
+Delamain-Stage: delta-ideas
+Delamain-Role: provenance
+Delamain-Run: 3f9a1c0b7e21
+```
+
+The run is one run of the agent — its spawn or one resume — recorded as `runs[].id` in the agent's `meta.json` (its
+prompt is `prompt-<run>.txt`). Commits get pushed, to public repositories too, so the trailers name no path, session id
+or anything else of the machine; `hub why` finds the rest in the run records of this machine's hub homes:
+
+```bash
+hub why HEAD~2              # a commit
+hub why bin/agent:512       # the last commit of a line (git blame)
+hub why 1a2b3c4 --json      # the same as JSON
+```
+
+It prints the stage, role, tag and run; the engine, model and effort; the brief (the copy in the agent's directory when
+the original is gone), the report, the session id and its transcript (Claude: `~/.claude/projects/*/<session>.jsonl`;
+Codex: its rollout under `$CODEX_HOME/sessions`); and the agent's journal lines within ±30 minutes of the commit. What
+is missing is said, not filled in; it writes nothing of its own (resolving a project hub home still adds that home to
+`.git/info/exclude` once, as every tool does). A commit without trailers — made before this release, or with provenance off — gets
+a `GUESS` when the reflog of the worktree or branch `agent spawn --worktree` made for an agent records creating it during
+one of its runs, a `WEAK GUESS` when only a shared checkout's reflog or a branch that contains it points at a run, and
+otherwise "not an agent commit as far as this machine knows". Reflogs are local and expire (90 days by default).
+
+How the trailers get there, without relying on the agent to add them: every run's environment gets
+`GIT_CONFIG_PARAMETERS` with `core.hooksPath=<plugin>/bin/git-hooks` (the form `git -c` uses, which Codex's shell
+passes through, unlike `GIT_CONFIG_KEY_<n>`), `AGENT_HUB_RUN` and `AGENT_HUB_PROVENANCE_REPO` (the common git
+directory of its `--cwd`). Each hook there runs the project's own hook of that name — the last `core.hooksPath` that is
+not the shim (husky's `.husky/_`, a global one), else `<common git dir>/hooks` — with its arguments, stdin and exit
+code, so a project hook that refuses still refuses. `prepare-commit-msg` then appends the trailers, which is why
+`git commit --no-verify` keeps them, and `commit-msg` adds them to a message first written in the editor. Another
+installation's shim inherited from an agent of an older version is dropped from the variable, and a shim never chains to
+a shim. Nothing is added:
+
+- in another repository (a throw-away repository of a test, a clone): the shim only chains there;
+- to a commit replayed by `cherry-pick` or `rebase`: it keeps the trailers it had, or none — a person's commit stays a
+  person's, the agent's own commits keep theirs (an amend by the agent adds them only when missing:
+  `--if-exists doNothing`);
+- to an empty message, which git then aborts as usual;
+- by `git commit-tree` and other plumbing that runs no hooks, or when a command sets `core.hooksPath` itself
+  (`git -c core.hooksPath=…`).
+
+A person's commits are never touched: nothing changes outside an agent's environment. The shim covers the client-side
+hooks husky does plus `reference-transaction`, `post-index-change`, `sendemail-validate` and the `p4-*` hooks; not
+`push-to-checkout` or `proc-receive`, whose mere presence changes what git does (a local push clears
+`GIT_CONFIG_PARAMETERS`, so a receiving repository runs its own hooks anyway). Inside the agent `git config
+core.hooksPath` answers with the shim's directory. `AGENT_HUB_PROVENANCE=off` (environment, the repository's or the
+hub home's `config.json`) leaves an agent's git alone.
+
 ## Owner questions
 
 ```mermaid
@@ -527,6 +582,7 @@ name can be created in this one. The refusal above for `~/agent-hub` and the leg
 
 ```bash
 hub effort [--session ID] [--json]   # the effort this (or that) Claude Code session runs at now, and where it was read
+hub why <sha|file:line> [--json] # which agent run made a commit: stage, role, brief, report, journal, transcript
 hub home [--cwd DIR] [--json]   # the home, the layer that chose it, protected or not, the grant lines with your path
 hub home migrate                # dry run: what would move from the legacy home to the resolved one
 hub home migrate --apply        # do it; --from DIR / --to DIR name other homes
@@ -573,6 +629,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_AGY_BIN` | `agy` on PATH | The Antigravity CLI that `agy-review` runs. Hub-wide: the environment or the hub home's `config.json`, never a repository's. |
 | `AGENT_HUB_AGY_REVIEW_MODEL` | `gemini-4-argon-high` | Model id of an `agy-review run` without `--model`. Hub-wide. |
 | `AGENT_HUB_AGY_REVIEW_MIN_LEFT` | `20` | Percent of Argon's weekly quota below which `agy-review run` refuses (exit 3) and `agy-review check` fails; an unreadable quota never does. Hub-wide. |
+| `AGENT_HUB_PROVENANCE` | on | `off` (or `false`) starts agents without the git hooks shim, so their commits carry no `Delamain-*` trailers ([Commit provenance](#commit-provenance)). Project or home. |
 | `AGENT_HUB_BG_WAIT_CEILING_MS` | `0` | How long an agent's run, after its turn ends, waits for its background sub-agents before the CLI kills them (passed as `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; `0` = until they finish, the CLI's own default is 10 min). |
 | `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal (Claude Desktop only). Hub-wide. |
 | `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`; the watchdog wakes a silent hub for open night-queue items inside it. Hub-wide. |

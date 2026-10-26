@@ -174,6 +174,7 @@ lines, details in a file. `hub handoff` refuses while a sub-agent of your sessio
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
   An agent's question arrives as `@hub QUESTION …`; answer with `agent send`.
+- Why is this code here: `hub why <sha|file:line>` — the agent run, brief, report and journal.
 - Every agent that writes code gets `--worktree [BRANCH]` (two agents in one checkout overwrite each other's files);
   at handoff remove finished worktrees and stop background processes the project started.
 - Model and effort per agent: Claude aliases `opus|sonnet|haiku|fable`, `--effort` on every alias; for a Codex model

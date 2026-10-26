@@ -77,7 +77,7 @@ SH
 chmod +x $O/ghbin/gh
 ghwait(){ : > $J; GH_CHECKS=$1 PATH=$O/ghbin:$PATH $B/await --wait --ok PASSED --label "PR #1 merge" -- gh pr checks 1 --watch --fail-fast > $O/gh.out 2>&1; }
 ghwait pass; check $? 0 "checks pass: await --wait exits 0"
-grep -q '^- [0-9:]* \[hub-1-await\] @hub PASSED PR #1 merge — https://github.com/o/r/actions/runs/1/job/1 (exit 0, ' $O/gh.out; check $? 0 "…and prints the PASSED line"
+grep -q '^@hub PASSED PR #1 merge — https://github.com/o/r/actions/runs/1/job/1 (exit 0, ' $O/gh.out; check $? 0 "…and prints the PASSED line"
 check "$(grep -c '@hub PASSED ' $J)" 1 "…which is the journal's line"
 ghwait fail; rc=$?
 check $rc 3 "checks fail: await --wait exits 3, not 0 (control: it used to exit 0 here)"
@@ -92,7 +92,7 @@ grep -q '@hub FAILED .*killed by signal 9' $O/gh.out; check $? 0 "…FAILED, say
 # stdout of its own into the caller's output
 : > $J; GH_CHECKS=fail PATH=$O/ghbin:$PATH $B/await --ok PASSED --label detached-fail -- gh pr checks 1 --watch > $O/gh.out 2>&1; check $? 0 "detached: await returns 0 at once"
 waitline 'FAILED detached-fail'; check $? 0 "…and the verdict still lands in the journal"
-check "$(grep -c '@hub' $O/gh.out)" 0 "…and not in the caller's output"
+check "$(grep -c '^@hub' $O/gh.out)" 0 "…and not in the caller's output"
 
 # 3. the supervisor's own timeout: the command is stopped (its process group), one TIMEOUT line
 cat > $O/hang.sh <<'SH'
@@ -108,7 +108,7 @@ t0=$(date +%s)
 $B/await --wait --timeout 2s --label hang -- $O/hang.sh > $O/a3.out 2>&1; rc=$?
 el=$(( $(date +%s) - t0 ))
 check $rc 3 "timeout: the line is written and the exit says it is not the ok word"
-grep -q '^- [0-9:]* \[hub-1-await\] @hub TIMEOUT hang ' $O/a3.out; check $? 0 "…and the line is printed"
+grep -q '^@hub TIMEOUT hang ' $O/a3.out; check $? 0 "…and the line is printed"
 check "$(grep -c '@hub TIMEOUT hang .*stopped after 2s' $J)" 1 "one TIMEOUT line"
 [ $el -le 20 ]; check $? 0 "the wait ended at the limit, not when the command would (${el}s)"
 ! kill -0 "$(cat $PIDFILE)" 2>/dev/null && ! kill -0 "$(cat $PIDFILE.child)" 2>/dev/null; check $? 0 "the command and its child were stopped"

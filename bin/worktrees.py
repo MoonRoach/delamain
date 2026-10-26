@@ -290,7 +290,8 @@ def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Opt
             if alive(meta):
                 live_by.append(f"agent {role} (stage {stage}, pid {meta.get('pid')})")
         for stage, role, rec in registered:
-            live_by.append(f"registered {role} of stage {stage}")
+            if rec.get("kind") != "headless":  # a headless role is judged by its run (above): its record outlives the process
+                live_by.append(f"registered {role} of stage {stage}")
         for pid, cmd in in_use.get(w.real, []):
             live_by.append(f"{cmd or 'process'} (pid {pid})")
         known_not_live = False
@@ -311,7 +312,7 @@ def attribute(main: Path, items: list, alive: Callable[[dict], bool], procs: Opt
             current = hubs.get(w.stage)
             known_not_live = current is not None and current > w.hub_number  # a later hub took the stage over
         else:
-            w.kind, w.who = "other", "other (Desktop session or manual)"
+            w.kind, w.who = "other", "other (Desktop, Codex app or manual)"
         w.live_by = live_by
         if live_by:
             w.live = "yes"

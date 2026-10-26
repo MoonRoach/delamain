@@ -210,6 +210,7 @@ _HEREDOC_MARK = "<<_HEREDOC_"  # stands for a heredoc whose body is dropped, whe
 # Segments that print rather than run: `echo 'until …; do sleep 20; done'` (also in a subshell: `(echo '…') | bash`).
 _PRINTING = re.compile(r"^\s*[({]?\s*(?:\w+=\S+\s+)*(?:echo|printf|cat)\b")
 _SEGMENT_SEP = re.compile(r"(?:\|\||&&|[;|\n])")
+_AWAIT = re.compile(_CMD_PREFIX + r"(?:\S*/)?await\s")
 # The same, separators kept in the result; a `|` at the end of a line (`echo '…' |⏎ bash`) is a pipe too, and
 # bash takes any number of blank lines after it.
 _SEGMENT_SPLIT = re.compile(r"(\|\||&&|\|\s*\n|[;|\n])")
@@ -585,9 +586,18 @@ def wait_reason(command: str, cfg: Config, raw: str = None):
     return None
 
 
+def detached_await(seg: str) -> bool:
+    """`await [options] -- COMMAND` without `--wait`: it returns at once and its supervisor does the waiting, which is
+    what the guard's message asks for. COMMAND being `gh pr checks N --watch` is then not a status read by hand."""
+    m = _AWAIT.match(seg)
+    return bool(m) and "--wait" not in seg[m.end():].split(" -- ", 1)[0].split()
+
+
 def ci_reason(command: str, cfg: Config):
     """Why a (printing-stripped) command is a one-off CI status read, or None."""
     for seg in _SEGMENT_SEP.split(command):
+        if detached_await(seg):
+            continue
         if any(p.search(seg) for p in cfg.ci_deny) and not any(p.search(seg) for p in cfg.ci_allow):
             return f"This is `{seg.strip()}` — reading CI status by hand."
     return None

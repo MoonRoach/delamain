@@ -87,7 +87,7 @@ def claim_slot(common: Path, wt: Path, created: bool) -> tuple[int, bool]:
         elif created:
             # the directory was made again at a path with an old record (`git worktree remove`, then the same role
             # again): it is a new worktree, its prepare has not run
-            entry["prepared"] = False
+            entry = live[key] = {**entry, "prepared": False}  # a copy: `live != data` must see the change
         if live != data:
             hc.atomic_write(file, json.dumps(live, indent=1, sort_keys=True) + "\n")
     return entry["slot"], bool(entry.get("prepared", True))

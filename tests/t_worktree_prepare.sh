@@ -83,12 +83,32 @@ check "$(meta rr 'm["worktree"]["slot"]')" "$SLOT1" "…and keeps the slot of th
 spawn rr $REPO > /dev/null 2>&1; wait_dead rr
 check "$(grep -c . $REPO/prepare-runs.txt)" $((RUNS + 1)) "…then, reused, it is not prepared a third time"
 
+# ---- 4b2. a recreated path: a failing prepare, or --no-prepare, is not forgotten (the record on disk says unprepared)
+XR=$P/recreate; mkrepo $XR; mkdir $XR/.agents
+printf '#!/bin/sh\necho run >> "$AGENT_HUB_MAIN_CHECKOUT/runs.txt"\n' > $XR/.agents/prepare; chmod +x $XR/.agents/prepare; commit_all $XR ok
+spawn x $XR > /dev/null 2>&1; wait_dead x
+git -C $XR worktree remove --force $XR/.worktrees/agent/x && git -C $XR branch -q -D agent/x
+printf '#!/bin/sh\necho run >> "$AGENT_HUB_MAIN_CHECKOUT/runs.txt"\nexit 3\n' > $XR/.agents/prepare; commit_all $XR failing
+spawn x $XR > $P/x1.out 2>&1; check $? 1 "a recreated path whose prepare fails: the spawn fails"
+spawn x $XR > $P/x2.out 2>&1; check $? 1 "…and the next spawn into that worktree runs the prepare again, and fails again"
+check "$(grep -c . $XR/runs.txt)" 3 "…(runs: the first worktree, then two failures)"
+YR=$P/recreate2; mkrepo $YR; mkdir $YR/.agents
+printf '#!/bin/sh\necho run >> "$AGENT_HUB_MAIN_CHECKOUT/runs.txt"\n' > $YR/.agents/prepare; chmod +x $YR/.agents/prepare; commit_all $YR ok
+spawn y $YR > /dev/null 2>&1; wait_dead y
+git -C $YR worktree remove --force $YR/.worktrees/agent/y && git -C $YR branch -q -D agent/y
+spawn y $YR --no-prepare > /dev/null 2>&1; check $? 0 "a recreated path with --no-prepare starts the agent"
+wait_dead y
+check "$(grep -c . $YR/runs.txt)" 1 "…without running the prepare"
+spawn y $YR > /dev/null 2>&1; wait_dead y
+check "$(grep -c . $YR/runs.txt)" 2 "…the next spawn into that worktree runs it"
+
 # ---- 4c. a link leaves the worktree through a symlinked directory: refused
 ER=$P/esc; mkrepo $ER; mkdir -p $P/victim/sub $ER/.agents; echo v > $P/victim/sub/x.env
+VICTIM_BEFORE=$(cd $P && find victim | sort | tr '\n' ' ')
 ln -s ../victim $ER/cfg; echo 'cfg/sub/x.env' > $ER/.agents/linked
 commit_all $ER esc
 spawn e $ER > $P/e1.out 2> $P/e1.err; check $? 0 "a worktree whose linked path runs through a symlinked directory"
-grep -q 'cfg/sub/x.env: its directory leads out of the worktree' $P/e1.err && [ ! -e $ER/.worktrees/agent/victim ] && [ ! -e $P/victim/sub/x.env.link ]; check $? 0 "…is refused with a note and nothing is created outside it"
+grep -q 'cfg/sub/x.env: its directory leads out of the worktree' $P/e1.err && [ ! -e $ER/.worktrees/agent/victim ] && [ "$(cd $P && find victim | sort | tr '\n' ' ')" = "$VICTIM_BEFORE" ]; check $? 0 "…is refused with a note, and neither the worktree's neighbours nor the link target's directory changed"
 
 # ---- 4d. a repository whose git dir is elsewhere (--separate-git-dir): no primary checkout to share from, said plainly
 SR=$P/sep; git init -q -b main --separate-git-dir=$P/sep.git $SR; mkdir $SR/.agents; printf '.env\n' > $SR/.gitignore; echo .env > $SR/.agents/linked

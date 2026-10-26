@@ -401,7 +401,9 @@ def since_cutoff(raw: str, base: dt.datetime) -> dt.datetime:
 
 
 def main(argv: list) -> int:
-    p = argparse.ArgumentParser(prog="jwait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # no abbreviations: NEXT WAIT rebuilds the command from argv and must recognise every --for/--until/--since
+    p = argparse.ArgumentParser(prog="jwait", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                allow_abbrev=False)
     p.add_argument("--journal", action="store_true", help="wait for lines of the stage journal")
     p.add_argument("--stage", default=None)
     p.add_argument("--file", action="append", default=[], help="wait for lines of this file (repeatable)")
@@ -551,9 +553,8 @@ def main(argv: list) -> int:
             if has_source:
                 scan()
             t = hc.now()
-            if held and first_match_at is None and time.monotonic() - held_since[0] >= held_max:
-                first_match_at = time.monotonic() - args.settle  # held long enough: deliver them as a batch now
-            settled = first_match_at is not None and time.monotonic() - first_match_at >= args.settle
+            held_due = bool(held) and time.monotonic() - held_since[0] >= held_max  # held long enough: deliver now
+            settled = held_due or (first_match_at is not None and time.monotonic() - first_match_at >= args.settle)
             if settled or (matched and t >= deadline):
                 deliver()
                 if not args.stream:
@@ -654,10 +655,12 @@ def print_next_wait(args, argv: list, stage: str) -> None:
         print(f"NEXT WAIT: running in {stage}: {', '.join(busy)[:200]} — one Monitor, timeout_ms {MONITOR_TIMEOUT_MS}: "
               f"jwait {rest} --stream")
         return
-    cap_s = bash_cap_ms() // 1000
-    idle_s = max(60, min(IDLE_FOR_S, cap_s - 300))
+    cap_s = max(2, bash_cap_ms() // 1000)
+    margin = min(300, max(1, cap_s // 10))  # the Bash timeout outlives the wait by this much, inside the cap
+    idle_s = min(IDLE_FOR_S, cap_s - margin)
+    span = f"{idle_s // 60}m" if idle_s % 60 == 0 else f"{idle_s}s"
     print(f"NEXT WAIT: nothing runs in {stage} — no Monitor; ONE Bash run_in_background: true, timeout "
-          f"{(idle_s + 300) * 1000}: jwait {rest} --for {idle_s // 60}m")
+          f"{(idle_s + margin) * 1000}: jwait {rest} --for {span}")
 
 
 def fmt_deadline(t) -> str:

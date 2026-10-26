@@ -29,7 +29,8 @@ The answer reaches you only in YOUR journal: the other hub answers with `tell <y
 your stage's journal, and yours does not read its.
 The journal retains the audit trail between hubs; non-detached Codex delivery is immediate when supported.
 A direct message goes only to the registry address, never to a session picked by its name in a list. Text that starts with a dash goes after `--`.
---address: print only the direct address, write nothing (no text allowed).
+--address: print only the direct address, write nothing (no text allowed). --no-address: write and deliver, but print no
+direct address (no `claude agents` lookup; `broadcast` uses it for every stage).
 Hub home: `hub home` shows which and why. Exit: 0 ok, 1 stage or holder not found / write or delivery failed, 2 usage
 (no tag to sign with, empty text, text with --address).
 """
@@ -139,11 +140,14 @@ def main(argv: list) -> int:
     p.add_argument("--urgent", action="store_true", help="prefix the text with URGENT: the other hub must act before its next wake")
     p.add_argument("--role", default="hub", help="role to address (default: hub)")
     p.add_argument("--address", action="store_true", help="print only the direct address, write nothing")
+    p.add_argument("--no-address", action="store_true", help="write and deliver, print no direct address")
     args = p.parse_intermixed_args(argv)  # options between the stage and a nargs="*" text: plain parse_args drops the text on older Pythons
     stage = hc.check_stage(args.stage)
     text = " ".join(args.text).strip()
     if args.address and text:
         raise hc.UsageError("--address takes no text")
+    if args.address and args.no_address:
+        raise hc.UsageError("--address and --no-address: pick one")
     if not args.address and not text:
         raise hc.UsageError("empty text")
     if args.question and args.urgent:
@@ -170,7 +174,8 @@ def main(argv: list) -> int:
             print("codex tell receipt: " + json.dumps(result, ensure_ascii=False))
             # Pending native work is not successful delivery. Never silently retry unknown sends.
             return 0 if result["state"] in ("steered", "accepted") else 1
-    print("\n".join(address_lines(stage, args.role, rec)))
+    if not args.no_address:
+        print("\n".join(address_lines(stage, args.role, rec)))
     return 0
 
 

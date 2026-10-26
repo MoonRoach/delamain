@@ -355,22 +355,37 @@ for c in ("env -u -C find . -name x", "env -C /tmp bash -c 'find ~ -name x'", "e
     check(verdict(bash(c, cwd=HS)) == "deny", f"round 3, refused with the session in the home: {c!r}")
 
 
+import resource
 import time
 
 
+def cpu_seconds():
+    """CPU time (user + system) of every child this script has waited for so far."""
+    u = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return u.ru_utime + u.ru_stime
+
+
+def cpu_run(fn):
+    """(fn(), CPU seconds its subprocess used, wall seconds). The limits below are on CPU time: the suite runs several
+    scripts at once, so wall time on a loaded runner measures the load (6-8 s for a 1 s check), not the hook. A hook that
+    hangs without burning CPU is still caught by the subprocess's wall-clock timeout. Children run one at a time here."""
+    c0, t0 = cpu_seconds(), time.time()
+    r = fn()
+    return r, cpu_seconds() - c0, time.time() - t0
+
+
 def timed(cmd, **extra):
-    """(verdict, seconds) of a command; a hook that does not answer within the harness's 10 s counts as broken."""
-    t0 = time.time()
+    """(verdict, CPU seconds) of a command; a hook that does not answer within the wall-clock ceiling counts as broken."""
+    event = json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": WS, "tool_input": {"command": cmd}}).encode()
     try:
-        r = subprocess.run([sys.executable, str(HOOK)], capture_output=True, env=env(**extra), timeout=15,
-                           input=json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": WS, "tool_input": {"command": cmd}}).encode())
+        r, cpu, _ = cpu_run(lambda: subprocess.run([sys.executable, str(HOOK)], capture_output=True, env=env(**extra), timeout=30, input=event))
     except subprocess.TimeoutExpired:
-        return "broken", time.time() - t0
-    return verdict(r), time.time() - t0
+        return "broken", float("inf")
+    return verdict(r), cpu
 
 
 # the reviewer's input: one heredoc opener inside quotes, 50000 blank lines and no terminator took 12 s and more (a regex holds the
-# interpreter, so the fail-safe's timer cannot answer for it); the answer now has to come in well under the harness's 10 s
+# interpreter, so the fail-safe's timer cannot answer for it); the answer now has to cost well under the harness's 10 s of CPU
 LATENCY = {
     "50000 blank lines after an opener with no terminator": "printf '%s' '<<EOF\n" + "\n" * 50000 + "END'",
     "50000 blank lines, then the terminator": "cat <<EOF\n" + "\n" * 50000 + "EOF\nrg foo",
@@ -383,7 +398,7 @@ LATENCY = {
 }
 for label, cmd in LATENCY.items():
     v, sec = timed(cmd)
-    check(v != "broken" and sec < 2.0, f"latency ({label}): answered in {sec:.2f} s, {v}")
+    check(v != "broken" and sec < 2.0, f"latency ({label}): answered in {sec:.2f} s of CPU, {v}")
 check(timed("printf '%s' '<<EOF\n" + "\n" * 50000 + "END'")[0] == "pass", "latency: the reviewer's input is an ordinary printf, allowed")
 check(timed("cat <<A\nx\nA\n" * 10000 + "find ~ -name x")[0] == "deny", "latency: a walk after 10000 heredocs is still refused")
 
@@ -437,17 +452,15 @@ check("boom" in polling, "the control breaks polling_guard.views, which the scan
 (broken / "hooks" / "polling_guard.py").write_text(polling)
 r = run({"tool_name": "Bash", "cwd": WS, "tool_input": {"command": "find ~ -name x"}}, hook=broken / "hooks" / "scan_guard.py")
 check(r.returncode == 0 and not r.stdout.strip(), "an exception inside the parser: exit 0, no decision (fail open)")
-# pathological commands: bounded time, no traceback
-import time
+# pathological commands: bounded CPU time, no traceback
 for label, cmd in (("nested substitutions", "x=$(" * 800 + "find ~" + ")" * 800), ("deep $( chain", "$(a " * 500 + "find ~ -name x" + ")" * 500),
                    ("5000 pipes", "a | " * 5000 + "b"), ("long argument list", "find ~ " + "-name x -o " * 20000),
                    ("many stages", "cd ~; " * 20000 + "ls"), ("many words", "rg foo " + "a " * 100000),
                    ("many quotes", "echo " + "'a' " * 30000 + "; find ~ -name x"), ("deep parentheses", "(" * 3000 + "find ~" + ")" * 3000),
                    ("20000 heredoc openers", "<<EOF " * 20000 + "find ~ -name x"), ("a pile of brackets", "find ~/" + "[" * 50000),
                    ("many globs", "find ~/" + "*/" * 5000 + "x")):
-    t0 = time.time()
-    r = bash(cmd)
-    check(verdict(r) != "broken" and time.time() - t0 < 6, f"pathological command ({label}): answered in {time.time() - t0:.1f} s, exit {r.returncode}")
+    r, cpu, wall = cpu_run(lambda: bash(cmd))
+    check(verdict(r) != "broken" and cpu < 6, f"pathological command ({label}): {cpu:.1f} s of CPU ({wall:.1f} s wall), exit {r.returncode}")
 
 # ---- registration: Claude and Codex
 claude = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]

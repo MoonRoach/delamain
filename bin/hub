@@ -1731,8 +1731,8 @@ Codex successor: apply the hub skill's Terminal follow-through; reconcile this s
 TODO: questions asked in chat without a record — `ask add` first, then their ids here.
 
 ## 5. Risks and loose ends
-- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`git worktree list`;
-  finished ones: `git worktree remove <path>`).{live_note}
+- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`agent worktrees` lists them;
+  `agent worktrees --prune --dry-run` shows the finished ones).{live_note}
 
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.

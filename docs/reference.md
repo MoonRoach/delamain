@@ -59,6 +59,7 @@ flowchart LR
 | Tool | What it does |
 |---|---|
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
+| `agent worktrees` | List every worktree of a repository — who made it, in use or not, dirty, on a remote, merged (squash merges through `gh`), age — and, with `--prune`, remove the finished ones. Read-only by default; never removes unpushed or uncommitted work. [Details](#agent-worktrees-the-ledger-of-a-repositorys-worktrees). |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<stage>/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
@@ -130,8 +131,9 @@ agent stop builder
 not exist yet starts from origin's default branch (after a bounded `git fetch`; the local ref, with a note, when the
 fetch fails; the local main/master without an origin), not from the commit `--cwd` has checked out — `--base REF`
 chooses another start (`--base HEAD`: the old behaviour). Two agents writing
-in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
-branch is merged, `git worktree remove <path>`.
+in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree by itself;
+`agent worktrees` shows what is left and `agent worktrees --prune` removes the finished ones
+([below](#agent-worktrees-the-ledger-of-a-repositorys-worktrees)).
 
 **Names.** A stage called `hub-09` shows as "Hub hub-09 #1", signs `hub-09-hub-1` in other stages' journals and puts
 "(hub-09)" on every agent title, and nothing says what it does. `hub start` therefore exits 2 for a stage name made only
@@ -178,6 +180,41 @@ The longer `templates/brief-executor-advanced.md` adds production permissions, s
 `templates/brief-review.md` is the brief for a reviewer.
 
 A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delamain.md).
+
+### `agent worktrees`: the ledger of a repository's worktrees
+
+```bash
+agent worktrees                                   # every worktree of the repository of the working directory
+agent worktrees --repo ~/code/webapp --json       # another repository; the same table as data
+agent worktrees --prune --dry-run                 # what --prune would remove, and what it keeps and why
+agent worktrees --prune                           # remove the finished ones
+```
+
+One line per worktree of the repository (`git worktree list`, the main checkout first):
+
+| Column | Meaning |
+|---|---|
+| PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. |
+| WHO | `agent <role> (stage S)` when an agent run's `meta.json` in any known hub home names the worktree as its worktree or working directory; `hub of S #n` for a hub's `<stage>-hub-<n>` directory under `.claude/worktrees/` or `.worktrees/`, or a registered hub whose recorded worktree it is; another registered role by its name; otherwise `other` (Desktop, Codex app, manual). |
+| LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
+| DIRTY | `git status --porcelain`: untracked files count, ignored ones do not. |
+| ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch origin` first). A branch whose merged pull request holds all its commits shows `PR #n`. |
+| MERGED | `yes` — HEAD is an ancestor of the remote default branch (`origin/HEAD`, else `origin/main`, else `origin/master`); `PR #n` — a pull request from this branch was merged into the default branch and HEAD is inside its head commit (`gh pr list --state merged --head BRANCH`; a squash or rebase merge leaves no ancestry). `no` — neither; a commit made after the pull request was merged keeps the branch "not merged". `?` — the merge state of a squash-merged branch cannot be told without `gh` (not installed, not logged in, or `--no-gh`); said once, as a note under the table. |
+| AGE | Since the last change: the last commit, the worktree's reflog entry or the newest edited file, whichever is latest. |
+| PRUNE | `removable`, or `kept:` with every reason. |
+
+`--prune` removes a worktree only when **all** of this holds: merged, clean (nothing changed, nothing untracked), no
+commit on no remote, no git operation under way (rebase, merge, cherry-pick, revert, bisect, a running git command),
+not locked, not the working directory of the caller (nor one inside it), not in use — and where use is `unknown`, no
+change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never removed, with any flag. It runs
+`git worktree remove` (never `--force`; git's own refusal keeps the worktree and is reported), then
+`git worktree prune`, which also clears entries whose directory is gone. The main checkout is listed and never a
+candidate. The branch goes with the worktree only when it is merged by ancestry (`git branch -d`); a squash-merged
+branch stays unless `--delete-branches` (`git branch -D`, only for a branch whose merged pull request holds all its
+commits); the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by
+their first reason. `--dry-run` prints the same and removes nothing. The listing is read-only; `--json` adds
+`removable` and `keep` per worktree (and a `prune` object with `--prune`). Exit 0 whenever the command ran, 2 for a usage
+error (not a repository, `--dry-run` without `--prune`).
 
 ## Cost and turn limits
 
@@ -793,7 +830,7 @@ hub:
    `worktree-<stage>-hub-<n+1>`, from `origin`'s default branch (Claude Code's `worktree.baseRef`, default `fresh`); a taken name gets `-2`, `-3`…), never in the hub's
    own directory — that may be a Desktop session's worktree, removed when the session is archived. Without `--cwd` the
    directory is the hub's registered worktree, else the shell's. A directory outside git, or in another repository than the
-   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree: `claude rm <id>` does once the session is done.
+   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree by itself: `agent worktrees --prune` does once a later hub has taken the stage over and the branch is merged, clean and pushed (`claude rm <id>` too).
 3. When the line arrives the old hub tells you in one line the successor's name and link and where it is: a
    background Remote Control session named `<stage>-hub-<n+1>`; in Claude Desktop it is listed under the repository's
    address group (for a repository not hosted on github.com a separate group from your folder group), on the phone in the

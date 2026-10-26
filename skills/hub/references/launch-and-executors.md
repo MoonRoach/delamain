@@ -107,8 +107,9 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   may be someone's feature branch; `--base REF` chooses another start (`--base HEAD` for the checked-out commit).
   `agent spawn --worktree` refuses a repository with no commits: in a new, empty one the hub makes the first commit
   itself and says so in one line.
-  Nothing removes a worktree; at handoff list them (`git worktree list`) and remove the finished ones
-  (`git worktree remove <path>`).
+  Nothing removes a worktree by itself; at handoff `agent worktrees` lists them all (who made each, in use, dirty,
+  pushed, merged) and `agent worktrees --prune --dry-run` shows the finished ones, which `--prune` then removes (never
+  one with unpushed or uncommitted work, or in use).
 - Model and effort: choose per agent. Claude supports `opus|sonnet|haiku|fable` aliases and optional
   `AGENT_HUB_MODEL_MAP` pins. Codex supports available model ids and optional `AGENT_HUB_CODEX_MODEL_MAP` aliases;
   omit the model to use `AGENT_HUB_CODEX_DEFAULT_MODEL` or the CLI configuration. Choose effort supported by that model. Every Claude alias takes `--effort`, `haiku` included (Haiku 5.5 from Claude

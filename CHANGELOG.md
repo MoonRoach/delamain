@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **`agent worktrees` shows every worktree a repository has and removes the finished ones.** Nothing removed the worktrees
+  that `agent spawn --worktree`, `hub start` / `takeover` and Desktop leave behind: one repository of the owner had 72 of
+  them and nobody could tell which were finished. `agent worktrees [--repo PATH]` lists each with its path, branch, who
+  made it (agent role and stage, hub of a stage, other), whether a live agent, the stage's registered hub or any process
+  uses it, whether it is dirty, whether its commits are on a remote, whether its branch is merged (an ancestor of the
+  remote default branch, or inside a merged pull request found with `gh`, which covers squash merges) and how long it has
+  been unchanged; `--json` gives the same as data. `--prune` (with `--dry-run` to look first) removes exactly the
+  worktrees that are merged, clean, fully pushed, not in use and not under a git operation, with `git worktree remove`
+  and never `--force`; where use is unknown it also waits for `--idle-for` (24 h) without a change. Unpushed or
+  uncommitted work is never removed, with any flag; the main checkout and the caller's own directory are never
+  candidates. The branch goes with a worktree merged by ancestry (`git branch -d`); a squash-merged one stays unless
+  `--delete-branches`. The hub handoff draft and the hub skill point to `agent worktrees --prune --dry-run` instead of
+  a manual `git worktree remove`; handoff does not prune by itself.
+
 ## 1.0.19 — 2026-10-26
 
 - **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke

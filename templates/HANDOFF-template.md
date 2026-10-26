@@ -43,5 +43,5 @@ Codex successor: apply the bundled hub skill's Terminal follow-through (`<plugin
 
 ## 5. Risks and loose ends
 <!-- What breaks when nobody watches and how it shows; bookings and windows (`lock list`); bugs found
-     (issue or "none"); worktrees to clean up (`git worktree list`). -->
+     (issue or "none"); worktrees to clean up (`agent worktrees --prune --dry-run`). -->
 -

@@ -136,8 +136,8 @@ existing worktree of that branch, wherever it is, is reused (a re-spawn continue
 `--base HEAD` is the commit checked out in `--cwd`), and `/.worktrees/` is added
 to `.git/info/exclude`, so the main checkout shows nothing untracked. Spawning from inside a worktree still lands in the
 main repository's `.worktrees/`. A branch checked out in the main checkout, a bad branch name and a foreign directory at
-the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it: the
-hub lists worktrees in the handoff and runs `git worktree remove <path>` once the branch is merged.
+the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it by
+itself: at handoff the hub runs `agent worktrees --prune --dry-run` and then `--prune`, which removes the finished ones.
 
 ## Formats
 

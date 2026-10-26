@@ -476,7 +476,7 @@ def collect(repo: Path, alive: Callable[[dict], bool], idle: dt.timedelta, use_g
     if pending and gh.state != "ok":
         gh_failed = gh.state
         for w in pending:
-            w.merged, w.merged_note = None, "merge state unknown for squash-merged branches (no gh)"
+            w.merged, w.merged_note = None, "merge state unknown (gh unavailable)"
     if gh_failed and gh_failed != "off":
         notes.append("gh is " + ("not installed" if gh_failed == "missing" else gh_failed)
                      + ": merge state unknown for squash-merged branches")

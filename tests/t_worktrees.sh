@@ -45,15 +45,15 @@ PY
 # ---- 1. merged and clean: removed, and its branch with it (git branch -d)
 add_wt feat/merged; commit_in feat/merged m.txt; merge_into_main feat/merged
 add_wt feat/dirty; commit_in feat/dirty d.txt; merge_into_main feat/dirty; echo scratch > $WT/feat/dirty/untracked.txt
-LISTING --json > $P/l1.json 2> $P/l1.err; check $? 0 "the listing works (--json)"
+LISTING --json --idle-for 0s > $P/l1.json 2> $P/l1.err; check $? 0 "the listing works (--json)"
 check "$(wfield $P/l1.json /.worktrees/feat/merged merged_by)" '"ancestry"' "feat/merged: merged by ancestry"
 check "$(wfield $P/l1.json /.worktrees/feat/merged removable)" "true" "…and removable (merged, clean, pushed, nobody there)"
 check "$(wfield $P/l1.json /.worktrees/feat/dirty dirty_files)" "1" "feat/dirty: one changed file (an untracked file counts)"
 before=$(listed)
-LISTING --prune --dry-run > $P/dry.out 2>&1; check $? 0 "--prune --dry-run"
+LISTING --prune --dry-run --idle-for 0s > $P/dry.out 2>&1; check $? 0 "--prune --dry-run"
 grep -q 'would remove' $P/dry.out && grep -q 'feat/merged' $P/dry.out; check $? 0 "…says what it would remove"
 [ "$(listed)" = "$before" ] && [ -d $WT/feat/merged ] && branch_exists feat/merged; check $? 0 "…and removes nothing (worktrees and branch still there)"
-LISTING --prune > $P/p1.out 2>&1; check $? 0 "--prune"
+LISTING --prune --idle-for 0s > $P/p1.out 2>&1; check $? 0 "--prune"
 [ ! -e $WT/feat/merged ]; check $? 0 "the merged, clean worktree is gone"
 ! branch_exists feat/merged; check $? 0 "…with its branch (merged by ancestry: git branch -d)"
 [ -d $WT/feat/dirty ] && [ -f $WT/feat/dirty/untracked.txt ]; check $? 0 "control: the dirty worktree survives --prune, its file intact"
@@ -62,20 +62,20 @@ grep -q 'removed 1, kept 1 (dirty 1)' $P/p1.out; check $? 0 "the summary counts 
 [ -d $REPO/.git ] && [ -f $REPO/.git/HEAD ] && git -C $REPO rev-parse HEAD > /dev/null; check $? 0 "the main checkout is never touched"
 grep -Fq 'main checkout' $P/p1.out || LISTING | grep -Fq 'main checkout'; check $? 0 "…and is listed as the main checkout"
 rm $WT/feat/dirty/untracked.txt
-LISTING --prune > $P/p1b.out 2>&1; [ ! -e $WT/feat/dirty ]; check $? 0 "positive control: cleaned, the same worktree goes"
+LISTING --prune --idle-for 0s > $P/p1b.out 2>&1; [ ! -e $WT/feat/dirty ]; check $? 0 "positive control: cleaned, the same worktree goes"
 
 # ---- 2. unpushed work is never removed
 add_wt feat/ahead; commit_in feat/ahead a.txt
 LISTING --json > $P/l2.json 2>&1
 check "$(wfield $P/l2.json /.worktrees/feat/ahead unpushed_commits)" "1" "feat/ahead: one commit on no remote"
-LISTING --prune > $P/p2.out 2>&1; [ -d $WT/feat/ahead ] && branch_exists feat/ahead; check $? 0 "an unpushed commit: worktree and branch survive --prune"
+LISTING --prune --idle-for 0s > $P/p2.out 2>&1; [ -d $WT/feat/ahead ] && branch_exists feat/ahead; check $? 0 "an unpushed commit: worktree and branch survive --prune"
 grep -q '1 commit on no remote' $P/p2.out; check $? 0 "…the output names the commit"
 # pushed but not merged: kept for the other reason
 git -C $REPO push -q origin feat/ahead 2>/dev/null
-LISTING --prune > $P/p2b.out 2>&1; [ -d $WT/feat/ahead ]; check $? 0 "pushed but not merged: kept"
+LISTING --prune --idle-for 0s > $P/p2b.out 2>&1; [ -d $WT/feat/ahead ]; check $? 0 "pushed but not merged: kept"
 grep -q 'branch not merged into origin/main' $P/p2b.out; check $? 0 "…saying it is not merged"
 merge_into_main feat/ahead
-LISTING --prune > /dev/null 2>&1; [ ! -e $WT/feat/ahead ]; check $? 0 "positive control: once merged it goes"
+LISTING --prune --idle-for 0s > /dev/null 2>&1; [ ! -e $WT/feat/ahead ]; check $? 0 "positive control: once merged it goes"
 
 # ---- 3. a live agent keeps its worktree; after it stops the worktree goes
 FAKE_HOLD=30 $B/agent spawn --role liver --cwd $REPO --model haiku --brief $P/b.md --worktree feat/live > $P/spawn.out 2>&1; check $? 0 "an agent spawned in its own worktree"
@@ -174,7 +174,7 @@ PY
 LISTING --json > $P/l7b.json 2>&1
 check "$(wfield $P/l7b.json /stx-hub-4 live)" '"yes"' "the registered hub's worktree is in use"
 check "$(wfield $P/l7b.json /stx-hub-3 live)" '"no"' "an older hub's worktree is not (a later hub took the stage over)"
-LISTING --prune > $P/p7.out 2>&1; check $? 0 "--prune with hub worktrees"
+LISTING --prune --idle-for 0s > $P/p7.out 2>&1; check $? 0 "--prune with hub worktrees"
 [ -d $HW/stx-hub-4 ] && [ ! -e $HW/stx-hub-3 ]; check $? 0 "the superseded hub's worktree goes at once, the registered hub's stays"
 grep -q 'registered hub of stage stx' $P/p7.out; check $? 0 "…the output names the registration"
 

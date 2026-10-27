@@ -7,23 +7,25 @@ description: Answer questions about Delamain agents, stages and hubs, their task
 
 1. Resolve the plugin root from `PLUGIN_ROOT` (Codex), `CLAUDE_PLUGIN_ROOT` (Claude), or this skill's canonical location
    (resolve symlinks first, then go two directories above `skills/status`). Run that root's `bin/agent-top --json` through the host's shell tool;
-   an unrelated command may shadow it on PATH. This reads the shared hub home and session logs without changing them.
+   an unrelated command may shadow it on PATH.
    Use `--stage <stage>` for a named or clearly implied stage (repeatable), otherwise cover every stage.
    Use `--all` only when the user asks about finished or old work; `--json --agent <role> --feed 10` gives recent activity.
    On the owner's data, snapshots take 20–45 s, `--all` up to ~160 s. In Codex, wait through execution continuation
    tools. In Claude Code, set the shell tool timeout to at least 5 min, or run in background and wait for completion.
-   After a timeout, rerun with a longer timeout and wait for a fresh completed snapshot; use no stale data and do
-   not report unavailable merely because collection timed out.
+   After a timeout, rerun with a longer one and wait for a fresh snapshot; never use stale data or report
+   unavailable merely because collection timed out.
 2. Read the fresh snapshot before answering. Group by stage: live agents with role, task/current action and duration,
    relevant finished/failed work since the previous snapshot in this conversation, owner questions and held locks.
    Use `action.elapsed_s` for action duration and `started_at` for run duration; `age_s` is time since the last log
    event, not runtime. Describe native sessions' activity-based liveness as approximate. An unread inbox is a message
    awaiting the agent, not an owner question. `questions_ok: false` means the question register is unavailable.
    Report missing data or non-timeout command failure as unavailable; an empty successful snapshot means no observed work.
-   `stage_info.<S>.idle` marks an open stage with no live agent and no activity for `idle_after_s`: name such stages
-   once as candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
-   out of the snapshot: they run nothing; mention them only when asked about old or closed work.
-   `desktop_idle`: idle Desktop sessions holding memory; archiving: skills/hub/references/stage-lifecycle.md § Idle Desktop sessions.
+   `stage_info.<S>.idle` marks an open stage with no live agent and no activity (own lines, logs, hub session; not
+   `[pace]` or broadcasts) for `idle_after_s`: name such stages once as candidates to close (`hub close`, skill `hub`;
+   the owner decides). `closed_hidden` lists closed stages left out of the snapshot: they run nothing; mention them only
+   when asked about old or closed work. `desktop_idle`: idle Desktop sessions holding memory (archiving: skill `hub`).
+   A hub lives by `roles.<S>[hub].last_written_age_s` (its journal line or session transcript; null: no sign), never by
+   `last_addressed_age_s` (`[pace] @hub` etc.): old write, fresh address: likely dead or asleep.
    Infer tasks only from titles, activity, last words or the journal; compare snapshots only when a previous one exists.
 3. Answer in a few plain-text lines in the user's language, prioritizing running work and anything needing attention.
    Summarize large stages and offer detail on request. Include question ids when they help the owner answer.

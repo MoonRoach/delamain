@@ -37,7 +37,8 @@ NAME@/path/of/home (one home's; `@` alone after the name is ~/agent-hub) and the
 known homes. With one home nothing changes.
 Stages: a stage closed by `hub close` (stage.json "closed") is left out unless --all or named by --stage (`closed_hidden`
 in --json lists the ones left out). `stage_info` gives each shown stage's goal, closed record, live agents and last
-activity (newest of its journal, agent logs, roles and questions); a stage that is open, has no live agent and was quiet
+activity (newest of its own journal lines and its hub's session, agent logs, roles and questions: a line *to* the stage,
+`[pace]`, `[watchdog]`, a broadcast, is not activity); a stage that is open, has no live agent and was quiet
 for $AGENT_TOP_IDLE_S (default 48 h) is `idle` — a candidate for `hub close`.
 
 Keys: ↑↓ select/scroll · ⏎ open · Esc back · Tab tab · j journal · s summary · a all agents · m message · x stop ·
@@ -107,6 +108,9 @@ FEED_TAIL_BYTES = 400_000
 FLUSH_S = 2.0                     # a long first read writes the disk cache this often, not only at its end
 FEED_MAX_ITEMS = 4000
 ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
+OWN_ACTIVITY_FILES = 14   # how many of a stage's newest journal files are read for a line of its own
+HUB_AUTHOR_RE = re.compile(r"hub-\d+(?:[-/].*)?")   # a hub of the stage by number (this shift's or a predecessor's) and its -await, -<role>, /sub tags
+MENTION_RE = re.compile(r"(?<![\w@])@(\w[\w-]*)")   # an @name in a journal line, bounded the way hc.mentions bounds it
 _TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([\w.]+)"')
 _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -212,6 +216,17 @@ def pct(w) -> str:
         return f"{int(round(100 * float(w.get('utilization') or 0)))}%"
     except (TypeError, ValueError, AttributeError):
         return "?"
+
+
+def is_stage_author(author: str, tags: list) -> bool:
+    """Whether a journal line's author is the stage's own: a registered role's tag, its sub-tags (`T/sub`, `T-await`,
+    `T-<role>`) or a hub of the stage by number (`hub-N…`). The service tags (`pace`, `watchdog`, `autopilot`), `owner` and
+    another stage's `<stage>-<tag>` are not. By decision a `T-await` line counts also when the await writes its ALARM after
+    the hub's session has ended: it can keep a dead stage "not idle" for one more idle period."""
+    for c in {author, *author.split()[:1]}:
+        if HUB_AUTHOR_RE.fullmatch(c) or any(c == t or c.startswith((t + "-", t + "/")) for t in tags if t):
+            return True
+    return False
 
 
 def fmt_age(s) -> str:
@@ -846,15 +861,13 @@ def discover_stages(only, show_all: bool = False) -> tuple:
     return [r for r in refs if r.sid not in closed], closed, multi
 
 
-def stage_activity(ref: StageRef):
-    """The mtime of the stage's newest journal file, agent log, roles.json or questions.md; None when there is none."""
+def stage_activity(ref: StageRef, own_at):
+    """The newest of `own_at` (the stage's own journal lines and its hub's session, see AgentTop.own_activity) and the
+    mtime of its agent logs, roles.json and questions.md; None when there is none. A journal file's mtime is not here: any
+    line moves it, `[pace] @hub` and a broadcast included."""
     base = ref.home.path / ref.name
-    with hc.in_home(ref.home.path, ref.home.layer):
-        work = hc.work_dir(ref.name)
-    paths = [base / "roles.json", base / "questions.md", *work.glob("journal-*.md"),
-             *base.glob("agents/*/log.jsonl")]
-    newest = None
-    for p in paths:
+    newest = own_at
+    for p in [base / "roles.json", base / "questions.md", *base.glob("agents/*/log.jsonl")]:
         try:
             m = p.stat().st_mtime
         except OSError:
@@ -863,12 +876,12 @@ def stage_activity(ref: StageRef):
     return newest
 
 
-def stage_info(ref: StageRef, agents: list, now: float) -> dict:
+def stage_info(ref: StageRef, agents: list, now: float, own_at=None) -> dict:
     """What the stage is and whether it is still in use: goal, closed record, live agents, last activity, idle; and where
     it lives (name, home, home_label)."""
     with hc.in_home(ref.home.path, ref.home.layer):
         closed, goal = hc.stage_closed(ref.name), hc.stage_goal(ref.name)
-    at = stage_activity(ref)
+    at = stage_activity(ref, own_at)
     live = sum(1 for a in agents if a["stage"] == ref.sid and a["state"] == "live")
     idle_s = None if at is None else max(0, int(now - at))
     return {"goal": goal, "closed": closed, "live": live,
@@ -1019,7 +1032,7 @@ class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
-        self.transcripts, self.transcript_paths = {}, {}
+        self.transcripts, self.transcript_lists = {}, {}
         self.where: dict = {}                 # stage id -> StageRef of the last snapshot
         self.homes = hc.known_homes()
         self.stores: dict = {}                # one cache per home (one, when $AGENT_HUB_STATE_DIR puts every home's in one file)
@@ -1121,7 +1134,7 @@ class Collector:
                "homes": [{"path": str(kh.path), "label": kh.label, "layer": kh.layer, "repo": kh.repo,
                           "stages": [r.sid for r in refs if r.home == kh]} for kh in self.homes],
                "multi_home": multi,
-               "stage_info": {r.sid: stage_info(r, agents, now) for r in refs}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
+               "stage_info": {r.sid: stage_info(r, agents, now, self.own_activity(r.sid, roles_by_stage[r.sid])) for r in refs}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(refs, wait=wait_ext), "questions_ok": self.ext.ok,
                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
                "codex_limits": self.codex_limits.snapshot(), "desktop_idle": self.desktop.poll(wait=wait_ext)}
@@ -1269,14 +1282,24 @@ class Collector:
                     tokens[model] = tokens.get(model, 0.0) + weighted_tokens(u, snake=False)
         return {m: cost[m] / tokens[m] for m in cost if tokens[m] > 0}
 
+    def transcript_files(self, sid: str) -> list:
+        """The transcript files of a session (one per project folder it was run from, in name order); found once and
+        looked for again after SUB_DIRS_TTL or when one is gone."""
+        hit = self.transcript_lists.get(sid)
+        if hit is None or time.monotonic() - hit[0] >= subagents.SUB_DIRS_TTL or not all(p.exists() for p in hit[1]):
+            hit = self.transcript_lists[sid] = (time.monotonic(), subagents.transcript_paths(sid))
+        return hit[1]
+
+    def transcript_file(self, sid: str):
+        """The first of a session's transcript files by name (what the spend estimate reads), or None."""
+        files = self.transcript_files(sid)
+        return files[0] if files else None
+
     def transcript(self, sid: str):
         """The reader of a session's transcript, brought up to date (at most SCAN_MAX bytes per call), or None."""
-        path = self.transcript_paths.get(sid)
-        if path is None or not path.exists():
-            found = sorted(subagents.projects_root().glob(f"*/{sid}.jsonl"))
-            path = self.transcript_paths[sid] = found[0] if found else None
-            if path is None:
-                return None
+        path = self.transcript_file(sid)
+        if path is None:
+            return None
         tr = self.transcripts.get(path)
         if tr is None:
             tr = self.transcripts[path] = Transcript(path)
@@ -1354,10 +1377,16 @@ class Collector:
         return out
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
+        """Each role of a stage with when it last *wrote* (a journal line signed with its tag, for a hub also the last
+        write of its session's transcript) and when it was last *addressed* (a line of another author that has
+        @its-name in it). The two never mix: a broadcast `[pace] @hub …` says nothing about whether the hub lives."""
         ref = self.where[stage]
         lines = self.journal_lines(stage, 1) + self.journal_lines(stage, 0)   # oldest first: today's lines are met first from the end
         newest = {}   # base tag -> its newest line: what hc.tag_is(line tag, base) finds first from the end
-        for day_off, hhmm, t, _ in reversed(lines):
+        mentioned = {}   # @name -> [(day_off, "HH:MM", author tag)] of the lines that address it, newest first
+        for day_off, hhmm, t, text in reversed(lines):
+            for name in dict.fromkeys(MENTION_RE.findall(text)):
+                mentioned.setdefault(name, []).append((day_off, hhmm, t))
             if not t:
                 continue
             for c in {t, *t.split()[:1]}:
@@ -1367,23 +1396,62 @@ class Collector:
         out = []
         with hc.in_home(ref.home.path, ref.home.layer):
             goal = hc.title_goal(hc.stage_goal(ref.name))
+
         for name, rec in roles.items():
             tag = rec.get("tag") or name
             title = rec.get("title") or ""
             if name == "hub" and goal and goal not in title:  # a hub registered before the goal was set, or by --name
                 title = f"{title} — {goal}" if title else goal
-            last = None
-            if tag in newest:
-                day_off, hhmm = newest[tag]
-                hh, mm = map(int, hhmm.split(":"))
-                day = hc.now().date() - dt.timedelta(days=day_off)
-                last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
+            last = None if tag not in newest else self._clock(*newest[tag])
+            session = self._session_write(rec) if name == "hub" else None   # only a hub has no other sign of life
+            written, via = (session, "transcript") if session is not None and (last is None or session > last) else (last, "journal" if last is not None else None)
+            addressed = None   # the newest line of another author with @name, @tag or @<stage>-<tag> (as hc.mentions reads them)
+            for n in dict.fromkeys((name, tag, f"{ref.name}-{tag}")):
+                for d, h, author in mentioned.get(n, ()):
+                    if not hc.tag_is(author, tag):
+                        addressed = max(addressed or 0.0, self._clock(d, h))
+                        break
             ag = next((a for a in agents if a["stage"] == stage and a["dir_name"] == name), None)
             out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": title,
                         "pid": rec.get("pid"), "state": ag["state"] if ag else None,
-                        "journal_age_s": None if last is None else max(0, int(now - last))})
+                        "journal_age_s": None if last is None else max(0, int(now - last)),
+                        "last_written_age_s": None if written is None else max(0, int(now - written)), "last_written_via": via,
+                        "last_addressed_age_s": None if addressed is None else max(0, int(now - addressed))})
         out.sort(key=lambda r: (r["role"] != "hub", r["role"]))
         return out
+
+    @staticmethod
+    def _clock(day_off: int, hhmm: str) -> float:
+        """Epoch seconds of a journal line's "HH:MM" on the day `day_off` days back."""
+        hh, mm = map(int, hhmm.split(":"))
+        day = hc.now().date() - dt.timedelta(days=day_off)
+        return dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
+
+    def own_activity(self, stage: str, roles: dict):
+        """When the stage itself last did something, as epoch seconds, or None: its newest journal line written by one of
+        its own (see is_stage_author) or the time of its hub's last turn. What the stage is *told* (`[pace] @hub`, `[watchdog]`,
+        `[owner] @hub`, another stage's hub) is not here. The newest journal files are read until one has such a line."""
+        tags = [rec.get("tag") or name for name, rec in roles.items()]
+        ref, today, found = self.where[stage], hc.now().date(), None
+        with hc.in_home(ref.home.path, ref.home.layer):
+            work = hc.work_dir(ref.name)
+        days = []
+        for p in sorted(work.glob("journal-*.md"), reverse=True)[:OWN_ACTIVITY_FILES]:
+            try:
+                days.append((today - dt.date.fromisoformat(p.stem[len("journal-"):])).days)
+            except ValueError:
+                continue
+        for day_off in days:
+            mine = [self._clock(d, hhmm) for d, hhmm, tag, _ in self.journal_lines(stage, day_off) if is_stage_author(tag, tags)]
+            if mine:
+                found = max(mine)
+                break
+        sessions = [t for t in (self._session_write(rec) for name, rec in roles.items() if name == "hub") if t is not None]
+        return max([t for t in [found, *sessions] if t is not None], default=None)
+
+    def _session_write(self, rec: dict):
+        """When the role's session last did something itself (see subagents.session_write_time), via the file-list cache."""
+        return subagents.session_write_time(rec, self.transcript_files)
 
     # -- journal
     def journal_lines(self, stage: str, day_off: int) -> list:
@@ -1866,8 +1934,10 @@ def summary_rows(snap: dict, width: int) -> list:
         for r in rl:
             hub = "* " if r["role"] == "hub" else "  "
             state = WORD.get(r["state"], r["kind"] or "") if r["state"] else (r["kind"] or "")
-            rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  journal "
-                              + (f"{fmt_age(r['journal_age_s'])} ago" if r["journal_age_s"] is not None else "—") + f"  {r['title']}",
+            wrote = f"wrote {fmt_age(r['last_written_age_s'])} ago" + (" (transcript)" if r["last_written_via"] == "transcript" else "") \
+                if r["last_written_age_s"] is not None else "wrote —"
+            told = f", addressed {fmt_age(r['last_addressed_age_s'])} ago" if r["last_addressed_age_s"] is not None else ""
+            rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  {wrote}{told}  {r['title']}",
                               width, "norm" if r["role"] == "hub" else "dim", "   ", "     ", 2)
         rows += wrap_rows(spend_text(snap["spend"].get(stage) or {}), width, "dim", "   ", "     ", 2)
     lim = snap.get("limits")

@@ -116,6 +116,7 @@ final class Npc {
     init(_ n: GNode, speed: Double, hwLover: Bool) { a = n; b = n; self.speed = speed; self.hwLover = hwLover; x = n.x; y = n.y }
 }
 
+let AMBIENT = ["flyer-police", "flyer-limo", "flyer-van"]   // the page's three unmanned flyers
 struct Flyer { let rx: Double, ry: Double, v: Double, p: Double, alt: Double; var layer: CALayer? }
 
 struct Beam { let a: Entity, b: Entity, t0: Double, dur: Double, color: RGB; var hit = false; let line: CAShapeLayer; let head: CAGradientLayer }
@@ -387,10 +388,10 @@ final class DelamainSaverView: ScreenSaverView {
             c.layer = body
             npcs.append(c)
         }
-        for _ in 0..<3 {
+        for k in 0..<3 {
             var f = Flyer(rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10, layer: nil)
             let l = mk(CALayer(), flyerGroup)
-            l.contents = sprites.images["flyer"]
+            l.contents = sprites.images[AMBIENT[k]] ?? sprites.images["flyer"]   // the three unmanned flyers
             l.opacity = 0.4
             f.layer = l
             flyers.append(f)
@@ -985,7 +986,7 @@ final class DelamainSaverView: ScreenSaverView {
                 l.glow.contentsScale = backing; l.beacon.contentsScale = backing
                 setGlow(l.glow, tw.color)
                 setGlow(l.beacon, isOwner ? Pal.gold : Pal.magenta)
-                l.sprite.contents = isOwner ? sprites.images["owner-tower"] : (sprites.images[TOWERS[0]] ?? sprites.images["hub-tower"])
+                l.sprite.contents = isOwner ? sprites.images["owner-tower"] : (sprites.images[TOWERS[Int(jsHash(tw.stage) % UInt32(TOWERS.count))]] ?? sprites.images["hub-tower"])
                 if !isOwner { l.sign = text(signGroup, scale: backing, color: RGB(0xffd6f6).cg(0.92)) ; l.sign?.shadowColor = Pal.magenta.cg(); l.sign?.shadowOpacity = 1; l.sign?.shadowOffset = .zero }
                 tw.layers = l
                 return l
@@ -1048,8 +1049,12 @@ final class DelamainSaverView: ScreenSaverView {
 
     private func drawCabs(_ now: Double, _ u: Double, _ decay: Double) {
         for c in cabs.values {
-            let L = c.layers ?? { let l = CabLayers(cabGroup, scale: backing); l.glow.contentsScale = backing; c.layers = l; return l }()
-            if L.tint != c.color.key { L.tint = c.color.key; L.sprite.contents = sprites.flyer(c.color); setGlow(L.glow, c.color)
+            let L = c.layers ?? {
+                let l = CabLayers(cabGroup, scale: backing); l.glow.contentsScale = backing
+                l.sprite.contents = sprites.images[CABS[Int(jsHash(c.key) % UInt32(CABS.count))]] ?? sprites.images["flyer"]   // untinted
+                c.layers = l; return l
+            }()
+            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color)
                 L.trail.strokeColor = c.color.cg(0.28) }
             let g = P(c.x, c.y), p = P(c.x, c.y, c.z), w = u * 3.4
             L.group.zPosition = CGFloat(c.x + c.y)

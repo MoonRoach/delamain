@@ -113,7 +113,7 @@ Opening the extensionless `bin/agent-top` from PowerShell can trigger Windows' a
 
 ## Installed runtime
 
-The native envelope is version `1.0.9-wsl.1`; the builder retains the selected upstream
+The native envelope is version `1.0.10-wsl.1`; the builder retains the selected upstream
 Delamain core snapshot unchanged.
 Its build receipt records unchanged hashes of all original `bin/` files and Python
 hooks, and the original skill bodies before the transport prefix.

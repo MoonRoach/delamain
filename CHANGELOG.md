@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
+  stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
+  agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its
+  process lives, every journal line a beam to its addressee. Live by default; `?quiet=N` replays the last day after N
+  quiet seconds. `DelamainLive.saver` draws the same city natively (Core Animation, no WebKit) from the same server, with
+  settings in the `dev.delamain.saver` defaults suite. The page and the saver speak English and Russian (`?lang=`,
+  `lang`). Built by `viz/build.sh`; nothing in the plugin starts it. See [viz/README.md](viz/README.md).
+
 ## 1.0.22 — 2026-10-26
 
 - **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch

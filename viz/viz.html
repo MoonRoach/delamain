@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delamain Live</title>
+<style>
+  :root { --bg: #030409; --ink: #dfe6ee; --dim: #8a96a6; --amber: #ffb547; --cyan: #4fe3ff; --violet: #c08bff; --magenta: #ff4fd8; --gold: #ffd76a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); overflow: hidden;
+    font: 13px/1.35 ui-monospace, "SF Mono", Menlo, monospace; }
+  canvas { display: block; position: fixed; inset: 0; }
+  #hud { position: fixed; left: 26px; top: 22px; pointer-events: none; }
+  #hud .brand { letter-spacing: .38em; font-size: 16px; color: var(--magenta); }
+  #hud .sub { color: var(--dim); margin-top: 5px; }
+  #mode { position: fixed; right: 26px; top: 22px; color: var(--dim); text-align: right; pointer-events: none; }
+  #mode b { color: var(--cyan); font-weight: 500; letter-spacing: .2em; }
+  #mode.replay b { color: var(--violet); }
+  #legend { position: fixed; right: 26px; top: 66px; color: var(--dim); text-align: right; pointer-events: none; }
+  #legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px 0 14px; }
+  #ticker { position: fixed; left: 26px; bottom: 22px; width: min(820px, calc(100vw - 52px)); pointer-events: none;
+    padding: 10px 12px; background: linear-gradient(90deg, rgba(3,4,9,.85), rgba(3,4,9,0)); border-left: 2px solid rgba(255,79,216,.5); }
+  #ticker div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #ticker .t { color: var(--dim); }
+  #ticker .s { color: var(--violet); }
+  #tip { position: fixed; display: none; max-width: 420px; padding: 8px 10px; background: rgba(6,8,16,.94);
+    border: 1px solid rgba(192,139,255,.35); border-radius: 4px; pointer-events: none; white-space: pre-wrap; }
+  body.idle { cursor: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><div class="brand">DELAMAIN</div><div class="sub" id="sub"></div></div>
+<div id="mode"></div>
+<div id="legend"><i style="background:var(--violet)"></i><span id="lg-hub"></span><i style="background:var(--amber)"></i>claude<i style="background:var(--cyan)"></i>codex<i style="background:var(--gold)"></i>owner</div>
+<div id="ticker"></div>
+<div id="tip"></div>
+<script>
+"use strict";
+// A procedural coastal night city. A repository is a district, a stage hub a tower on a lot of its district,
+// the owner the megatower in the core; ground traffic is ambient.
+// A worker is a flying cab roaming the sky; every journal line is a beam between a spire and a cab.
+const qs = new URLSearchParams(location.search);
+const SOURCES = (qs.get("src") || location.origin).split(",").map(s => s.trim().replace(/\/$/, "")).filter(Boolean);
+// Live only by default; ?quiet=N replays the last day after N seconds without a live line.
+const QUIET_MS = qs.has("quiet") ? +qs.get("quiet") * 1000 : Infinity;
+const REPLAY_HOURS = +(qs.get("hours") || 24);
+const SPEED = +(qs.get("speed") || 120);
+const ASSET = location.origin;   // sprites come from the page's own server, whatever ?src reads: same-origin keeps getImageData allowed
+
+// ---- strings: English, Russian; ?lang=en|ru, else the browser's languages; journal text is shown as written --------
+const STRINGS = {
+  en: { connecting: "connecting…", hub: "hub", live: "LIVE", replay: "REPLAY", noRepo: "no repository",
+    count: (s, w, b) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"} · ${b} in flight`,
+    lastHours: h => `last ${h} h`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting" },
+  ru: { connecting: "подключаюсь…", hub: "хаб", live: "LIVE", replay: "REPLAY", noRepo: "без репозитория",
+    count: (s, w, b) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси · ${b} в рейсе`,
+    lastHours: h => `последние ${h} ч`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт" },
+};
+function ruPlural(n, one, few, many) {
+  const a = n % 10, b = n % 100;
+  return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
+}
+const LANG = [qs.get("lang"), ...(navigator.languages || [navigator.language])]
+  .map(l => String(l || "").slice(0, 2).toLowerCase()).find(l => STRINGS[l]) || "en";
+const T = STRINGS[LANG];
+document.documentElement.lang = LANG;
+document.getElementById("sub").textContent = T.connecting;
+document.getElementById("mode").innerHTML = `<b>${T.live}</b>`;
+document.getElementById("lg-hub").textContent = T.hub;
+
+const C = { amber: "#ffb547", cyan: "#4fe3ff", violet: "#c08bff", magenta: "#ff4fd8", gold: "#ffd76a", ink: "#dfe6ee",
+  dim: "#8a96a6", tool: "#9fb4c8", red: "#ff3b5c" };
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+
+// ---- sprites (black background keyed to alpha) ------------------------------------------------------
+const sprites = {};
+function loadSprite(name, file, key, solid = false) {
+  return new Promise(res => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (!key) { sprites[name] = img; return res(); }
+      const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+      try {
+        const d = g.getImageData(0, 0, c.width, c.height), p = d.data;
+        const soft = i => Math.max(0, Math.min(255, (Math.max(p[i], p[i + 1], p[i + 2]) - 5) * 12));
+        if (!solid) for (let i = 0; i < p.length; i += 4) p[i + 3] = soft(i);
+        else {   // a hull as black as the background: the silhouette is each row's span between its outer lit pixels
+          const w = c.width, h = c.height, lit = k => Math.max(p[k], p[k + 1], p[k + 2]) > 14;
+          for (let y = 0; y < h; y++) {
+            let x0 = -1, x1 = -1;
+            for (let x = 0; x < w; x++) if (lit((y * w + x) * 4)) { if (x0 < 0) x0 = x; x1 = x; }
+            for (let x = 0; x < w; x++) { const k = (y * w + x) * 4; p[k + 3] = x0 >= 0 && x > x0 && x < x1 && x1 - x0 > 2 ? 255 : soft(k); }
+          }
+        }
+        g.putImageData(d, 0, 0);
+      } catch (e) {}
+      sprites[name] = c; res();
+    };
+    img.onerror = () => res();
+    img.src = `${ASSET}/assets/${file}`;
+  });
+}
+const SPRITES = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "block", "corpo-block", "industrial-block",
+  "residential-block", "market-block", "port-block", "luxury-block", "badlands-block", "holo", "flyer"];
+const FALLBACK = { "residential-block": "block", "luxury-block": "corpo-block" };   // until those images exist
+const SOLID = new Set(["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "flyer"]);
+const ready = Promise.all([...SPRITES.map(n => loadSprite(n, n + ".png", true, SOLID.has(n))), loadSprite("sky", "skyline.jpg", false)])
+  .then(() => {
+    if (!sprites["hub-tower-red"] && sprites["hub-tower"]) {   // a red tower from the violet one
+      const src = sprites["hub-tower"], c = document.createElement("canvas"); c.width = src.width; c.height = src.height;
+      const g = c.getContext("2d"); g.filter = "hue-rotate(75deg) saturate(1.4)"; g.drawImage(src, 0, 0); sprites["hub-tower-red"] = c;
+    }
+  });
+const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red"];   // one per machine
+
+// ---- deterministic randomness -------------------------------------------------------------------------
+function hash(s) { let h = 2166136261; for (const ch of String(s)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return h >>> 0; }
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+// ---- geography -----------------------------------------------------------------------------------------
+// World units: x east, y south. Water to the west of the coast, desert outside the city blob.
+const coast = y => 9 + 5 * Math.sin(y / 13) + 2.5 * Math.sin(y / 5.3 + 1);
+const CX = 54, CY = 64;
+function inCity(x, y) {
+  const a = Math.atan2(y - CY, x - CX), wob = 1 + 0.08 * Math.sin(a * 5 + 1) + 0.05 * Math.sin(a * 9);
+  return ((x - CX) / 44) ** 2 + ((y - CY) / 58) ** 2 < wob * wob && x > coast(y) + 1;
+}
+const inWorld = (x, y) => ((x - CX) / 66) ** 2 + ((y - CY) / 80) ** 2 < 1 && x > coast(y) + 1;
+
+// Districts: archetype, seed, street grid angle and step, sprite mix. Names are this city's own.
+const DISTRICTS = [
+  { id: "core", name: "CORE", x: 52, y: 60, ang: 0, step: 2.6, mix: [["corpo-block", .75], ["block", .25]] },
+  { id: "foundry", name: "FOUNDRY", x: 46, y: 18, ang: .21, step: 3.4, mix: [["industrial-block", .8], ["port-block", .2]] },
+  { id: "docks", name: "DOCKS", x: 22, y: 34, ang: -.35, step: 3.4, mix: [["port-block", .7], ["industrial-block", .3]] },
+  { id: "bazaar", name: "BAZAAR", x: 66, y: 30, ang: .52, step: 2.4, mix: [["market-block", .7], ["residential-block", .3]] },
+  { id: "heights", name: "HEIGHTS", x: 84, y: 48, ang: -.6, step: 3.2, curvy: true, mix: [["luxury-block", .8], ["corpo-block", .2]] },
+  { id: "sprawl", name: "SPRAWL", x: 58, y: 94, ang: .14, step: 2.7, mix: [["residential-block", .6], ["market-block", .15], ["block", .25]] },
+  { id: "smelter", name: "SMELTER", x: 86, y: 90, ang: 0, step: 3.6, mix: [["industrial-block", .85], ["market-block", .15]] },
+  { id: "riviera", name: "RIVIERA", x: 26, y: 100, ang: .78, step: 3.1, curvy: true, dim: .6, mix: [["luxury-block", .5], ["market-block", .5]] },
+  { id: "wastes", name: "WASTES", x: 0, y: 0, ang: 0, step: 6, sparse: true, mix: [["badlands-block", 1]] },
+];
+const DIST = Object.fromEntries(DISTRICTS.map(d => [d.id, d]));
+const TINT = { core: "#9fe8ff", foundry: "#ffb547", docks: "#3fd6c4", bazaar: "#ff4fd8", heights: "#62f0d8", sprawl: "#ff7ab8",
+  smelter: "#ff8a3d", riviera: "#b38bff", wastes: "#c8a070" };
+const REPO_HOME = { "claude-agent-hub": "core", "santinel": "foundry", "dolya": "docks", "project-estimator": "sprawl",
+  "personal-fin-assistant": "heights", "raft-ceo-workspace": "bazaar" };
+const SPARE = ["bazaar", "sprawl", "heights", "smelter", "riviera", "docks", "foundry", "core"];
+
+function regionOf(x, y) {
+  if (!inWorld(x, y)) return null;
+  if (!inCity(x, y)) return "wastes";
+  let best = null, bd = Infinity;
+  for (const d of DISTRICTS) {
+    if (d.id === "wastes") continue;
+    const dd = (x - d.x) ** 2 + (y - d.y) ** 2 * 0.8;
+    if (dd < bd) { bd = dd; best = d.id; }
+  }
+  return best;
+}
+
+// Street graph: per-district rotated grids, stitched at their borders, plus ring, radial and coastal highways.
+const G = { nodes: [], lots: [] };
+function addNode(x, y, district, hw) { const n = { id: G.nodes.length, x, y, d: district, hw: !!hw, adj: [] }; G.nodes.push(n); return n; }
+function link(a, b, hw) { if (a === b || a.adj.some(e => e.to === b)) return;
+  const len = Math.hypot(a.x - b.x, a.y - b.y); a.adj.push({ to: b, len, hw }); b.adj.push({ to: a, len, hw }); }
+const grid = new Map();   // spatial hash, 6 units
+function index(n) { const k = `${Math.floor(n.x / 6)},${Math.floor(n.y / 6)}`; if (!grid.has(k)) grid.set(k, []); grid.get(k).push(n); }
+function nearest(x, y, pred, r = 12) {
+  let best = null, bd = r * r;
+  for (let gx = Math.floor((x - r) / 6); gx <= Math.floor((x + r) / 6); gx++)
+    for (let gy = Math.floor((y - r) / 6); gy <= Math.floor((y + r) / 6); gy++)
+      for (const n of grid.get(`${gx},${gy}`) || []) {
+        const dd = (n.x - x) ** 2 + (n.y - y) ** 2;
+        if (dd < bd && (!pred || pred(n))) { bd = dd; best = n; }
+      }
+  return best;
+}
+function pick(mix, r) { let acc = 0; for (const [n, p] of mix) { acc += p; if (r < acc) return n; } return mix[0][0]; }
+
+function buildCity() {
+  const rand = mulberry(20771);
+  for (const d of DISTRICTS) {
+    const cells = new Map(), K = Math.ceil(90 / d.step), c = Math.cos(d.ang), s = Math.sin(d.ang);
+    const ox = d.id === "wastes" ? CX : d.x, oy = d.id === "wastes" ? CY : d.y;
+    for (let i = -K; i <= K; i++) for (let j = -K; j <= K; j++) {
+      let u = i * d.step, v = j * d.step;
+      if (d.curvy) { u += Math.sin(j * 0.7) * d.step * 0.35; v += Math.cos(i * 0.6) * d.step * 0.35; }
+      const x = ox + u * c - v * s, y = oy + u * s + v * c;
+      if (regionOf(x, y) !== d.id) continue;
+      cells.set(`${i},${j}`, addNode(x, y, d.id));
+    }
+    for (const [k, n] of cells) {
+      const [i, j] = k.split(",").map(Number);
+      const r = cells.get(`${i + 1},${j}`), b = cells.get(`${i},${j + 1}`), rb = cells.get(`${i + 1},${j + 1}`);
+      const keep = d.sparse ? 0.55 : 1;
+      if (r && rand() < keep) link(n, r);
+      if (b && rand() < keep) link(n, b);
+      if (r && b && rb && !(d.sparse && rand() < 0.7) && !(rand() < (d.sparse ? 0.2 : 0.07)))   // an empty lot now and then
+        G.lots.push({ x: (n.x + r.x + b.x + rb.x) / 4, y: (n.y + r.y + b.y + rb.y) / 4, d: d.id, size: d.step, quad: [n, r, rb, b],
+          tall: d.sparse ? 0.3 : (d.id === "core" ? 1.2 : 0.4) + rand() * (d.id === "core" ? 2.6 : 1.1),
+          flip: rand() < .5, scale: 0.85 + rand() * 0.25, sprite: pick(d.mix, rand()), h: hash(k + d.id) });
+    }
+  }
+  G.nodes.forEach(index);
+  // stitch district borders: a dangling node joins the nearest node of another district
+  for (const n of G.nodes) if (n.adj.length < 3) { const m = nearest(n.x, n.y, o => o.d !== n.d, 5); if (m) link(n, m); }
+  // highways: a ring round the core, a curved radial to each district, the coast road, two exits into the desert
+  const hwNodes = [];
+  const road = pts => { let prev = null;
+    for (const [x, y] of pts) { if (!inWorld(x, y)) { prev = null; continue; }
+      const n = addNode(x, y, regionOf(x, y), true); hwNodes.push(n); if (prev) link(prev, n, true); prev = n; } };
+  const ring = []; for (let k = 0; k <= 36; k++) { const a = k / 36 * Math.PI * 2; ring.push([CX - 2 + Math.cos(a) * 21, CY - 4 + Math.sin(a) * 26]); }
+  road(ring);
+  for (const d of DISTRICTS) if (d.id !== "core" && d.id !== "wastes") {
+    const pts = [], bx = (CX + d.x) / 2 + (d.y - CY) * 0.18, by = (CY + d.y) / 2 - (d.x - CX) * 0.18;
+    for (let k = 0; k <= 14; k++) { const t = k / 14, u = 1 - t;
+      pts.push([u * u * CX + 2 * u * t * bx + t * t * d.x, u * u * CY + 2 * u * t * by + t * t * d.y]); }
+    road(pts);
+  }
+  const coastal = []; for (let y = 2; y <= 128; y += 3.5) coastal.push([coast(y) + 4, y]); road(coastal);
+  const east = []; for (let x = 70; x <= 125; x += 4) east.push([x, 70 + Math.sin(x / 9) * 6]); road(east);
+  const south = []; for (let y = 100; y <= 148; y += 4) south.push([60 + Math.sin(y / 7) * 5, y]); road(south);
+  hwNodes.forEach((n, k) => { if (k % 2 === 0) { const m = nearest(n.x, n.y, o => !o.hw, 7); if (m) link(n, m); } });
+  hwNodes.forEach(index);
+  G.lots = G.lots.filter(l => !hwNodes.some(n => Math.hypot(n.x - l.x, n.y - l.y) < l.size * 0.55));   // cleared under a highway
+  G.owner = G.lots.reduce((a, b) => (Math.hypot(a.x - CX, a.y - CY) < Math.hypot(b.x - CX, b.y - CY) ? a : b));
+  G.owner.owner = true;
+  G.holos = G.lots.filter(l => (l.d === "core" || l.d === "bazaar") && l.h % 11 === 0).slice(0, 5);
+  // a few sprite landmarks per district, never next to each other; every other lot is drawn as a schematic block
+  const marks = [];
+  for (const l of [...G.lots].sort((a, b) => a.h - b.h)) {
+    if (l.owner || l.h % 5) continue;
+    if (marks.some(m => Math.hypot(m.x - l.x, m.y - l.y) < 11)) continue;
+    l.landmark = true; marks.push(l);
+  }
+}
+
+// ---- model -------------------------------------------------------------------------------------------
+const machines = new Map();      // src -> {name, online, idx, stages}
+const towers = new Map();        // key -> hub tower
+const cabs = new Map();
+const beams = [], ripples = [], labels = [], npcs = [], flyers = [];   // npcs: ambient ground cars
+const owner = { key: "owner", kind: "owner", label: "owner", pulse: 0, color: C.gold };
+const repoDistrict = new Map();   // repo -> district id
+let lastLive = 0, replay = null;
+
+const keyOf = (m, stage, role) => role === "owner" ? "owner" : `${m}|${stage}|${role}`;
+const engineColor = e => e === "codex" ? C.cyan : e === "claude" ? C.amber : C.tool;
+
+function districtFor(repo) {
+  if (!repo) return "wastes";
+  if (!repoDistrict.has(repo)) {
+    const used = new Set(repoDistrict.values());
+    repoDistrict.set(repo, REPO_HOME[repo] && !used.has(REPO_HOME[repo]) ? REPO_HOME[repo]
+      : SPARE.find(d => !used.has(d)) || SPARE[hash(repo) % SPARE.length]);
+  }
+  return repoDistrict.get(repo);
+}
+
+function ensureStage(src, name, repo) {
+  const m = machines.get(src);
+  if (!m.stages.has(name)) m.stages.set(name, { name, open: true, workers: new Map(), repo: repo || "" });
+  const st = m.stages.get(name);
+  if (repo && !st.repo) { st.repo = repo; if (st.hub) { st.hub.lot = null; placeHubs(); } }
+  if (!st.hub) {
+    const k = keyOf(m.name, name, "hub");
+    st.hub = towers.get(k) || { key: k, kind: "hub", stage: name, machine: src, label: name, pulse: 0, color: C.violet, lot: null };
+    towers.set(k, st.hub); placeHubs();
+  }
+  return st;
+}
+
+// Each district's hubs take its lots nearest the district's seed, a lot apart; a full district spills over.
+function placeHubs() {
+  const taken = new Set([G.owner]);
+  for (const tw of towers.values()) if (tw.lot) taken.add(tw.lot);
+  for (const tw of towers.values()) {
+    if (tw.lot) continue;
+    const st = machines.get(tw.machine).stages.get(tw.stage);
+    const did = districtFor(st && st.repo);
+    const seed = did === "wastes" ? { x: CX + 34, y: CY + 30 } : DIST[did];
+    const free = (gap, d) => G.lots.filter(l => (d ? l.d === d : true) && !taken.has(l) &&
+      ![...taken].some(o => Math.hypot(o.x - l.x, o.y - l.y) < gap));
+    let pool = free(9.5, did);
+    if (!pool.length) pool = free(6, did);
+    if (!pool.length) pool = free(4, did);
+    if (!pool.length) pool = free(4, null);
+    pool.sort((a, b) => Math.hypot(a.x - seed.x, a.y - seed.y) - Math.hypot(b.x - seed.x, b.y - seed.y));
+    tw.lot = pool[Math.min(pool.length - 1, hash(tw.stage) % 3)] || G.lots[hash(tw.stage) % G.lots.length];
+    tw.district = tw.lot.d; taken.add(tw.lot);
+  }
+}
+
+function ensureCab(src, stageName, w) {   // a live worker of the state: its cab, made on first sight
+  const m = machines.get(src), st = ensureStage(src, stageName);
+  let c = st.workers.get(w.role);
+  if (!c) {
+    const k = keyOf(m.name, stageName, w.role), r = mulberry(hash(k));
+    c = { key: k, kind: "cab", stage: stageName, machine: src, role: w.role, label: w.role, home: st.hub, trail: [], pulse: 0,
+      engine: "", alt: 8 + r() * 9, p: r() * 20,
+      x: st.hub.lot.x + (r() - .5) * 8, y: st.hub.lot.y + (r() - .5) * 8, vx: 0, vy: 0, wp: null };
+    fly(c, performance.now(), 0);
+    st.workers.set(w.role, c); cabs.set(k, c);
+  }
+  Object.assign(c, { engine: w.engine || c.engine, model: w.model, working: w.working, title: w.title });
+  c.color = engineColor(c.engine);
+}
+
+function applyState(src, s) {
+  const m = machines.get(src);
+  m.name = s.machine;
+  const seen = new Set();
+  for (const sv of s.stages) {
+    const st = ensureStage(src, sv.name, sv.repo);
+    st.open = sv.open; seen.add(sv.name);
+    st.hub.title = (sv.hub && sv.hub.title) || sv.goal || ""; st.hub.open = sv.open;
+    const roles = new Set();
+    for (const w of sv.workers) if (w.role !== "hub") { ensureCab(src, sv.name, w); roles.add(w.role); }
+    for (const [role, c] of st.workers) if (!roles.has(role)) { st.workers.delete(role); cabs.delete(c.key); }   // its process ended
+  }
+  for (const [name, st] of m.stages) if (!seen.has(name)) {   // off the map at once: closed, or its hub sleeps
+    for (const c of st.workers.values()) cabs.delete(c.key);
+    if (st.hub) towers.delete(st.hub.key);
+    m.stages.delete(name);
+  }
+  hud();
+}
+
+// ---- ambient traffic on the street graph -------------------------------------------------------------------
+function nextHop(car) {   // a random turn, never straight back; a highway lover keeps to highways
+  const here = car.b;
+  let opts = here.adj.filter(e => e.to !== car.a);
+  if (car.hwLover) { const hw = opts.filter(e => e.hw); if (hw.length && Math.random() < .85) opts = hw; }
+  if (!opts.length) opts = here.adj;
+  return opts.length ? opts[Math.floor(Math.random() * opts.length)].to : here;
+}
+
+function drive(car, dt) {
+  const seg = Math.hypot(car.b.x - car.a.x, car.b.y - car.a.y) || 1;
+  car.t += car.speed * (car.a.hw && car.b.hw ? 2 : 1) * dt / seg;
+  while (car.t >= 1) {
+    car.t -= 1;
+    const nxt = nextHop(car);
+    car.a = car.b; car.b = nxt;
+    if (car.a === car.b) { car.t = 0; break; }
+  }
+  car.x = car.a.x + (car.b.x - car.a.x) * car.t; car.y = car.a.y + (car.b.y - car.a.y) * car.t;
+  if (car.a !== car.b) car.dir = [car.b.x - car.a.x, car.b.y - car.a.y];
+}
+
+function newNpc(r) {
+  const n = G.nodes[Math.floor(r() * G.nodes.length)];
+  const car = { a: n, b: n, t: 1, speed: 2 + r() * 2.5, trail: [], hwLover: r() < 0.45, x: n.x, y: n.y };
+  void (r() < .4 || r() < .5);   // the draws of a former colour, kept so the saver's port draws the same numbers
+  return car;
+}
+
+// ---- camera and projection ---------------------------------------------------------------------------------
+const cam = { x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1, until: 0 };
+let K = 4, BASE = { x: 0, y: 0 };
+const isoRaw = (x, y) => [(x - y), (x + y) * 0.5];
+function fit() {
+  if (!W || !G.nodes.length) return;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const n of G.nodes) { const [a, b] = isoRaw(n.x, n.y); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
+  K = Math.min((W - 60) / (x1 - x0), (H - 200) / (y1 - y0));
+  BASE = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+  if (!cam.x) { cam.x = cam.tx = BASE.x; cam.y = cam.ty = BASE.y; }
+}
+function P(x, y, lift = 0) {   // world -> screen, through the camera; lift raises the point by world units
+  const [a, b] = isoRaw(x, y);
+  return [W / 2 + (a - cam.x) * K * cam.z, H / 2 + 30 + (b - cam.y) * K * cam.z - lift * K * cam.z];
+}
+const unit = () => K * cam.z;   // screen pixels per world unit
+function focus(x, y) {   // the camera flies to where the city just spoke, then drifts back to the overview
+  if (qs.get("follow") === "0") return;
+  const [a, b] = isoRaw(x, y);
+  cam.tx = a; cam.ty = b; cam.tz = 2.1; cam.until = performance.now() + 7000;
+}
+function moveCamera(now, dt) {
+  if (now > cam.until) { cam.tx = BASE.x + Math.sin(now / 23000) * 6; cam.ty = BASE.y + Math.cos(now / 31000) * 4; cam.tz = 1; }
+  const k = 1 - Math.pow(0.25, dt);
+  cam.x += (cam.tx - cam.x) * k * 0.6; cam.y += (cam.ty - cam.y) * k * 0.6; cam.z += (cam.tz - cam.z) * k * 0.5;
+}
+
+// ---- journal events -----------------------------------------------------------------------------------
+// A line's writer and addressees are drawn only if they are on the map: a live worker's cab, else its stage's tower;
+// a stage without a tower (closed, or not on this machine) draws nothing and shows only in the ticker.
+function resolve(src, [stage, role]) {
+  if (role === "owner") return owner;
+  const st = machines.get(src)?.stages.get(stage);
+  if (!st || !st.hub) return null;
+  if (role === "hub") return st.hub;
+  return st.workers.get(role) || st.hub;
+}
+
+function onLine(src, ev, replayed) {
+  if (!machines.get(src)) return;
+  const from = resolve(src, ev.from);
+  if (!from) return tick(ev, replayed);
+  const tos = [...new Set((ev.to || []).map(t => resolve(src, t)).filter(t => t && t !== from))];
+  from.pulse = 1;
+  for (const to of tos) send(from, to);
+  if (!tos.length) ripples.push({ at: anchor(from), t0: performance.now(), color: from.color });
+  const [fx, fy] = worldOf(from); focus(fx, fy);
+  const text = short(ev.text, 72);   // a broadcast to every stage shows its line once
+  if (!labels.some(l => l.text === text && performance.now() - l.t0 < 3000)) labels.push({ who: from, text, t0: performance.now() });
+  if (labels.length > 5) labels.shift();
+  tick(ev, replayed);
+}
+
+const worldOf = n => n.kind === "cab" ? [n.x, n.y] : n.kind === "owner" ? [G.owner.x, G.owner.y] : [n.lot.x, n.lot.y];
+const TOWER_STEP = 4.2;   // hub towers keep one size in every district
+const towerLift = n => n.kind === "owner" ? 7.5 : 6.4 * TOWER_STEP / 5.5;
+
+function send(from, to) {   // every line is a beam: from a spire down to a cab, or from a cab up to a spire
+  beams.push({ a: from, b: to, t0: performance.now(), dur: 1400, color: from.color });
+}
+
+// A cab wanders: it picks a point over the city (now and then one by its hub), turns towards it smoothly and flies
+// there at a steady speed, then picks the next one. A busy cab is only a little faster.
+const CRUISE = 3.2;
+function waypoint(c) {
+  for (let k = 0; k < 20; k++) {
+    const near = Math.random() < 0.35 && c.home?.lot;
+    const x = near ? c.home.lot.x + (Math.random() - .5) * 16 : CX + (Math.random() - .5) * 80;
+    const y = near ? c.home.lot.y + (Math.random() - .5) * 16 : CY + (Math.random() - .5) * 110;
+    if (inCity(x, y)) return [x, y];
+  }
+  return [CX, CY];
+}
+function fly(c, now, dt) {
+  if (!c.wp || Math.hypot(c.wp[0] - c.x, c.wp[1] - c.y) < 2) c.wp = waypoint(c);
+  const dx = c.wp[0] - c.x, dy = c.wp[1] - c.y, d = Math.hypot(dx, dy) || 1;
+  const speed = CRUISE * (c.working ? 1.3 : 1), turn = Math.min(1, dt * 0.9);
+  c.vx += (dx / d * speed - c.vx) * turn; c.vy += (dy / d * speed - c.vy) * turn;
+  c.px = c.x; c.py = c.y;
+  c.x += c.vx * dt; c.y += c.vy * dt;
+  c.z = c.alt + Math.sin(now / 2400 + c.p) * 1.2;
+}
+
+function anchor(n) {
+  if (n.kind === "cab") return () => P(n.x, n.y, n.z);
+  return () => { const [x, y] = worldOf(n); return P(x, y, towerLift(n)); };
+}
+
+const short = (s, k) => s.length > k ? s.slice(0, k - 1) + "…" : s;
+const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const ticker = document.getElementById("ticker");
+function tick(ev, replayed) {
+  const d = new Date(ev.at), hm = d.toTimeString().slice(0, 5);
+  const row = document.createElement("div");
+  const who = ev.to && ev.to.length ? ` → ${ev.to.map(t => t[1] === "hub" && t[0] !== ev.stage ? `hub ${t[0]}` : t[1]).join(", ")}` : "";
+  row.innerHTML = `<span class="t">${hm}</span> <span class="s">${esc(ev.stage)}</span> ${esc(ev.tag)}${esc(who)}: ${esc(short(ev.text, 140))}`;
+  if (replayed) row.style.color = "#aab4c0";
+  ticker.appendChild(row);
+  while (ticker.children.length > 6) ticker.removeChild(ticker.firstChild);
+  [...ticker.children].forEach((r, i, a) => r.style.opacity = 0.3 + 0.7 * (i + 1) / a.length);
+  if (replay) document.getElementById("mode").innerHTML =
+    `<b>${T.replay}</b> · ${d.toLocaleDateString(LANG, { day: "2-digit", month: "2-digit" })} ${hm}<br>${SPEED}× · ${T.lastHours(REPLAY_HOURS)}`;
+}
+
+// ---- sources ---------------------------------------------------------------------------------------------
+async function connect(src, idx) {
+  machines.set(src, { name: src, stages: new Map(), online: false, idx });
+  try { applyState(src, await (await fetch(src + "/state")).json()); } catch (e) {}
+  const es = new EventSource(src + "/events");
+  es.addEventListener("state", e => { machines.get(src).online = true; applyState(src, JSON.parse(e.data)); });
+  es.addEventListener("line", e => { lastLive = performance.now(); stopReplay(); onLine(src, JSON.parse(e.data), false); });
+  es.onerror = () => { machines.get(src).online = false; hud(); };
+}
+
+function hud() {
+  let stages = 0, workers = 0, busy = 0;
+  for (const m of machines.values()) for (const st of m.stages.values()) {
+    if (st.open) stages++;
+    workers += st.workers.size;
+    for (const c of st.workers.values()) if (c.working) busy++;
+  }
+  const names = [...machines.values()].map(m => (m.online ? "● " : "○ ") + m.name).join("   ");
+  document.getElementById("sub").textContent = `${names}   ·   ${T.count(stages, workers, busy)}`;
+}
+
+async function startReplay() {
+  const all = [];
+  for (const src of SOURCES) {
+    try { const h = await (await fetch(`${src}/history?hours=${REPLAY_HOURS}`)).json(); for (const ev of h.lines) all.push([src, ev]); } catch (e) {}
+  }
+  if (!all.length) { lastLive = performance.now(); return; }   // nothing to replay: ask again after QUIET_MS, not every frame
+  all.sort((a, b) => a[1].at.localeCompare(b[1].at));
+  replay = { all, i: 0, next: performance.now() + 400 };
+  document.getElementById("mode").className = "replay";
+}
+function stopReplay() {
+  if (!replay) return;
+  replay = null;
+  const mode = document.getElementById("mode"); mode.className = ""; mode.innerHTML = `<b>${T.live}</b>`;
+}
+function stepReplay(now) {
+  if (!replay || now < replay.next) return;
+  const [src, ev] = replay.all[replay.i];
+  onLine(src, ev, true);
+  replay.i++;
+  if (replay.i >= replay.all.length) { replay.i = 0; replay.next = now + 6000; return; }
+  const gap = (new Date(replay.all[replay.i][1].at) - new Date(ev.at)) / SPEED;
+  replay.next = now + Math.max(450, Math.min(gap, 5000));
+}
+
+// ---- drawing ------------------------------------------------------------------------------------------
+function rgba(hex, a) { const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`; }
+function glow(x, y, r, color, a) {
+  if (!(r > 0)) return;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgba(color, a)); g.addColorStop(1, rgba(color, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+function poly(pts, fill) { ctx.beginPath(); pts.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); }
+
+const rain = Array.from({ length: 180 }, () => [Math.random(), Math.random(), 0.4 + Math.random() * 0.6]);
+let outline = null;
+function shapes() {   // outlines of the world, the city and the water, in world units
+  const world = [], city = [], water = [];
+  for (let k = 0; k < 160; k++) {
+    const a = k / 160 * Math.PI * 2;
+    let r = 1; while (r > 0 && !inWorld(CX + Math.cos(a) * 66 * r, CY + Math.sin(a) * 80 * r)) r -= 0.01;
+    world.push([CX + Math.cos(a) * 66 * r, CY + Math.sin(a) * 80 * r]);
+    let q = 1; while (q > 0 && !inCity(CX + Math.cos(a) * 50 * q, CY + Math.sin(a) * 66 * q)) q -= 0.01;
+    city.push([CX + Math.cos(a) * 50 * q, CY + Math.sin(a) * 66 * q]);
+  }
+  for (let y = -4; y <= 134; y += 2) water.push([coast(y), y]);   // a bay along the coast, not the whole west
+  for (let y = 134; y >= -4; y -= 2) water.push([coast(y) - 18 - 4 * Math.sin(y / 9), y]);
+  outline = { world, city, water };
+}
+
+function drawBackdrop() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, "#030409"); g.addColorStop(.5, "#0a0716"); g.addColorStop(1, "#05040b");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const sky = sprites.sky;
+  if (sky) {
+    const sw = Math.max(W, H * 1.6) * 1.2, sh = sw * sky.height / sky.width, x = (W - sw) / 2 - (cam.x - BASE.x) * K * 0.15;
+    ctx.globalAlpha = 0.5; ctx.drawImage(sky, x, -sh * 0.12 - (cam.y - BASE.y) * K * 0.1, sw, sh); ctx.globalAlpha = 1;
+  }
+}
+
+function drawGround(now) {
+  const map = pts => pts.map(([x, y]) => P(x, y));
+  const wg = ctx.createLinearGradient(0, 0, W * .6, H);   // the bay, with drifting neon reflections
+  wg.addColorStop(0, "rgba(6,18,38,.95)"); wg.addColorStop(1, "rgba(10,8,30,.95)");
+  poly(map(outline.water), wg);
+  ctx.globalCompositeOperation = "lighter";
+  for (let k = 0; k < 70; k++) {
+    const y = (k * 37) % 160 - 20, x = coast(y) - 3 - ((k * 13) % 23) - Math.sin(now / 1400 + k) * 1.5;
+    const [sx, sy] = P(x, y), w = unit() * (1 + (k % 4));
+    ctx.fillStyle = rgba(k % 3 ? C.magenta : C.cyan, 0.08 + 0.06 * Math.sin(now / 700 + k));
+    ctx.fillRect(sx, sy, w, Math.max(1, unit() * 0.12));
+  }
+  ctx.globalCompositeOperation = "source-over";
+  poly(map(outline.world), "rgba(22,14,10,.92)");   // desert
+  poly(map(outline.city), "rgba(9,9,20,.96)");
+  ctx.lineCap = "round";   // streets first, then highways over them with moving traffic light
+  ctx.strokeStyle = "rgba(150,120,230,.15)"; ctx.lineWidth = Math.max(1, unit() * 0.32); ctx.beginPath();
+  for (const n of G.nodes) for (const e of n.adj) if (!e.hw && e.to.id > n.id) { ctx.moveTo(...P(n.x, n.y)); ctx.lineTo(...P(e.to.x, e.to.y)); }
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(20,16,40,.95)"; ctx.lineWidth = Math.max(2, unit() * 1.1); ctx.beginPath();
+  for (const n of G.nodes) for (const e of n.adj) if (e.hw && e.to.id > n.id) { ctx.moveTo(...P(n.x, n.y)); ctx.lineTo(...P(e.to.x, e.to.y)); }
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255,79,216,.28)"; ctx.lineWidth = Math.max(1, unit() * 0.16); ctx.stroke();
+  ctx.setLineDash([unit() * 0.6, unit() * 1.8]); ctx.lineDashOffset = -now / 40;
+  ctx.strokeStyle = "rgba(255,214,150,.5)"; ctx.lineWidth = Math.max(1, unit() * 0.2); ctx.stroke();
+  ctx.setLineDash([]); ctx.lineCap = "butt";
+}
+
+function drawDistrictNames() {
+  ctx.textAlign = "center";
+  const repos = new Map([...repoDistrict].map(([r, d]) => [d, r]));
+  for (const d of DISTRICTS) {
+    if (d.id === "wastes") continue;
+    const repo = repos.get(d.id), [x, y] = P(d.x, d.y);
+    ctx.font = `${Math.max(11, unit() * 2.1)}px ui-monospace, Menlo, monospace`;
+    ctx.fillStyle = repo ? "rgba(79,227,255,.6)" : "rgba(138,150,166,.35)";
+    ctx.fillText(d.name, x, y + unit() * 9);
+    if (repo) { ctx.font = `${Math.max(10, unit() * 1.3)}px ui-monospace, Menlo, monospace`; ctx.fillStyle = "rgba(223,230,238,.65)";
+      ctx.fillText(repo, x, y + unit() * 11.2); }
+  }
+  if ([...towers.values()].some(t => t.district === "wastes")) {
+    const [x, y] = P(CX + 34, CY + 38); ctx.font = `${Math.max(11, unit() * 2)}px ui-monospace, Menlo, monospace`;
+    ctx.fillStyle = "rgba(255,181,71,.45)"; ctx.fillText("WASTES", x, y);
+    ctx.font = `${Math.max(10, unit() * 1.3)}px ui-monospace, Menlo, monospace`; ctx.fillText(T.noRepo, x, y + unit() * 2.2);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawLot(l, now) {
+  if (l.landmark) return drawLandmark(l);
+  const col = TINT[l.d], dim = DIST[l.d].dim || 1, k = 0.16;   // inset from the streets
+  const q = l.quad.map(n => [n.x + (l.x - n.x) * k * 2, n.y + (l.y - n.y) * k * 2]);
+  const [cx, cy] = P(l.x, l.y);
+  if (cx < -80 || cx > W + 80 || cy < -80 || cy > H + 80) return;
+  const h = l.tall, base = q.map(([x, y]) => P(x, y)), top = q.map(([x, y]) => P(x, y, h));
+  // the two faces turned to the viewer, then the roof with a neon rim
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4, [ax, ay] = q[i], [bx, by] = q[j];
+    const nx = by - ay, ny = -(bx - ax), side = (nx + ny) * Math.sign((ax - l.x) * nx + (ay - l.y) * ny || 1);
+    if (side <= 0) continue;
+    ctx.beginPath(); ctx.moveTo(...base[i]); ctx.lineTo(...base[j]); ctx.lineTo(...top[j]); ctx.lineTo(...top[i]); ctx.closePath();
+    ctx.fillStyle = `rgba(10,10,24,${0.92 * dim})`; ctx.fill();
+    ctx.strokeStyle = rgba(col, 0.22 * dim); ctx.lineWidth = 1; ctx.stroke();
+  }
+  ctx.beginPath(); top.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
+  ctx.fillStyle = rgba(col, 0.07 * dim); ctx.fill();
+  const flick = l.h % 9 === 0 ? 0.5 + 0.5 * Math.sin(now / 600 + l.h) : 1;
+  ctx.strokeStyle = rgba(col, (0.35 + (l.h % 4) * 0.08) * dim * flick); ctx.lineWidth = Math.max(1, unit() * 0.12); ctx.stroke();
+  if (l.h % 3 === 0) {   // a lit window strip on the front edge
+    const [x1, y1] = top[2], [x2, y2] = top[3];
+    ctx.strokeStyle = rgba(col, 0.5 * dim); ctx.lineWidth = Math.max(1, unit() * 0.1);
+    ctx.beginPath(); ctx.moveTo(x1 + (x2 - x1) * .2, y1 + (y2 - y1) * .2 + unit() * h * .45); ctx.lineTo(x1 + (x2 - x1) * .8, y1 + (y2 - y1) * .8 + unit() * h * .45); ctx.stroke();
+  }
+}
+
+function drawLandmark(l) {
+  const s = sprites[l.sprite] || sprites[FALLBACK[l.sprite]] || sprites.block;
+  if (!s) return;
+  const [x, y] = P(l.x, l.y), w = l.size * 2 * unit() * 1.1, h = w * s.height / s.width;
+  if (x < -w || x > W + w || y < -h || y > H + h) return;
+  ctx.save(); ctx.translate(x, y); if (l.flip) ctx.scale(-1, 1);
+  ctx.globalAlpha = 0.9 * (DIST[l.d].dim || 1);
+  ctx.drawImage(s, -w / 2, -h * 0.6, w, h); ctx.restore(); ctx.globalAlpha = 1;
+}
+
+function drawTower(tw, now) {
+  const isOwner = tw.kind === "owner", lot = isOwner ? G.owner : tw.lot;
+  const s = isOwner ? sprites["owner-tower"] : sprites[TOWERS[(machines.get(tw.machine)?.idx || 0) % TOWERS.length]] || sprites["hub-tower"];
+  const [x, y] = P(lot.x, lot.y), step = isOwner ? 6.5 : TOWER_STEP;
+  const w = step * 2 * unit() * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86;
+  glow(x, y, unit() * step * (0.9 + tw.pulse * 0.8), tw.color, 0.25 + tw.pulse * 0.5);
+  if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
+  const top = P(lot.x, lot.y, towerLift(tw))[1], beat = 0.5 + 0.5 * Math.sin(now / 700 + hash(tw.key) % 10);
+  glow(x, top, unit() * (1.6 + beat * 0.6 + tw.pulse * 2), isOwner ? C.gold : C.magenta, 0.55 + tw.pulse * 0.4);
+  tw.pulse *= 0.965;
+}
+
+function drawSign(tw) {   // the stage's name as a neon sign over the street, above every building
+  const [x, y] = P(tw.lot.x, tw.lot.y), dim = tw.open === false ? 0.45 : 1;
+  ctx.font = `${Math.max(10, unit() * 1.15)}px ui-monospace, Menlo, monospace`; ctx.textAlign = "center";
+  ctx.shadowColor = C.magenta; ctx.shadowBlur = 8 + tw.pulse * 14;
+  ctx.fillStyle = rgba(tw.open === false ? C.dim : "#ffd6f6", 0.92 * dim); ctx.fillText(tw.label, x, y + unit() * 2.4);
+  ctx.shadowBlur = 0; ctx.textAlign = "left";
+}
+
+function drawHolo(l, now) {
+  const s = sprites.holo; if (!s) return;
+  const [x, y] = P(l.x, l.y, 9 + Math.sin(now / 1800 + l.h) * 0.8), w = unit() * 7;
+  ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.35 + 0.2 * Math.sin(now / 900 + l.h);
+  ctx.save(); ctx.translate(x, y); if (l.h % 2) ctx.scale(-1, 1); ctx.drawImage(s, -w / 2, -w / 2, w, w); ctx.restore();
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+}
+
+function drawNpc(car) {   // a grey ground car: red tail trail, headlight cone
+  const [x, y] = P(car.x, car.y), a = 0.55;
+  car.trail.push([car.x, car.y]); if (car.trail.length > 12) car.trail.shift();
+  if (x < -40 || x > W + 40 || y < -40 || y > H + 40) return;
+  ctx.globalCompositeOperation = "lighter";
+  for (let k = 1; k < car.trail.length; k++) {
+    const [ax, ay] = P(...car.trail[k - 1]), [bx, by] = P(...car.trail[k]);
+    ctx.strokeStyle = rgba(C.red, a * 0.55 * k / car.trail.length);
+    ctx.lineWidth = Math.max(1, unit() * 0.2); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+  }
+  const [dx, dy] = car.dir || [1, 0], [sx, sy] = isoRaw(dx, dy), ang = Math.atan2(sy, sx);
+  const L = unit() * 0.7, Wd = L * 0.45;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.fillStyle = rgba("#5a6070", a * 0.8); ctx.beginPath(); ctx.roundRect(-L / 2, -Wd / 2, L, Wd, Wd * 0.4); ctx.fill();
+  const beam = ctx.createLinearGradient(L / 2, 0, L / 2 + L * 1.8, 0);
+  beam.addColorStop(0, rgba("#fff6d8", a * 0.4)); beam.addColorStop(1, rgba("#fff6d8", 0));
+  ctx.fillStyle = beam; ctx.beginPath(); ctx.moveTo(L / 2, -Wd / 2); ctx.lineTo(L / 2 + L * 1.8, -Wd); ctx.lineTo(L / 2 + L * 1.8, Wd); ctx.lineTo(L / 2, Wd / 2); ctx.fill();
+  ctx.fillStyle = rgba(C.red, a); ctx.fillRect(-L / 2, -Wd / 2, Math.max(1, L * 0.1), Wd);
+  ctx.restore();
+  ctx.globalCompositeOperation = "source-over";
+}
+
+const tinted = {};
+function flyerSprite(color) {
+  const s = sprites.flyer; if (!s) return null;
+  if (!tinted[color]) {
+    const c = document.createElement("canvas"); c.width = s.width; c.height = s.height;
+    const g = c.getContext("2d"); g.drawImage(s, 0, 0);
+    g.globalCompositeOperation = "source-atop"; g.fillStyle = rgba(color, 0.32); g.fillRect(0, 0, c.width, c.height);
+    tinted[color] = c;
+  }
+  return tinted[color];
+}
+
+function drawCab(c, now) {   // a worker: a tinted flyer over its ground shadow, with a trail and a glow
+  const s = flyerSprite(c.color); if (!s) return;
+  const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
+  ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 18) c.trail.shift();
+  ctx.globalCompositeOperation = "lighter";
+  for (let k = 1; k < c.trail.length; k++) {
+    const [ax, ay] = P(...c.trail[k - 1]), [bx, by] = P(...c.trail[k]);
+    ctx.strokeStyle = rgba(c.color, 0.5 * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * 0.3);
+    ctx.beginPath(); ctx.moveTo(ax, ay + w * 0.15); ctx.lineTo(bx, by + w * 0.15); ctx.stroke();
+  }
+  glow(x, y + w * 0.2, w * (0.55 + c.pulse * 0.6 + (c.working ? 0.15 * (1 + Math.sin(now / 300)) : 0)), c.color, 0.35 + c.pulse * 0.5);
+  ctx.globalCompositeOperation = "source-over";
+  const [vx] = isoRaw(c.x - c.px, c.y - c.py);
+  ctx.save(); ctx.translate(x, y); if (vx < 0) ctx.scale(-1, 1);
+  ctx.drawImage(s, -w / 2, -w / 2, w, w); ctx.restore();
+  if (c.pulse > 0.1 || hover === c) {
+    ctx.font = `${Math.max(10, unit() * 0.95)}px ui-monospace, Menlo, monospace`; ctx.textAlign = "center";
+    ctx.fillStyle = rgba(C.ink, Math.max(c.pulse, hover === c ? 1 : 0)); ctx.fillText(c.label, x, y - w * 0.45);
+    ctx.textAlign = "left";
+  }
+  c.pulse *= 0.965;
+}
+
+function drawFlyer(f, now) {
+  const s = sprites.flyer; if (!s) return;
+  const t = now / 1000 * f.v + f.p, x = CX + Math.cos(t) * f.rx, y = CY + Math.sin(t * 1.3) * f.ry;
+  const [sx, sy] = P(x, y, f.alt), w = unit() * 2.4;
+  const [vx] = isoRaw(-Math.sin(t) * f.rx, Math.cos(t * 1.3) * 1.3 * f.ry);
+  ctx.save(); ctx.translate(sx, sy); if (vx < 0) ctx.scale(-1, 1);
+  ctx.globalAlpha = 0.4; ctx.drawImage(s, -w / 2, -w / 2, w, w); ctx.restore(); ctx.globalAlpha = 1;
+}
+
+function bez(a, b, t, lift) {
+  const mx = (a[0] + b[0]) / 2, my = Math.min(a[1], b[1]) - lift, u = 1 - t;
+  return [u * u * a[0] + 2 * u * t * mx + t * t * b[0], u * u * a[1] + 2 * u * t * my + t * t * b[1]];
+}
+function drawBeams(now) {
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = beams.length - 1; i >= 0; i--) {
+    const bm = beams[i], t = (now - bm.t0) / bm.dur;
+    if (t >= 1.25) { beams.splice(i, 1); continue; }
+    const A = anchor(bm.a)(), B = anchor(bm.b)();
+    const lift = Math.min(220, Math.hypot(B[0] - A[0], B[1] - A[1]) * 0.35 + 30);
+    const head = Math.min(1, t), tail = Math.max(0, t - 0.45);
+    ctx.strokeStyle = rgba(bm.color, 0.75 * (1 - Math.max(0, t - 1) * 4)); ctx.lineWidth = 2; ctx.beginPath();
+    for (let k = 0; k <= 24; k++) { const [x, y] = bez(A, B, tail + (head - tail) * k / 24, lift); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    const [hx, hy] = bez(A, B, head, lift); glow(hx, hy, 14, bm.color, 0.8);
+    if (t >= 1 && !bm.hit) { bm.hit = true; bm.b.pulse = 1; ripples.push({ at: () => B, t0: now, color: bm.color }); }
+  }
+  ctx.globalCompositeOperation = "source-over";
+}
+
+function drawRipples(now) {
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i], t = (now - r.t0) / 1200;
+    if (t >= 1) { ripples.splice(i, 1); continue; }
+    const [x, y] = r.at(), rad = 6 + t * unit() * 4;
+    ctx.strokeStyle = rgba(r.color || C.ink, 0.7 * (1 - t)); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(x, y, rad, rad / 2, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+function drawLabels(now) {
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const l = labels[i], t = (now - l.t0) / 5600;
+    if (t >= 1) { labels.splice(i, 1); continue; }
+    const a = t < .08 ? t / .08 : 1 - Math.max(0, (t - .6) / .4);
+    let [x, y] = anchor(l.who)();
+    x = Math.min(x + 18, W - 380); y = y - 10 - t * 12;
+    ctx.font = "12px ui-monospace, Menlo, monospace";
+    const w = ctx.measureText(l.text).width + 18;
+    ctx.fillStyle = `rgba(6,6,16,${0.84 * a})`; ctx.fillRect(x, y - 14, w, 21);
+    ctx.fillStyle = rgba(l.who.color || C.ink, a); ctx.fillRect(x, y - 14, 2, 21);
+    ctx.fillStyle = rgba(C.ink, a); ctx.fillText(l.text, x + 10, y + 1);
+  }
+}
+
+function drawRain(t) {
+  ctx.strokeStyle = "rgba(160,180,255,.07)"; ctx.lineWidth = 1; ctx.beginPath();
+  for (const d of rain) { const x = (d[0] * W + t * 0.04 * d[2]) % W, y = (d[1] * H + t * 0.5 * d[2]) % H; ctx.moveTo(x, y); ctx.lineTo(x - 3, y + 14 * d[2]); }
+  ctx.stroke();
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  moveCamera(now, dt);
+  drawBackdrop();
+  drawGround(now);
+  for (const c of cabs.values()) fly(c, now, dt);
+  for (const c of npcs) drive(c, dt);
+  const hubLots = new Set([...towers.values()].map(t => t.lot));
+  const items = [];   // painter's order by depth on the map
+  for (const l of G.lots) if (!hubLots.has(l) && !l.owner) items.push([l.x + l.y, () => drawLot(l, now)]);
+  items.sort((a, b) => a[0] - b[0]);
+  for (const [, draw] of items) draw();
+  for (const c of npcs) drawNpc(c);
+  // towers stand above the schematic blocks, so no block in front hides a hub
+  const tall = [...towers.values()].filter(t => t.lot).concat([owner]);
+  tall.sort((a, b) => { const [ax, ay] = worldOf(a), [bx, by] = worldOf(b); return ax + ay - bx - by; });
+  for (const tw of tall) drawTower(tw, now);
+  drawDistrictNames();
+  for (const l of G.holos) drawHolo(l, now);
+  for (const tw of towers.values()) if (tw.lot) drawSign(tw);
+  for (const c of [...cabs.values()].sort((a, b) => a.x + a.y - b.x - b.y)) drawCab(c, now);
+  for (const f of flyers) drawFlyer(f, now);
+  drawBeams(now); drawRipples(now); drawLabels(now); drawRain(now);
+  if (!replay && now - lastLive > QUIET_MS && !frame.asked) { frame.asked = true; startReplay().finally(() => frame.asked = false); }
+  stepReplay(now);
+  requestAnimationFrame(frame);
+}
+
+// ---- interaction ---------------------------------------------------------------------------------------
+let hover = null, idleTimer = 0;
+const tip = document.getElementById("tip");
+addEventListener("mousemove", e => {
+  document.body.classList.remove("idle"); clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000);
+  hover = null; let best = (unit() * 2) ** 2;
+  for (const c of cabs.values()) { const [x, y] = P(c.x, c.y, c.z), d = (x - e.clientX) ** 2 + (y - e.clientY) ** 2; if (d < best) { best = d; hover = c; } }
+  if (!hover) for (const tw of [...towers.values(), owner]) {
+    if (tw.kind === "hub" && !tw.lot) continue;
+    const [wx, wy] = worldOf(tw), [x, y] = P(wx, wy), top = P(wx, wy, towerLift(tw))[1];
+    if (Math.abs(e.clientX - x) < unit() * 2.5 && e.clientY > top && e.clientY < y + unit() * 3) { hover = tw; break; }
+  }
+  if (!hover) { tip.style.display = "none"; return; }
+  const m = hover.machine && machines.get(hover.machine);
+  const lines = hover.kind === "owner" ? ["owner"] : hover.kind === "hub"
+    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.open === false ? T.closed : ""]
+    : [`${hover.role} · ${hover.stage}`, hover.title, [hover.engine, hover.model].filter(Boolean).join(" · "), hover.working ? T.busy : T.idle];
+  tip.textContent = lines.filter(Boolean).join("\n");
+  tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 14, W - 440) + "px"; tip.style.top = (e.clientY + 14) + "px";
+});
+addEventListener("keydown", e => {
+  if (e.key === "r") { stopReplay(); startReplay(); }
+  if (e.key === "l") { stopReplay(); lastLive = performance.now(); }
+  if (e.key === "c") cam.until = 0;
+});
+function resize() { DPR = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; cv.style.width = W + "px"; cv.style.height = H + "px"; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); fit(); }
+addEventListener("resize", resize);
+
+buildCity(); shapes();
+{ const r = mulberry(7); for (let k = 0; k < 90; k++) npcs.push(newNpc(r));
+  for (let k = 0; k < 3; k++) flyers.push({ rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10 }); }
+resize();
+lastLive = performance.now();
+ready.then(() => { SOURCES.forEach((s, i) => connect(s, i)); requestAnimationFrame(frame); });
+</script>
+</body>
+</html>

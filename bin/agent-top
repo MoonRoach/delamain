@@ -2572,7 +2572,7 @@ def main(argv: list) -> int:
             print(json.dumps(snapshot_json(snap, coll, a.agent, 40 if a.feed is None else a.feed), ensure_ascii=False, indent=1, default=str))
         else:
             width = a.width or shutil.get_terminal_size((100, 24)).columns
-            sys.stdout.write(render_once(snap, coll, max(40, width), a.agent, a.lines or a.feed or 25))
+            sys.stdout.write(render_once(snap, coll, max(40, width), a.agent, next(x for x in (a.lines, a.feed, 25) if x is not None)))
         return 0
     if no_tty:
         raise hc.UsageError("interactive mode needs a terminal; for scripts use --once or --json")

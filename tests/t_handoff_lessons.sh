@@ -271,7 +271,7 @@ open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this sh
 PY2
   $B/hub handoff --stage stage-a --finish --handoff $C/pf.md > $R/pf.out 2> $R/pf.err
   grep -qF "$DISMISS" $R/pf.err; check $? 1 "id answers § 7, no warning: $(printf %s "$v" | head -1)"
-  $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/pf.md --dry-run > $R/pf2.out 2>&1
+  $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/pf.md --dry-run > $R/pf2.out 2>&1; check $? 0 "…takeover dry run ran"
   grep -q 'ATTENTION: the handoff pf.md' $R/pf2.out; check $? 1 "…and none at the takeover"
 done
 for v in 'New entries: L-MC (cue)' 'New entries: l-mc-005 (cue)' 'New entries: L-MC-0000007 (cue)'; do
@@ -283,4 +283,36 @@ PY2
   $B/hub handoff --stage stage-a --finish --handoff $C/pf.md > $R/pf.out 2> $R/pf.err
   grep -qF "$DISMISS" $R/pf.err; check $? 0 "negative: not an id, warns: $v"
 done
+# 10d. a lessons.md whose entries carry the stage prefix (## L-MC-001, merge-coord) is read like an unprefixed one: the digest
+# counts it, § 7 lists it; the same parser as the check of § 7 (one id format), a lowercase or number-less prefix is no entry
+cp $L $R/lessons.keep
+cat > $L <<'MD'
+## L-MC-001 — before merging a change that touches the lock board
+- status: proposed
+- evidence: x
+
+## L-MC-002 — when a reviewer returns no findings in a minute
+- status: confirmed: 2026-10-21 hub-2
+- evidence: x
+
+## L-MC-003 — a retired one
+- status: retired: 2026-10-22 hub-3 — hurt
+- evidence: x
+
+## L-MC — no number
+- status: proposed
+
+## L-mc-004 — lowercase prefix
+- status: proposed
+
+## L-MC-0000005 — number too long
+- status: proposed
+MD
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/pm1.out 2>&1; check $? 0 "prefixed lessons.md: takeover dry run"
+grep -qF "(proposed 1, confirmed 1)" $R/pm1.out; check $? 0 "…the digest counts L-MC-001 and L-MC-002, and nothing of the malformed headings"
+echo '{"AGENT_HUB_HANDOFF_LESSONS": true}' > $R/config.json
+$B/hub handoff --stage stage-a --n 1 --out $C/pm.md > $R/pm2.out 2>&1; check $? 0 "prefixed lessons.md: the draft is written"
+grep -q '^Open lessons to judge: L-MC-001 before merging a change that touches the lock board; L-MC-002 when a reviewer' $C/pm.md; check $? 0 "…§ 7 lists the prefixed lessons"
+grep -E '^Open lessons to judge:' $C/pm.md | grep -q 'L-MC-003\|no number\|lowercase\|too long'; check $? 1 "…and not the retired or malformed ones"
+cp $R/lessons.keep $L
 exit $fail

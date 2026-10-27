@@ -399,7 +399,10 @@ def todo_report(todos: list, width: int = 110) -> str:
         f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
 
 
-LESSON_HEAD_RE = re.compile(r"^## (L-\d{1,6})\b\s*(?:[—–-]+\s*)?(.*)$")  # a longer id is not an entry: it would flood § 7
+# The one format of a lesson id for every parser below: L-007, or with a stage prefix as ask ids have it, L-MC-005. A longer
+# number is not an id: it would flood § 7.
+LESSON_ID_PAT = r"L-(?:[A-Z]+-)?\d{1,6}"
+LESSON_HEAD_RE = re.compile(rf"^## ({LESSON_ID_PAT})\b\s*(?:[—–-]+\s*)?(.*)$")
 LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
@@ -501,7 +504,7 @@ def open_lessons_todos(text: str) -> list:
     return found
 
 
-LESSON_ID_RE = re.compile(r"\bL-(?:[A-Z]+-)?\d{1,6}\b")   # L-007, or with a stage prefix: L-MC-005
+LESSON_ID_RE = re.compile(rf"\b{LESSON_ID_PAT}\b")
 LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
 NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
 MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")

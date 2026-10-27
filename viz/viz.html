@@ -112,7 +112,7 @@ function cabSprite(c) {
   const m = (c.model || "").toLowerCase();
   if (/fable|astra/.test(m)) return "flyer-limo";
   if (/opus/.test(m)) return "flyer-sport";
-  if (/sonnet|sol/.test(m)) return "flyer";
+  if (/sonnet|(^|[^a-z])sol([^a-z]|$)/.test(m)) return "flyer";   // sol as a word, not inside one
   if (/haiku|luna/.test(m)) return "flyer-bike";
   if (c.engine && c.engine !== "claude" && c.engine !== "codex") return "flyer-van";
   return CABS[hash(c.key) % CABS.length];

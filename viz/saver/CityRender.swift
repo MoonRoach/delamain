@@ -30,7 +30,7 @@ func cabSprite(model: String, engine: String, key: String) -> String {
     let m = model.lowercased(), has = { (s: String) in m.contains(s) }
     if has("fable") || has("astra") { return "flyer-limo" }
     if has("opus") { return "flyer-sport" }
-    if has("sonnet") || has("sol") { return "flyer" }
+    if has("sonnet") || m.range(of: "(^|[^a-z])sol([^a-z]|$)", options: .regularExpression) != nil { return "flyer" }   // sol as a word
     if has("haiku") || has("luna") { return "flyer-bike" }
     if !engine.isEmpty && engine != "claude" && engine != "codex" { return "flyer-van" }
     return CABS[Int(jsHash(key) % UInt32(CABS.count))]

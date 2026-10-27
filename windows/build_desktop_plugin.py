@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 
-VERSION = '1.0.9-wsl.1'
+VERSION = '1.0.10-wsl.1'
 ADAPTERS = ('desktop.ps1', 'agent-top.ps1', 'desktop_hook.ps1', 'desktop_runtime.py',
             'desktop_codex.py', 'desktop_skill_prelude.md', 'process_transport.ps1',
             'worker_proxy.py', 'proxy_tcp.ps1')

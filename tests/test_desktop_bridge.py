@@ -5,6 +5,7 @@ import importlib.util
 import base64
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -79,6 +80,75 @@ class PathTests(unittest.TestCase):
                    "command_projection": [{"kind": "shell", "script": "hub handoff --stage review"}]}
         result = runtime.normalize_event({"tool_name": "Bash", "tool_input": {"command": original}}, payload)
         self.assertEqual(result["tool_input"]["command"], "$result = hub handoff --stage review; [IO.File]::WriteAllText('/tmp/side-effect','x')")
+
+
+def registered_hook_names():
+    manifest = json.loads((ROOT / "hooks/codex-hooks.json").read_text(encoding="utf-8"))
+    names = set()
+    for groups in manifest["hooks"].values():
+        for group in groups:
+            for handler in group["hooks"]:
+                match = re.search(r"/hooks/([a-z_]+)\.py", handler["command"])
+                if not match:
+                    raise AssertionError("Unknown registered hook: " + handler["command"])
+                names.add(match[1])
+    return names
+
+
+class HookDispatchTests(unittest.TestCase):
+    def test_runtime_supports_every_registered_transport_hook(self):
+        # no_compaction terminates in PowerShell before the WSL runtime.
+        self.assertEqual(runtime.HOOKS, registered_hook_names() - {"no_compaction"})
+
+
+class NativeHookDispatchTests(unittest.TestCase):
+    """Exercise real parameter validation independently of WSL or installation."""
+    @classmethod
+    def setUpClass(cls):
+        cls.shells = list(dict.fromkeys(shell for shell in
+            (shutil.which("powershell.exe"), shutil.which("pwsh.exe")) if shell))
+        if not cls.shells or (os.name != "nt" and not shutil.which("wslpath")):
+            raise unittest.SkipTest("Windows PowerShell executable access is required")
+        cls.temp = tempfile.TemporaryDirectory(prefix="hook-dispatch-native-")
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.scratch = Path(cls.temp.name)
+        shutil.copy2(ROOT / "windows/desktop_hook.ps1", cls.scratch / "desktop_hook.ps1")
+        (cls.scratch / "desktop.ps1").write_text(
+            "param([string]$Mode, [string]$Payload)\n"
+            "if ($Mode -ne '--hook-payload') { throw 'unexpected transport mode' }\n"
+            "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload)); exit 37\n",
+            encoding="utf-8")
+        native = str(cls.scratch) if os.name == "nt" else subprocess.check_output(
+            ["wslpath", "-w", str(cls.scratch)], text=True, cwd=ROOT).strip()
+        cls.script = native + "\\desktop_hook.ps1"
+
+    def invoke(self, shell, name):
+        return subprocess.run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", self.script,
+            "-Hook", name],
+            input='{"hook_event_name":"SessionStart"}', capture_output=True,
+            encoding="utf-8", errors="replace", cwd=ROOT, timeout=15)
+
+    def test_every_registered_hook_passes_native_parameter_validation(self):
+        for shell in self.shells:
+            for name in sorted(registered_hook_names()):
+                with self.subTest(shell=shell, hook=name):
+                    run = self.invoke(shell, name)
+                    if name == "no_compaction":
+                        self.assertEqual(run.returncode, 0, run.stderr)
+                        self.assertIs(json.loads(run.stdout)["continue"], False)
+                    else:
+                        self.assertEqual(run.returncode, 37, run.stderr)
+                        self.assertEqual(json.loads(run.stdout)["hook"], name)
+                    self.assertEqual(run.stderr, "")
+
+    def test_unknown_hook_is_rejected_before_transport(self):
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                run = self.invoke(shell, "unknown_hook")
+                self.assertNotEqual(run.returncode, 0)
+                self.assertNotEqual(run.returncode, 37)
+                self.assertEqual(run.stdout.strip(), "")
+                self.assertIn("unknown_hook", run.stderr)
 
 
 class NoCompactionPackageTests(unittest.TestCase):
@@ -767,6 +837,14 @@ class NativeBridgeTests(unittest.TestCase):
                 source = "$tokens=$null; $errors=$null; [void][Management.Automation.Language.Parser]::ParseFile('" + path + "',[ref]$tokens,[ref]$errors); if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }"
                 run = subprocess.run([shell, "-NoProfile", "-Command", source], capture_output=True, encoding="utf-8", errors="replace", env=self.env, timeout=15)
                 self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_original_scan_guard_root_deny_project_allow_and_escape(self):
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                denied = self.hook(shell, "scan_guard", self.bridge("find / -name fixture"))
+                self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertFalse(self.hook(shell, "scan_guard", self.bridge("find ./project -name fixture")))
+                self.assertFalse(self.hook(shell, "scan_guard", self.bridge("find / -name fixture # scan-ok")))
 
     def test_unicode_identity_stdio_exit_and_opaque_shell(self):
         for shell in self.shells:

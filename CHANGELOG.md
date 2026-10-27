@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- **The native Windows envelope `1.0.9-wsl.1` includes an interactive `agent-top` launcher.** Run the packaged
+- **Windows dispatch accepts every registered hook, including `scan_guard`.** Both adapter allowlists are checked
+  against the hook manifest; native PowerShell controls also verify unknown-name rejection and scan allow/deny behavior.
+
+- **The native Windows envelope `1.0.10-wsl.1` includes an interactive `agent-top` launcher.** Run the packaged
   `windows/agent-top.ps1` explicitly with PowerShell to keep the terminal attached to WSL; opening the extensionless
   Linux script in Windows is not a launch command.
 

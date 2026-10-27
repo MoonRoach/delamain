@@ -35,6 +35,15 @@
   journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
   (row 1).
 
+- **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs.** `agent-top` now
+  gives every role `last_written_age_s` (its own journal line, signed with its tag; for a hub also the last write of its
+  session's transcript or Codex rollout when that is fresher, `last_written_via`) and `last_addressed_age_s` (the newest
+  line of another author with `@role`, `@tag` or `@<stage>-<tag>`: broadcasts, `[pace] @hub …`, a worker's `@hub DONE`).
+  The pane's Roles block reads `wrote 95h ago (transcript), addressed 3m ago`; `journal_age_s` keeps meaning the role's
+  own journal line. A hub dead for days showed no age at all (`—`) because the journals looked at reach back two days;
+  now its transcript says how long. `broadcast` prints, before the summary and in `--dry-run` too, which recipients have
+  not written for over `--silent-hours N` (default 12, 0 turns it off); a bare `/broadcast` shows it. The `status` skill
+  reads the two apart. Issue #143.
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

@@ -107,6 +107,7 @@ FEED_TAIL_BYTES = 400_000
 FLUSH_S = 2.0                     # a long first read writes the disk cache this often, not only at its end
 FEED_MAX_ITEMS = 4000
 ARCHIVE_RE = re.compile(r"^(?P<role>.+)\.(?:failed-)?\d{8}-\d{6}$")
+MENTION_RE = re.compile(r"(?<![\w@])@(\w[\w-]*)")   # an @name in a journal line, bounded the way hc.mentions bounds it
 _TYPE_RE = re.compile(rb'^\{\s*"type"\s*:\s*"([\w.]+)"')
 _RESULT_RE = re.compile(rb'"type"\s*:\s*"result"')   # the CLI writes `result` events with "duration_api_ms" first
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
@@ -1269,14 +1270,19 @@ class Collector:
                     tokens[model] = tokens.get(model, 0.0) + weighted_tokens(u, snake=False)
         return {m: cost[m] / tokens[m] for m in cost if tokens[m] > 0}
 
-    def transcript(self, sid: str):
-        """The reader of a session's transcript, brought up to date (at most SCAN_MAX bytes per call), or None."""
+    def transcript_file(self, sid: str):
+        """The path of a session's transcript (the first of its folders by name), or None; found once, then remembered."""
         path = self.transcript_paths.get(sid)
         if path is None or not path.exists():
-            found = sorted(subagents.projects_root().glob(f"*/{sid}.jsonl"))
+            found = subagents.transcript_paths(sid)
             path = self.transcript_paths[sid] = found[0] if found else None
-            if path is None:
-                return None
+        return path
+
+    def transcript(self, sid: str):
+        """The reader of a session's transcript, brought up to date (at most SCAN_MAX bytes per call), or None."""
+        path = self.transcript_file(sid)
+        if path is None:
+            return None
         tr = self.transcripts.get(path)
         if tr is None:
             tr = self.transcripts[path] = Transcript(path)
@@ -1354,10 +1360,16 @@ class Collector:
         return out
 
     def _roles(self, stage: str, roles: dict, agents: list, now: float) -> list:
+        """Each role of a stage with when it last *wrote* (a journal line signed with its tag, for a hub also the last
+        write of its session's transcript) and when it was last *addressed* (a line of another author that has
+        @its-name in it). The two never mix: a broadcast `[pace] @hub …` says nothing about whether the hub lives."""
         ref = self.where[stage]
         lines = self.journal_lines(stage, 1) + self.journal_lines(stage, 0)   # oldest first: today's lines are met first from the end
         newest = {}   # base tag -> its newest line: what hc.tag_is(line tag, base) finds first from the end
-        for day_off, hhmm, t, _ in reversed(lines):
+        mentioned = {}   # @name -> [(day_off, "HH:MM", author tag)] of the lines that address it, newest first
+        for day_off, hhmm, t, text in reversed(lines):
+            for name in dict.fromkeys(MENTION_RE.findall(text)):
+                mentioned.setdefault(name, []).append((day_off, hhmm, t))
             if not t:
                 continue
             for c in {t, *t.split()[:1]}:
@@ -1367,23 +1379,38 @@ class Collector:
         out = []
         with hc.in_home(ref.home.path, ref.home.layer):
             goal = hc.title_goal(hc.stage_goal(ref.name))
+
+        def clock(day_off: int, hhmm: str) -> float:
+            hh, mm = map(int, hhmm.split(":"))
+            day = hc.now().date() - dt.timedelta(days=day_off)
+            return dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
+
         for name, rec in roles.items():
             tag = rec.get("tag") or name
             title = rec.get("title") or ""
             if name == "hub" and goal and goal not in title:  # a hub registered before the goal was set, or by --name
                 title = f"{title} — {goal}" if title else goal
-            last = None
-            if tag in newest:
-                day_off, hhmm = newest[tag]
-                hh, mm = map(int, hhmm.split(":"))
-                day = hc.now().date() - dt.timedelta(days=day_off)
-                last = dt.datetime.combine(day, dt.time(hh, mm), tzinfo=hc.TZ).timestamp()
+            last = None if tag not in newest else clock(*newest[tag])
+            session = self._session_write(rec) if name == "hub" else None   # only a hub has no other sign of life
+            written, via = (session, "transcript") if session is not None and (last is None or session > last) else (last, "journal" if last is not None else None)
+            addressed = None   # the newest line of another author with @name, @tag or @<stage>-<tag> (as hc.mentions reads them)
+            for n in dict.fromkeys((name, tag, f"{ref.name}-{tag}")):
+                for d, h, author in mentioned.get(n, ()):
+                    if not hc.tag_is(author, tag):
+                        addressed = max(addressed or 0.0, clock(d, h))
+                        break
             ag = next((a for a in agents if a["stage"] == stage and a["dir_name"] == name), None)
             out.append({"role": name, "kind": rec.get("kind"), "tag": tag, "title": title,
                         "pid": rec.get("pid"), "state": ag["state"] if ag else None,
-                        "journal_age_s": None if last is None else max(0, int(now - last))})
+                        "journal_age_s": None if last is None else max(0, int(now - last)),
+                        "last_written_age_s": None if written is None else max(0, int(now - written)), "last_written_via": via,
+                        "last_addressed_age_s": None if addressed is None else max(0, int(now - addressed))})
         out.sort(key=lambda r: (r["role"] != "hub", r["role"]))
         return out
+
+    def _session_write(self, rec: dict):
+        """When the role's session transcript was last written (see subagents.session_write_time), via the path cache."""
+        return subagents.session_write_time(rec, lambda sid: [p] if (p := self.transcript_file(sid)) else [])
 
     # -- journal
     def journal_lines(self, stage: str, day_off: int) -> list:
@@ -1866,8 +1893,10 @@ def summary_rows(snap: dict, width: int) -> list:
         for r in rl:
             hub = "* " if r["role"] == "hub" else "  "
             state = WORD.get(r["state"], r["kind"] or "") if r["state"] else (r["kind"] or "")
-            rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  journal "
-                              + (f"{fmt_age(r['journal_age_s'])} ago" if r["journal_age_s"] is not None else "—") + f"  {r['title']}",
+            wrote = f"wrote {fmt_age(r['last_written_age_s'])} ago" + (" (transcript)" if r["last_written_via"] == "transcript" else "") \
+                if r["last_written_age_s"] is not None else "wrote —"
+            told = f", addressed {fmt_age(r['last_addressed_age_s'])} ago" if r["last_addressed_age_s"] is not None else ""
+            rows += wrap_rows(f"{hub}{r['role']} [{r['tag']}] {state}  {wrote}{told}  {r['title']}",
                               width, "norm" if r["role"] == "hub" else "dim", "   ", "     ", 2)
         rows += wrap_rows(spend_text(snap["spend"].get(stage) or {}), width, "dim", "   ", "     ", 2)
     lim = snap.get("limits")

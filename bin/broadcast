@@ -2,6 +2,7 @@
 """Write one line to every stage's hub at once: `tell` to each open stage that has a holder of the role.
 
   broadcast "text" [--question | --urgent] [--role hub] [--this-home] [--exclude STAGE]… [--include-self]
+           [--silent-hours N]
   broadcast --dry-run [options]               list the recipients, write nothing
   broadcast [options] -- "-text that starts with a dash"
 
@@ -17,6 +18,11 @@ qualified tag from the registry of its own stage, else `owner` — a terminal or
 owner, as `hub close` signs a close from the agent-top pane.
 A tell that gives no answer in 120 s is stopped with its children and reported `????` (unknown: the line may be there,
 and a headless hub that `agent send` had already resumed may still read it; look before sending again).
+A recipient that has not written for over --silent-hours (default 12; 0 turns the check off) is named in a warning
+before the summary, also in --dry-run: a line to it waits until it wakes, and for a hub in a dead session that is never.
+"Written" is what the holder itself did: its newest journal line signed with its tag (a line addressed to it, such as
+`[pace] @hub …` or this broadcast, is not its activity) or the last write of its session's transcript, whichever is
+fresher. No sign of either counts as silent.
 Exit: 0 every recipient took the line, 1 a delivery failed or is unknown, or there is no recipient, 2 usage.
 """
 from __future__ import annotations
@@ -28,11 +34,15 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
+import subagents  # noqa: E402
 
 TELL_TIMEOUT_S = 120
+SILENT_HOURS = 12.0  # default for --silent-hours
+JOURNAL_DAYS_MAX = 31  # how many days of journals one recipient's own lines are looked for in
 WORKERS = 64  # one wave up to 64 recipients, so the run stays within about one TELL_TIMEOUT_S (the mod waits two: 300 s)
 
 
@@ -61,7 +71,17 @@ def is_self(rec: dict) -> bool:
     return hc.session_matches(rec, sid, host)
 
 
-def recipients(role: str, all_homes: bool, exclude: set, include_self: bool) -> tuple:
+def written_age(stage: str, role: str, rec: dict, silent_hours: float):
+    """Seconds since the holder of `role` last wrote, or None when no sign is found: the newest journal line signed with
+    its tag (looked for as far back as the threshold needs) or the last write of its session, the fresher of the two.
+    Run in the stage's home."""
+    days = min(JOURNAL_DAYS_MAX, int(silent_hours // 24) + 2)
+    line = hc.last_line_by_tag(stage, rec.get("tag") or role, days)
+    stamps = [t for t in (None if line is None else line.timestamp(), subagents.session_write_time(rec)) if t is not None]
+    return max(0, int(time.time() - max(stamps))) if stamps else None
+
+
+def recipients(role: str, all_homes: bool, exclude: set, include_self: bool, silent_hours: float = 0) -> tuple:
     """([{home, stage, kind, engine, title}], [skipped {home, stage, why}]) over the chosen homes, in a stable order."""
     homes = [h.path for h in hc.known_homes()] if all_homes else [hc.root()]
     seen, found, skipped = set(), [], []
@@ -91,8 +111,10 @@ def recipients(role: str, all_homes: bool, exclude: set, include_self: bool) -> 
                 elif is_self(rec) and not include_self:
                     skipped.append(dict(row, why="your own"))
                 else:
+                    age = written_age(d.name, role, rec, silent_hours) if silent_hours > 0 else None
                     found.append(dict(row, kind=rec.get("kind") or "?", engine=rec.get("engine") or "claude",
-                                      title=rec.get("title") or role))
+                                      title=rec.get("title") or role, last_written_age_s=age,
+                                      silent=silent_hours > 0 and (age is None or age > silent_hours * 3600)))
     return found, skipped
 
 
@@ -123,6 +145,13 @@ def deliver(target: dict, argv_tail: list, tag: str) -> dict:
                 output=(out + err).strip())
 
 
+def fmt_silence(seconds) -> str:
+    if seconds is None:
+        return "no sign of life found (no line of its own in the journals looked at, no session write)"
+    hours = seconds // 3600
+    return f"{hours} h" if hours < 48 else f"{hours // 24} d {hours % 24} h"
+
+
 def label(row: dict, many_homes: bool) -> str:
     return f"{row['stage']} ({row['home']})" if many_homes else row["stage"]
 
@@ -136,6 +165,8 @@ def main(argv: list) -> int:
     p.add_argument("--this-home", action="store_true", help="only the stages of the resolved hub home")
     p.add_argument("--exclude", action="append", default=[], metavar="STAGE", help="leave this stage out (repeatable)")
     p.add_argument("--include-self", action="store_true", help="write to your own stage's holder too")
+    p.add_argument("--silent-hours", type=float, default=SILENT_HOURS, metavar="N",
+                   help=f"warn about recipients that have not written for over N hours (default {SILENT_HOURS:g}; 0: no check)")
     p.add_argument("--dry-run", action="store_true", help="list the recipients and the signature, write nothing")
     p.add_argument("--json", action="store_true", help="one JSON object: tag, sent, skipped (with each tell's exit and output)")
     args = p.parse_intermixed_args(argv)
@@ -144,8 +175,10 @@ def main(argv: list) -> int:
         raise hc.UsageError("empty text")
     if args.question and args.urgent:
         raise hc.UsageError("--question and --urgent: pick one (a question wakes the hub too)")
+    if args.silent_hours < 0:
+        raise hc.UsageError("--silent-hours: not negative")
     tag = own_tag()
-    targets, skipped = recipients(args.role, not args.this_home, set(args.exclude), args.include_self)
+    targets, skipped = recipients(args.role, not args.this_home, set(args.exclude), args.include_self, args.silent_hours)
     many = len({t["home"] for t in targets + skipped}) > 1
     tail = (["--role", args.role] + (["--question"] if args.question else []) + (["--urgent"] if args.urgent else [])
             + ["--", text])
@@ -156,8 +189,8 @@ def main(argv: list) -> int:
             sent = list(pool.map(lambda t: deliver(t, tail, tag), targets))
     failed = [r for r in sent if r["exit"] not in (0, None)]
     if args.json:
-        print(json.dumps({"tag": tag, "role": args.role, "dry_run": args.dry_run, "sent": sent, "skipped": skipped},
-                         ensure_ascii=False))
+        print(json.dumps({"tag": tag, "role": args.role, "dry_run": args.dry_run, "silent_hours": args.silent_hours,
+                          "sent": sent, "skipped": skipped}, ensure_ascii=False))
     else:
         for r in sent:
             mark = {"planned": "plan", "sent": "ok  ", "unknown": "????"}.get(r["state"], "FAIL")
@@ -168,6 +201,12 @@ def main(argv: list) -> int:
                     print(f"     {ln}")
         for s in skipped:
             print(f"skip {label(s, many)}  ({s['why']})")
+        silent = [r for r in sent if r["silent"]]
+        if silent:
+            print(f"warn {len(silent)} of {len(sent)} @{args.role} have not written for over {args.silent_hours:g} h: "
+                  f"a line to them waits until they wake")
+            for r in silent:
+                print(f"     {label(r, many)}  [{r['kind']}/{r['engine']}]  {fmt_silence(r['last_written_age_s'])}")
         verb = "would send" if args.dry_run else "sent"
         unknown = sum(r["state"] == "unknown" for r in sent)
         print(f"broadcast as [{tag}] to @{args.role}: {verb} {len(sent) - len(failed)}, failed {len(failed) - unknown}, "

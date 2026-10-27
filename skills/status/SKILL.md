@@ -24,6 +24,11 @@ description: Answer questions about Delamain agents, stages and hubs, their task
    once as candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
    out of the snapshot: they run nothing; mention them only when asked about old or closed work.
    `desktop_idle`: idle Desktop sessions holding memory; archiving: skills/hub/references/stage-lifecycle.md § Idle Desktop sessions.
+   Whether a hub lives is `roles.<S>[role=hub].last_written_age_s`: when it last wrote itself, a journal line signed with
+   its tag or (`last_written_via: transcript`) a write of its session's transcript, whichever is fresher; `null` is no sign
+   at all. `last_addressed_age_s` is when someone last wrote *to* it (`[pace] @hub …`, a broadcast, a worker's `@hub DONE`):
+   never read it as the hub's activity. A hub with a large `last_written_age_s` and a small `last_addressed_age_s` is
+   likely dead or asleep, not working; say "likely" (the age is a sign, not a process check).
    Infer tasks only from titles, activity, last words or the journal; compare snapshots only when a previous one exists.
 3. Answer in a few plain-text lines in the user's language, prioritizing running work and anything needing attention.
    Summarize large stages and offer detail on request. Include question ids when they help the owner answer.

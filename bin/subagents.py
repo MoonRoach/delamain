@@ -171,6 +171,39 @@ def projects_root() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
 
 
+def session_id_of(rec: dict):
+    """The CLI session id (a UUID) a role record points at, or None: a Desktop session's own id is `local_…`, its CLI's
+    is `cli_session_id`."""
+    sid = rec.get("cli_session_id") or rec.get("session") or ""
+    return sid if isinstance(sid, str) and UUID_RE.fullmatch(sid) else None
+
+
+def transcript_paths(sid: str) -> list:
+    """Claude Code's transcript files of a session, <projects>/*/<sid>.jsonl, in name order."""
+    return sorted(projects_root().glob(f"*/{sid}.jsonl"))
+
+
+def session_write_time(rec: dict, find=transcript_paths):
+    """When the transcript (Claude) or rollout (Codex) of a role's session was last written, as epoch seconds; None
+    when the record names no session or its file is not found. A line written *to* the session is not a write of it:
+    only its own turns touch the file. `find(sid)` lists a Claude session's transcript files (a caller with a path cache
+    passes its own)."""
+    sid = session_id_of(rec)
+    if sid is None:
+        return None
+    if rec.get("engine") == "codex":
+        found = codex_rollouts.INDEX.session(sid)
+        return None if found is None else found[2]
+    best = None
+    for path in find(sid):
+        try:
+            m = path.stat().st_mtime
+        except OSError:
+            continue
+        best = m if best is None else max(best, m)
+    return best
+
+
 def parent_alive(rec: dict, sid: str, table, live):
     """Whether a session runs: True / False, or None when there is no session registry to ask (the caller then
     falls back to the silence rule). `rec` is the session's role record: a headless agent is judged by its pid."""

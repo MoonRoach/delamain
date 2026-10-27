@@ -8,7 +8,7 @@
 //	/assets/          the page's images
 //
 // Read-only: it never writes to the hub home.
-// Run: hub-viz [-addr 127.0.0.1:8765] [-v]; several machines: http://localhost:8765/?src=http://a:8765,http://b:8765
+// Run: hub-viz [-addr 127.0.0.1:8765] [-allow-origin http://page-origin] [-v]; several machines: http://localhost:8765/?src=http://a:8765,http://b:8765
 package main
 
 import (
@@ -18,10 +18,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -41,7 +44,7 @@ var assets embed.FS
 var (
 	lineRE    = regexp.MustCompile(`^- (\d{1,2}):(\d{2}) \[([^\]]+)\]\s?(.*)$`)
 	journalRE = regexp.MustCompile(`^journal-(\d{4}-\d{2}-\d{2})\.md$`)
-	mentionRE = regexp.MustCompile(`@([A-Za-z0-9][\w.-]*)(?:\s+([a-z0-9][a-z0-9_-]*))?`)
+	mentionRE = regexp.MustCompile(`@([\p{L}\p{N}][\p{L}\p{N}_.-]*)(?:\s+([a-z0-9][a-z0-9_-]*))?`)
 	hubTagRE  = regexp.MustCompile(`^(?:([a-z0-9][a-z0-9_-]*)-)?hub-\d+$`)
 )
 
@@ -275,7 +278,10 @@ func (h *Hub) recipients(stageName string, sender Node, text string) []Node {
 		out = append(out, n)
 	}
 	for _, m := range mentionRE.FindAllStringSubmatch(text, -1) {
-		name, qual := m[1], m[2]
+		name, qual := strings.TrimRight(m[1], ".,;:!?)"), m[2]
+		if name != m[1] {
+			qual = "" // the mention ended at punctuation: the next word is not its stage
+		}
 		_, qualIsStage := h.stages[qual]
 		switch {
 		case name == "hub" || name == "hubs" || name == "all":
@@ -286,6 +292,8 @@ func (h *Hub) recipients(stageName string, sender Node, text string) []Node {
 			}
 		case name == "owner":
 			add(Node{"*", "owner"})
+		case h.stages[name] != nil && !h.known(stageName, name): // a stage's name addresses its hub
+			add(Node{name, "hub"})
 		default:
 			where := stageName
 			if qualIsStage {
@@ -393,8 +401,9 @@ func (h *Hub) poll() []*Event {
 			continue
 		}
 		start := h.offsets[j.path]
-		if fi.Size() < start {
-			start = 0
+		if fi.Size() < start { // truncated or rotated: resume from its end, the old lines are not news
+			h.offsets[j.path] = fi.Size()
+			continue
 		}
 		if fi.Size() == start {
 			continue
@@ -556,13 +565,22 @@ func (h *Hub) loop() {
 	}
 }
 
-func cors(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Cache-Control", "no-store")
+// allowOrigins are the page origins that may read this server from another origin (-allow-origin); none by default.
+var allowOrigins = map[string]bool{}
+
+func cors(w http.ResponseWriter, r *http.Request) {
+	if len(allowOrigins) == 0 {
+		return
+	}
+	w.Header().Add("Vary", "Origin")
+	if o := r.Header.Get("Origin"); allowOrigins[o] {
+		w.Header().Set("Access-Control-Allow-Origin", o)
+	}
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	cors(w)
+func writeJSON(w http.ResponseWriter, r *http.Request, v any) {
+	cors(w, r)
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
 }
@@ -570,23 +588,31 @@ func writeJSON(w http.ResponseWriter, v any) {
 func (h *Hub) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/{$}", func(w http.ResponseWriter, r *http.Request) {
-		cors(w)
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(page)
 	})
-	mux.Handle("/assets/", http.FileServerFS(assets))
+	files := http.FileServerFS(assets)
+	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
+		if fi, err := fs.Stat(assets, path.Clean(r.URL.Path[1:])); err != nil || fi.IsDir() {
+			http.NotFound(w, r) // files only: no directory listing
+			return
+		}
+		cors(w, r)
+		files.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		st := h.state
 		h.mu.Unlock()
-		writeJSON(w, st)
+		writeJSON(w, r, st)
 	})
 	mux.HandleFunc("/history", func(w http.ResponseWriter, r *http.Request) {
 		hours, err := strconv.ParseFloat(r.URL.Query().Get("hours"), 64)
-		if err != nil || hours <= 0 {
+		if err != nil || hours <= 0 || math.IsNaN(hours) || math.IsInf(hours, 0) {
 			hours = 24
 		}
-		writeJSON(w, map[string]any{"machine": h.machine, "lines": h.history(min(hours, 24*7))})
+		writeJSON(w, r, map[string]any{"machine": h.machine, "lines": h.history(min(hours, 24*7))})
 	})
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		fl, ok := w.(http.Flusher)
@@ -594,7 +620,8 @@ func (h *Hub) routes() *http.ServeMux {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
-		cors(w)
+		cors(w, r)
+		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "text/event-stream")
 		ch := make(chan []byte, 64)
 		h.subMu.Lock()
@@ -629,8 +656,14 @@ func (h *Hub) routes() *http.ServeMux {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8765", "listen address; 0.0.0.0:8765 lets another machine's page read this one")
+	origins := flag.String("allow-origin", "", "comma-separated page origins that may read this server from another origin (CORS); none by default")
 	verbose := flag.Bool("v", false, "log every request but assets, with its user agent (a screen saver's diagnostics arrive this way)")
 	flag.Parse()
+	for _, o := range strings.Split(*origins, ",") {
+		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
+			allowOrigins[o] = true
+		}
+	}
 	root := os.Getenv("AGENT_HUB_HOME")
 	if root == "" {
 		home, _ := os.UserHomeDir()

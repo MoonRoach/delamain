@@ -147,6 +147,24 @@ final class CabLayers {
     func remove() { group.removeFromSuperlayer() }
 }
 
+// ---- settings ----------------------------------------------------------------------------------------------------------
+/// The dev.delamain.saver defaults. legacyScreenSaver is sandboxed, so the suite may resolve to the container's plist
+/// rather than ~/Library/Preferences; the real file (the real home, not the container's NSHomeDirectory) is the fallback.
+struct Prefs {
+    private let suite = UserDefaults(suiteName: "dev.delamain.saver")
+    private let file: [String: Any] = {
+        guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else { return [:] }
+        let url = URL(fileURLWithPath: String(cString: dir)).appendingPathComponent("Library/Preferences/dev.delamain.saver.plist")
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) else { return [:] }
+        return plist as? [String: Any] ?? [:]
+    }()
+    func object(_ key: String) -> Any? { suite?.object(forKey: key) ?? file[key] }
+    func string(_ key: String) -> String? { object(key) as? String }
+    func bool(_ key: String) -> Bool? { (object(key) as? NSNumber)?.boolValue }
+    func number(_ key: String) -> Double? { (object(key) as? NSNumber)?.doubleValue }
+}
+
 // ---- the view -------------------------------------------------------------------------------------------------------
 @objc(DelamainSaverView)
 final class DelamainSaverView: ScreenSaverView {
@@ -195,6 +213,7 @@ final class DelamainSaverView: ScreenSaverView {
     private var renderingOverview = false, renderingDetail = false
     private var excludedKey: [Int] = [], excludedChangedAt = 0.0
     private var lastStaticMs = 0.0
+    private var detailTarget: [Double] = [], detailTargetAt = 0.0
 
     // clock and diagnostics
     private var link: AnyObject?
@@ -207,12 +226,12 @@ final class DelamainSaverView: ScreenSaverView {
     private let instance: Int = { DelamainSaverView.made += 1; return DelamainSaverView.made }()
 
     override init?(frame: NSRect, isPreview: Bool) {
-        let defaults = UserDefaults(suiteName: "dev.delamain.saver")
-        serverURL = defaults?.string(forKey: "server").flatMap(URL.init(string:)) ?? URL(string: "http://127.0.0.1:8765")!
-        follow = defaults?.object(forKey: "follow") as? Bool ?? true
-        diagnostics = defaults?.bool(forKey: "diagnostics") ?? false
-        let quiet = (defaults?.object(forKey: "replayAfter") as? NSNumber)?.doubleValue   // nil: live only
-        Strings.current = Strings.resolve(defaults?.string(forKey: "lang"))
+        let prefs = Prefs()
+        serverURL = prefs.string("server").flatMap(URL.init(string:)) ?? URL(string: "http://127.0.0.1:8765")!
+        follow = prefs.bool("follow") ?? true
+        diagnostics = prefs.bool("diagnostics") ?? false
+        let quiet = prefs.number("replayAfter")   // nil: live only
+        Strings.current = Strings.resolve(prefs.string("lang"))
         super.init(frame: frame, isPreview: isPreview)
         sprites = Sprites(bundle: Bundle(for: DelamainSaverView.self))
         feed = Feed(base: serverURL, quietSeconds: quiet)
@@ -285,13 +304,20 @@ final class DelamainSaverView: ScreenSaverView {
         if nowMs() - lastLinkTick > 250 { step() }
     }
 
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); relayout() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { halt() }   // the host dropped the view without stopAnimation: do not keep the display awake
+        relayout()
+    }
+    deinit { if displayAwake != 0 { IOPMAssertionRelease(displayAwake) } }
     override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); relayout() }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); relayout() }
 
     // ---- layers --------------------------------------------------------------------------------------------------------
+    private var laidOut = false
     private func setupLayers() {
         guard let root = layer else { return }
+        defer { laidOut = true }
         _ = mk(scene, root)
         scene.isGeometryFlipped = true   // canvas coordinates: origin top-left, y down
         backdrop = mk(CAGradientLayer(), scene)
@@ -370,6 +396,7 @@ final class DelamainSaverView: ScreenSaverView {
     }
 
     private func relayout() {
+        guard laidOut else { return }   // setFrameSize runs inside super.init, before setupLayers
         let b = bounds
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let changed = Double(b.width) != W || Double(b.height) != H || scale != backing
@@ -727,6 +754,9 @@ final class DelamainSaverView: ScreenSaverView {
 
     private func requestDetail() {
         guard W > 0, !renderingDetail, cam.tz > 1.01 else { return }
+        let target = [cam.tx, cam.ty, cam.tz]
+        if target != detailTarget { detailTarget = target; detailTargetAt = nowMs() }
+        guard nowMs() - detailTargetAt > 400 else { return }   // a burst of lines renders once, when the camera target settles
         let v = StaticView(cx: cam.tx, cy: cam.ty, z: cam.tz, W: W, H: H, K: K, pad: pad, scale: Double(backing), excluded: excludedKey)
         if let d = detail, d.img.view == v { return }
         renderingDetail = true

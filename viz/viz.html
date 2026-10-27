@@ -45,7 +45,7 @@ const SOURCES = (qs.get("src") || location.origin).split(",").map(s => s.trim().
 const QUIET_MS = qs.has("quiet") ? +qs.get("quiet") * 1000 : Infinity;
 const REPLAY_HOURS = +(qs.get("hours") || 24);
 const SPEED = +(qs.get("speed") || 120);
-const ASSET = SOURCES[0];
+const ASSET = location.origin;   // sprites come from the page's own server, whatever ?src reads: same-origin keeps getImageData allowed
 
 // ---- strings: English, Russian; ?lang=en|ru, else the browser's languages; journal text is shown as written --------
 const STRINGS = {
@@ -490,7 +490,7 @@ async function startReplay() {
   for (const src of SOURCES) {
     try { const h = await (await fetch(`${src}/history?hours=${REPLAY_HOURS}`)).json(); for (const ev of h.lines) all.push([src, ev]); } catch (e) {}
   }
-  if (!all.length) return;
+  if (!all.length) { lastLive = performance.now(); return; }   // nothing to replay: ask again after QUIET_MS, not every frame
   all.sort((a, b) => a[1].at.localeCompare(b[1].at));
   replay = { all, i: 0, next: performance.now() + 400 };
   document.getElementById("mode").className = "replay";

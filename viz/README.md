@@ -25,8 +25,11 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
 build/hub-viz               # http://127.0.0.1:8765/
 ```
 
-`hub-viz` flags: `-addr 127.0.0.1:8765` (listen address; `0.0.0.0:8765` lets another machine's page read this one),
-`-v` (log every request but assets, with its user agent; off by default). Endpoints: `/` the page, `/state`,
+`hub-viz` flags: `-addr 127.0.0.1:8765` (listen address), `-allow-origin http://a:8765,http://b:8765` (page origins that
+may read this server from another origin; none by default, so no CORS header is sent), `-v` (log every request but
+assets, with its user agent; off by default). `-addr 0.0.0.0:…` publishes the journals, unauthenticated, to the whole
+network: use it only on a network you trust. A page that reads several machines (`src=`) needs `-allow-origin <the
+page's origin>` on each of the others (the page itself is served by the first). Endpoints: `/` the page, `/state`,
 `/history?hours=N`, `/events` (SSE: `state` every 5 s, `line` per journal line), `/assets/`.
 
 Page parameters: `src=http://a:8765,http://b:8765` (several machines, each running `hub-viz`), `quiet=N` (replay the
@@ -51,6 +54,11 @@ Settings, all in the `dev.delamain.saver` defaults suite (`defaults write dev.de
 | `replayAfter` | int seconds, unset | replay the last 24 h after this much silence; unset: live only |
 | `lang` | `en` or `ru`, unset | interface language; unset: the system's preferred languages, English fallback |
 | `diagnostics` | bool, `false` | report fps and layout with each `/state` poll, and write one frame to `$TMPDIR/delamain-frame.png` 20 s after start |
+
+`legacyScreenSaver` is sandboxed, so the saver reads the suite and, failing that, `~/Library/Preferences/dev.delamain.saver.plist`
+directly. If a setting still does not arrive, write it into the host's container instead:
+`defaults write ~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Preferences/dev.delamain.saver <key> <value>`.
+The host's App Transport Security applies to `server` (a bundle cannot relax it): a non-local `http://` server may be blocked.
 
 Install:
 

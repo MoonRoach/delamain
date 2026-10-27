@@ -7,9 +7,7 @@ set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
-# Short message ids can occur in displayed temporary paths; exercise that collision.
-export AGENT_HUB_HOME="$(mktemp -d)/agent-hub-mZ" HUB_STAGE=stage-a
-mkdir -p "$AGENT_HUB_HOME"
+export AGENT_HUB_HOME=$(mktemp -d) HUB_STAGE=stage-a
 unset HUB_TAG CLAUDE_CODE_SESSION_ID AGENT_BOARD_FILE
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
@@ -172,10 +170,19 @@ grep -q 'main-merge demo-repo\|main-merge.*merging main' $R/st-once.out; check $
 grep -q 'ran the tests, all green' $R/st-once.out; check $? 0 "once: journal tail shown"
 $B/agent-top --once --agent alive1 --width 100 --lines 30 > $R/st-agent.out; check $? 0 "--once --agent exit 0"
 grep -q '▸ Bash: run the tests' $R/st-agent.out && grep -q '✎ Running the tests' $R/st-agent.out; check $? 0 "once --agent: feed has command and thought"
-grep -q 'fixtureHalfLineSentinel' $R/st-agent.out; check $? 1 "negative: half-written last line is not in the feed"
-$B/agent-top --once --agent alive1 --width 400 --lines 30 > $R/st-agent-marker.out
-grep -q 'agent-hub-mZ' $R/st-agent-marker.out; check $? 0 "control: a path containing the old short marker is displayed"
-grep -q 'fixtureHalfLineSentinel' $R/st-agent-marker.out; check $? 1 "negative: displaying that path does not expose the half-written record"
+grep -qF 'Half-written thought' $R/st-agent.out; check $? 1 "negative: half-written last line is not in the feed"
+# control: the same line, once complete, is in the feed (the bare id "mZ" also matched random temp paths in the output)
+HW=$(mktemp -d); cp -R $R/. $HW/
+python3 - $HW/stage-a/agents/alive1/log.jsonl <<'PY'
+import json, sys
+p = sys.argv[1]; body, half = open(p, encoding="utf-8").read().rsplit("\n", 1)
+prev = json.loads(body.rsplit("\n", 1)[-1] if "\n" in body else body)
+done = json.loads(half + '}]},"session_id":"%s"}' % prev.get("session_id", ""))
+done["timestamp"] = next(json.loads(l)["timestamp"] for l in reversed(body.split("\n")) if '"timestamp"' in l)
+open(p, "w", encoding="utf-8").write(body + "\n" + json.dumps(done) + "\n")
+PY
+AGENT_HUB_HOME=$HW $B/agent-top --once --agent alive1 --width 100 --lines 30 > $R/st-agent-complete.out
+grep -qF 'Half-written thought' $R/st-agent-complete.out; check $? 0 "control: the same line completed is in the feed"
 python3 - $B/agent-top $R <<'PY'
 import subprocess, sys, unicodedata
 def w(s):

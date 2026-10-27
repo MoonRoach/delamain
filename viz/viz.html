@@ -231,23 +231,33 @@ function buildCity() {
   for (const l of [...G.lots].sort((a, b) => a.h - b.h)) {
     if (l.owner || l.h % 5) continue;
     if (marks.some(m => Math.hypot(m.x - l.x, m.y - l.y) < 11)) continue;
-    l.landmark = true; l.sprite = landmarkSprite(l, turn); marks.push(l);
+    const sprite = landmarkSprite(l, turn, marks); if (!sprite) continue;
+    l.landmark = true; l.sprite = sprite; marks.push(l);
   }
 }
 
 // A landmark's building: the next one in its district's list, in the landmarks' order (no draws, so the saver's port
-// agrees). The first lot on the ring road is a monorail station; the docks' ship and rig stand in the bay off their lot.
+// agrees), skipping one that would repeat: the same building within 24 units, or a unique one (not a plain block) already
+// in the district. A lot with nothing left stays a schematic block. The first lot on the ring road is a monorail station;
+// the docks' ship and rig stand in the bay off their lot.
 const LANDMARKS = {
   core: ["megamall", "data-center", "landing-pad", "corpo-block"], foundry: ["power-plant", "industrial-block", "data-center"],
   docks: ["container-ship", "oil-rig", "port-block"], bazaar: ["billboard-tower", "market-block", "residential-block"],
   heights: ["park", "luxury-block"], sprawl: ["slum-block", "temple", "residential-block", "stadium"],
-  smelter: ["power-plant", "industrial-block"], riviera: ["luxury-block", "park", "stadium"], wastes: ["water-tower", "badlands-block"],
+  smelter: ["power-plant", "industrial-block"], riviera: ["luxury-block", "park"], wastes: ["water-tower", "badlands-block"],
 };
 const AFLOAT = new Set(["container-ship", "oil-rig"]);
-function landmarkSprite(l, turn) {
+const BLOCKS = new Set(["block", "corpo-block", "industrial-block", "residential-block", "market-block", "port-block", "luxury-block",
+  "badlands-block"]);
+function landmarkSprite(l, turn, marks) {
   if (!turn.ring && Math.abs(Math.hypot((l.x - CX + 2) / 21, (l.y - CY + 4) / 26) - 1) < 0.12) { turn.ring = 1; return "monorail-station"; }
-  const list = LANDMARKS[l.d], k = turn[l.d] || 0; turn[l.d] = k + 1;
-  return list[k % list.length];
+  const list = LANDMARKS[l.d], k = turn[l.d] || 0;
+  for (let i = 0; i < list.length; i++) {
+    const s = list[(k + i) % list.length];
+    if (marks.some(m => m.sprite === s && (Math.hypot(m.x - l.x, m.y - l.y) < 24 || (m.d === l.d && !BLOCKS.has(s))))) continue;
+    turn[l.d] = k + i + 1; return s;
+  }
+  return null;
 }
 
 // ---- model -------------------------------------------------------------------------------------------

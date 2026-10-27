@@ -7,7 +7,9 @@ set -u
 B="$(cd "$(dirname "$0")/../bin" && pwd)"
 T="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONDONTWRITEBYTECODE=1
-export AGENT_HUB_HOME=$(mktemp -d) HUB_STAGE=stage-a
+# Short message ids can occur in displayed temporary paths; exercise that collision.
+export AGENT_HUB_HOME="$(mktemp -d)/agent-hub-mZ" HUB_STAGE=stage-a
+mkdir -p "$AGENT_HUB_HOME"
 unset HUB_TAG CLAUDE_CODE_SESSION_ID AGENT_BOARD_FILE
 fail=0
 check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 want $2)"; fail=1; fi; }
@@ -170,7 +172,10 @@ grep -q 'main-merge demo-repo\|main-merge.*merging main' $R/st-once.out; check $
 grep -q 'ran the tests, all green' $R/st-once.out; check $? 0 "once: journal tail shown"
 $B/agent-top --once --agent alive1 --width 100 --lines 30 > $R/st-agent.out; check $? 0 "--once --agent exit 0"
 grep -q '▸ Bash: run the tests' $R/st-agent.out && grep -q '✎ Running the tests' $R/st-agent.out; check $? 0 "once --agent: feed has command and thought"
-grep -q 'mZ' $R/st-agent.out; check $? 1 "negative: half-written last line is not in the feed"
+grep -q 'fixtureHalfLineSentinel' $R/st-agent.out; check $? 1 "negative: half-written last line is not in the feed"
+$B/agent-top --once --agent alive1 --width 400 --lines 30 > $R/st-agent-marker.out
+grep -q 'agent-hub-mZ' $R/st-agent-marker.out; check $? 0 "control: a path containing the old short marker is displayed"
+grep -q 'fixtureHalfLineSentinel' $R/st-agent-marker.out; check $? 1 "negative: displaying that path does not expose the half-written record"
 python3 - $B/agent-top $R <<'PY'
 import subprocess, sys, unicodedata
 def w(s):

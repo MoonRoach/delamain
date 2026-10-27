@@ -3,6 +3,8 @@
 # broadcast, a worker's `@hub DONE`) is not the hub's activity; the hub's own journal line or its session's transcript
 # (Claude) / rollout (Codex) is, whichever is fresher. Negative controls: a hub with only addressed lines has no write,
 # a hub's remark to itself is not "addressed", a worker's own line is its write.
+# The same for the stage: it is idle when only others wrote to it in the last hour (`[pace]`, `[owner] @hub`, a broadcast),
+# alive when one of its own did (the hub, its -await and /sub tags, a worker, a predecessor hub) or its hub's session did.
 . "$(dirname "$0")/lib.sh"
 new_home
 export PYTHONDONTWRITEBYTECODE=1 CLAUDE_CONFIG_DIR=$AGENT_HUB_HOME/claude CODEX_HOME=$AGENT_HUB_HOME/codex AGENT_TOP_CACHE=0
@@ -26,13 +28,27 @@ def chk(name, cond, detail=None):
     fails += 0 if cond else 1
 
 
-def stage(name, roles, journal):
+def stage(name, roles, journal, roles_age_h=None):
+    """A stage with `journal` = [(minutes ago, tag, text)], each line in the file of its own day; roles.json optionally
+    aged (the only other thing in the fixture that would make the stage look recent)."""
     work = root / name / 'coordinator' / 'work'
     work.mkdir(parents=True)
     (root / name / 'roles.json').write_text(json.dumps({'version': 1, 'roles': roles}))
     now = dt.datetime.now(dt.timezone.utc)
-    lines = ''.join(f'- {(now - dt.timedelta(minutes=m)):%H:%M} [{tag}] {text}\n' for m, tag, text in journal)
-    (work / f'journal-{now.date()}.md').write_text(lines)
+    by_day = {}
+    for m, tag, text in journal:
+        at = now - dt.timedelta(minutes=m)
+        by_day.setdefault(at.date(), []).append(f'- {at:%H:%M} [{tag}] {text}\n')
+    for day, lines in by_day.items():
+        (work / f'journal-{day}.md').write_text(''.join(lines))
+    if roles_age_h is not None:
+        t = now.timestamp() - roles_age_h * 3600
+        os.utime(root / name / 'roles.json', (t, t))
+
+
+def info(name):
+    out = subprocess.run([str(binpath / 'agent-top'), '--json', '--all', '--stage', name], capture_output=True, text=True, check=True).stdout
+    return next(iter(json.loads(out)['stage_info'].values()))
 
 
 def snapshot(name):
@@ -121,6 +137,39 @@ chk('a Codex hub: written 7 h ago via its rollout', r['last_written_via'] == 'tr
 stage('no-transcript', {'hub': {'kind': 'cli', 'tag': 'hub-5', 'cli_session_id': 'eeeeeeee-1111-4111-8111-111111111111', 'engine': 'claude'}}, [])
 r = snapshot('no-transcript')['hub']
 chk('a session without a transcript and a journal: no write, not zero', r['last_written_age_s'] is None and r['last_addressed_age_s'] is None)
+
+# 7. stage activity: only the stage's own lines and its hub's session keep it from idle
+NOSID = {'hub': {'kind': 'cli', 'tag': 'hub-9'}, 'w1': {'kind': 'headless', 'tag': 'w1'}}
+TOLD = [(50, 'pace', '@hub LIMIT URGENT Claude 7d: 22% used'), (45, 'watchdog', '@hub OVERDUE Q-1'), (40, 'owner', '@hub write a handoff'),
+        (35, 'autopilot', 'auto-handoff note'), (30, 'other-stage-hub-3', '@hub-9 a question from another stage'),
+        (25, 'hubby', 'not a hub tag'), (20, 'hub9', 'nor this')]
+stage('idle-told', NOSID, TOLD, roles_age_h=100)
+i = info('idle-told')
+chk('stage told by [pace], [watchdog], [owner], [autopilot] and another stage\'s hub for an hour: idle', i['idle'] is True, i)
+chk('…its last activity is the aged roles.json (100 h), not the journal file\'s mtime',
+    i['idle_s'] is not None and abs(i['idle_s'] - 100 * 3600) < 300, i)
+for name, tag in (('own-hub', 'hub-9'), ('own-await', 'hub-9-await'), ('own-sub', 'hub-9/sub'), ('own-worker', 'w1'),
+                  ('own-role-tag', 'hub-9-reviewer'), ('own-predecessor', 'hub-8'), ('own-firstword', 'hub-9 r5b')):
+    stage(name, NOSID, TOLD + [(10, tag, 'a line of its own')], roles_age_h=100)
+    i = info(name)
+    chk(f'a line signed [{tag}] ten minutes ago: not idle, active 10 minutes ago', i['idle'] is False and 500 <= i['idle_s'] <= 700, i)
+# the hub's session counts too: a fresh transcript, a journal with only what was said to the hub
+stage('idle-session', roles, TOLD, roles_age_h=100)   # HUB_SID's transcript was written a minute ago (section 3)
+i = info('idle-session')
+chk('only addressed lines but the hub\'s transcript is a minute old: not idle', i['idle'] is False and i['idle_s'] < 200, i)
+# an own line older than yesterday is found (the journals are read back until one has a line of its own)
+stage('own-60h', NOSID, TOLD + [(60 * 60, 'hub-9', 'the last words, 60 h ago')], roles_age_h=100)
+i = info('own-60h')
+chk('own line 60 h ago: idle for 60 h (not 100, not none)', i['idle'] is True and abs(i['idle_s'] - 60 * 3600) < 300, i)
+stage('own-40h', NOSID, TOLD + [(40 * 60, 'hub-9', 'the last words, 40 h ago')], roles_age_h=100)
+i = info('own-40h')
+chk('own line 40 h ago: not yet idle (48 h)', i['idle'] is False and abs(i['idle_s'] - 40 * 3600) < 300, i)
+# the live-agent rule is unchanged: nothing of the stage's own, but a closed stage is not a candidate either
+stage('idle-closed', NOSID, TOLD, roles_age_h=100)
+(root / 'idle-closed' / 'stage.json').write_text(json.dumps({'closed': {'at': '2026-10-01T10:00:00', 'why': 'done', 'by': 'owner', 'hub': 'hub-1'}}))
+chk('a closed stage is not idle', info('idle-closed')['idle'] is False)
+text = subprocess.run([str(binpath / 'agent-top'), '--once', '--stage', 'idle-told', '--width', '160'], capture_output=True, text=True, check=True).stdout
+chk('--once: the pane marks the stage IDLE, last activity 4d ago', 'idle-told IDLE live 0 · last activity 4d ago' in text, text)
 
 sys.exit(1 if fails else 0)
 PY

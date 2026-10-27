@@ -20,12 +20,13 @@ description: Answer questions about Delamain agents, stages and hubs, their task
    event, not runtime. Describe native sessions' activity-based liveness as approximate. An unread inbox is a message
    awaiting the agent, not an owner question. `questions_ok: false` means the question register is unavailable.
    Report missing data or non-timeout command failure as unavailable; an empty successful snapshot means no observed work.
-   `stage_info.<S>.idle` marks an open stage with no live agent and no activity for `idle_after_s`: name such stages
-   once as candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
+   `stage_info.<S>.idle` marks an open stage with no live agent and no activity (its own lines, logs, hub session; not
+   `[pace]` or broadcasts) for `idle_after_s`: name such stages once as
+   candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
    out of the snapshot: they run nothing; mention them only when asked about old or closed work.
    `desktop_idle`: idle Desktop sessions holding memory; archiving: skills/hub/references/stage-lifecycle.md § Idle Desktop sessions.
-   A hub lives by `roles.<S>[hub].last_written_age_s` (its own journal line or session transcript; null: no sign), never by
-   `last_addressed_age_s` (messages to it, e.g. `[pace] @hub`): old write and fresh address means likely dead or asleep.
+   A hub lives by `roles.<S>[hub].last_written_age_s` (its journal line or session transcript; null: no sign), never by
+   `last_addressed_age_s` (`[pace] @hub` and the like): old write, fresh address: likely dead or asleep.
    Infer tasks only from titles, activity, last words or the journal; compare snapshots only when a previous one exists.
 3. Answer in a few plain-text lines in the user's language, prioritizing running work and anything needing attention.
    Summarize large stages and offer detail on request. Include question ids when they help the owner answer.

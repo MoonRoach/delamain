@@ -43,7 +43,13 @@
   own journal line. A hub dead for days showed no age at all (`—`) because the journals looked at reach back two days;
   now its transcript says how long. `broadcast` prints, before the summary and in `--dry-run` too, which recipients have
   not written for over `--silent-hours N` (default 12, 0 turns it off); a bare `/broadcast` shows it. The `status` skill
-  reads the two apart. Issue #143.
+  reads the two apart.
+  The same for the stage: `stage_info.last_activity_at` / `idle_s` / `idle` (the pane's idle marker, the status skill's
+  "candidates to close") no longer take the journal file's mtime, which every line moves, `[pace] @hub`, `[watchdog]`, a
+  broadcast or `[owner] @hub` included. A stage's own activity is its newest journal line written by one of its own (a
+  registered role's tag, its `-await`, `-<role>` and `/sub` forms, any `hub-N` of the stage; the journals are read back
+  until one has such a line) or the last write of its hub's session, besides the agent logs, `roles.json` and `questions.md`
+  as before. A stage that was only told things for two days is now idle. Issue #143.
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

@@ -74,6 +74,12 @@ Desktop Code tab:
   (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.
 
 
+### hub-viz: the live city
+
+[`viz/`](../viz/README.md) draws what agent-top shows as a live night city: a repository is a district, a stage hub a
+tower, a worker a flying cab, every journal line a beam between them. It is a small Go server over the hub home with a
+web page, and a native macOS screen saver; build it with `viz/build.sh`; nothing in the plugin starts it.
+
 ## Native subagent status and waiting
 
 Native Codex subagents have no detached worker PID. Silence in a rollout is not proof that a child died.

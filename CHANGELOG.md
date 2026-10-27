@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.23 — 2026-10-28
+
 - **`hub takeover` / `hub handoff --finish` no longer warn falsely on prefixed lesson ids (#142).** The check of § 7
   accepted only `L-<digits>`, so a stage that numbers lessons `L-MC-005` got "names no lesson id" on every handoff. It now
   also accepts `L-<LETTERS>-<digits>`.
@@ -23,7 +25,7 @@
   Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
   `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
   a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
-- **Sub-agents may do more, and every sub-agent of a registered session is in the journal.** On Claude a quick, bounded
+- **Sub-agents may do more, and every sub-agent of a registered session is in the journal (#156).** On Claude a quick, bounded
   code change with nothing to push or wait on may run as a background sub-agent with `isolation: "worktree"` that
   commits on its branch; the hub or executor pushes, opens the PR and runs `await` (new row 5 of the decision table in
   [launch modes](docs/launch-modes.md), the `hub` skill, the executor brief footer and template). Anything that pushes,
@@ -34,7 +36,7 @@
   are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
   journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
   (row 1).
-- **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs.** `agent-top` now
+- **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs (issue #143).** `agent-top` now
   gives every role `last_written_age_s` (its own journal line, signed with its tag; for a hub also the time of its session's
   last turn, when that is fresher: the newest `assistant`/`user` record of the Claude transcript or the newest event of the
   Codex rollout, read from the end of the file, `last_written_via`; never the file's mtime, which Claude Code moves when its

@@ -105,6 +105,7 @@ type HubInfo struct {
 	Kind  string `json:"kind"`
 	Host  string `json:"host"`
 	Title string `json:"title"`
+	Ctx   int    `json:"ctx"` // tokens in the hub session's context; 0 if unknown
 }
 
 type StageView struct {
@@ -114,6 +115,8 @@ type StageView struct {
 	Goal    string   `json:"goal"`
 	Hub     *HubInfo `json:"hub"`
 	Workers []Worker `json:"workers"`
+	// Questions is how many owner questions the stage has open (its questions.md register).
+	Questions int `json:"questions"`
 }
 
 type State struct {
@@ -522,9 +525,9 @@ func (h *Hub) snapshot() State {
 		if !hubLive {
 			continue
 		}
-		v := StageView{Name: name, Repo: st.repo, Open: st.open, Goal: st.goal, Workers: workers}
+		v := StageView{Name: name, Repo: st.repo, Open: st.open, Goal: st.goal, Workers: workers, Questions: openQuestions(st.dir)}
 		if hub, ok := st.active["hub"]; ok {
-			v.Hub = &HubInfo{Tag: hub.Tag, Kind: hub.Kind, Host: hub.Host, Title: hub.Title}
+			v.Hub = &HubInfo{Tag: hub.Tag, Kind: hub.Kind, Host: hub.Host, Title: hub.Title, Ctx: hubContext(h.root, hub.CLISessionID)}
 		}
 		views = append(views, v)
 	}

@@ -3,13 +3,14 @@
 // Everything is delivered on the main thread.
 import Foundation
 
-struct HubInfo: Decodable { var tag: String?; var kind: String?; var host: String?; var title: String? }
+struct HubInfo: Decodable { var tag: String?; var kind: String?; var host: String?; var title: String?; var ctx: Int? }
 struct Worker: Decodable {
     var role: String; var tag: String?; var engine: String?; var model: String?
     var working: Bool?; var title: String?
 }
 struct StageView: Decodable {
     var name: String; var repo: String?; var open: Bool?; var goal: String?; var hub: HubInfo?; var workers: [Worker]?
+    var questions: Int?   // owner questions the stage has open
 }
 struct State: Decodable { var machine: String; var at: String?; var stages: [StageView]? }
 struct Event: Decodable {

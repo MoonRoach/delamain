@@ -83,12 +83,15 @@ class Entity {
 
 final class Tower: Entity, Placeable {
     var stage = "", lot: Lot? = nil, district = "", title = "", open = true
+    var questions = 0   // owner questions open: the tower blinks gold while there are any
+    var ctx = 0, sc: Double?   // the hub session's context in tokens; the drawn size scale, eased towards its target
     var layers: TowerLayers?
 }
 
 final class Cab: Entity {
     var stage = "", role = "", engine = "", model = "", title = ""
     var working = false
+    var leaving = false, landed = false   // its process ended: it flies to its hub's lot, lands, and is swept
     weak var home: Tower?
     var p = 0.0, alt = 0.0, vx = 0.0, vy = 0.0
     var wp: (Double, Double)?
@@ -99,7 +102,7 @@ final class Cab: Entity {
 
 final class StageM {
     let name: String
-    var open = true, repo = ""
+    var open = true, repo = "", gone = false   // gone: off /state, keeps its tower until its cabs have landed
     var workers: [String: Cab] = [:]
     var hub: Tower!
     init(name: String, repo: String) { self.name = name; self.repo = repo }
@@ -196,8 +199,8 @@ final class DelamainSaverView: ScreenSaverView {
     // layers
     private let scene = CALayer()
     private var backdrop: CAGradientLayer!, skyLayer: CALayer!
-    private var overview: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?
-    private var detail: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?
+    private var overview: (img: StaticImage, layer: CALayer)?
+    private var detail: (img: StaticImage, layer: CALayer)?
     private var staticGroup: CALayer!, npcGroup: CALayer!, npcTrails: CAShapeLayer!, towerGroup: CALayer!, nameGroup: CALayer!
     private var holoGroup: CALayer!, signGroup: CALayer!, cabGroup: CALayer!, flyerGroup: CALayer!, beamGroup: CALayer!
     private var rippleGroup: CALayer!, labelGroup: CALayer!, rainLayer: CAShapeLayer!, hudGroup: CALayer!
@@ -429,16 +432,19 @@ final class DelamainSaverView: ScreenSaverView {
     }
     @inline(__always) private func P(_ x: Double, _ y: Double, _ lift: Double = 0) -> CGPoint {
         let a = x - y, b = (x + y) * 0.5, u = K * cam.z
-        return CGPoint(x: W / 2 + (a - cam.x) * u, y: H / 2 + 30 + (b - cam.y) * u - lift * u)
+        return CGPoint(x: W / 2 + (a - cam.x) * u + snapX, y: H / 2 + 30 + (b - cam.y) * u - lift * u + snapY)
     }
     private var unit: Double { K * cam.z }
+    /// How far track() moved the static layer onto the pixel grid. Every dynamic position adds it, so sprites keep
+    /// their place on the static image instead of shimmering against it as the camera settles.
+    private var snapX = 0.0, snapY = 0.0
 
-    private func focus(_ x: Double, _ y: Double) {   // the camera flies to where the city just spoke, then drifts back
+    private func focus(_ x: Double, _ y: Double) {   // the camera flies to where the city just spoke, then returns to the overview
         guard follow else { return }
         cam.tx = x - y; cam.ty = (x + y) * 0.5; cam.tz = 2.1; cam.until = nowMs() + 7000
     }
     private func moveCamera(_ now: Double, _ dt: Double) {
-        if now > cam.until { cam.tx = BASE.x + sin(now / 23000) * 6; cam.ty = BASE.y + cos(now / 31000) * 4; cam.tz = 1 }
+        if now > cam.until { cam.tx = BASE.x; cam.ty = BASE.y; cam.tz = 1 }   // at rest the camera stands still
         let k = 1 - pow(0.25, dt)
         // the page's easing, plus a floor on the speed so the camera actually arrives: at rest the static layer
         // is shown 1:1 and stays pixel-crisp instead of being resampled a fraction of a percent off
@@ -526,6 +532,20 @@ final class DelamainSaverView: ScreenSaverView {
         if let e = w.engine, !e.isEmpty { c.engine = e }
         c.model = w.model ?? ""; c.working = w.working ?? false; c.title = w.title ?? ""
         c.color = Pal.engine(c.engine)
+        c.leaving = false   // back in /state while it was landing: it takes off again
+    }
+
+    /// A cab whose process ended flies home and lands on its hub's tower before it goes; a stage that left the map
+    /// keeps its tower until its cabs have landed.
+    private func land(_ c: Cab) { if !c.leaving { c.leaving = true; c.wp = nil } }
+    private func sweepLanded() {
+        for (name, st) in stages {
+            for (role, c) in st.workers where c.landed { st.workers[role] = nil; cabs[c.key] = nil }
+            if st.gone && st.workers.isEmpty {
+                if let hub = st.hub { towers[hub.key] = nil; towerOrder.removeAll { $0 == hub.key } }
+                stages[name] = nil
+            }
+        }
     }
 
     private func applyState(_ s: State) {
@@ -537,14 +557,15 @@ final class DelamainSaverView: ScreenSaverView {
             st.open = sv.open ?? true; seen.insert(sv.name)
             st.hub.title = (sv.hub?.title).flatMap { $0.isEmpty ? nil : $0 } ?? sv.goal ?? ""
             st.hub.open = st.open
+            st.hub.ctx = sv.hub?.ctx ?? 0; st.hub.questions = sv.questions ?? 0
             var roles = Set<String>()
             for w in sv.workers ?? [] where w.role != "hub" { ensureWorker(sv.name, w); roles.insert(w.role) }
-            for (role, c) in st.workers where !roles.contains(role) { st.workers[role] = nil; cabs[c.key] = nil }   // its process ended
+            st.gone = false
+            for (role, c) in st.workers where !roles.contains(role) { land(c) }   // its process ended
         }
-        for (name, st) in stages where !seen.contains(name) {   // off the map at once: closed, or its hub sleeps
-            for c in st.workers.values { cabs[c.key] = nil }
-            if let hub = st.hub { towers[hub.key] = nil; towerOrder.removeAll { $0 == hub.key } }
-            stages[name] = nil
+        for (_, st) in stages where !seen.contains(st.name) {   // closed, or its hub sleeps
+            st.gone = true
+            for c in st.workers.values { land(c) }
         }
         hud()
     }
@@ -565,7 +586,12 @@ final class DelamainSaverView: ScreenSaverView {
         return (CX, CY)
     }
     private let TOWER_STEP = 4.2   // hub towers keep one size in every district
-    private func towerLift(_ n: Entity) -> Double { n.kind == .owner ? 7.5 : 6.4 * TOWER_STEP / 5.5 }
+    /// A hub tower grows with its session's context: 0.75x fresh, 1.5x at the handoff threshold (350k tokens). The
+    /// drawn scale eases towards it, so a /state poll does not make a tower jump.
+    private let CTX_FULL = 350000.0
+    private func ctxScale(_ t: Tower) -> Double { 0.75 + 0.75 * min(1, Double(t.ctx) / CTX_FULL) }
+    private func towerScale(_ n: Entity) -> Double { guard let t = n as? Tower, n.kind != .owner else { return 1 }; return t.sc ?? ctxScale(t) }
+    private func towerLift(_ n: Entity) -> Double { n.kind == .owner ? 7.5 : 6.4 * TOWER_STEP / 5.5 * towerScale(n) }
     private func anchor(_ n: Entity) -> CGPoint {
         if let c = n as? Cab { return P(c.x, c.y, c.z) }
         let (x, y) = worldOf(n)
@@ -617,13 +643,18 @@ final class DelamainSaverView: ScreenSaverView {
     }
 
     private func fly(_ c: Cab, _ now: Double, _ dt: Double) {
-        if c.wp == nil || jsHypot(c.wp!.0 - c.x, c.wp!.1 - c.y) < 2 { c.wp = waypoint(c) }
+        if c.leaving {   // home to the hub's lot, descending as it closes in; landed within a unit of it
+            guard let lot = c.home?.lot else { c.landed = true; return }
+            c.wp = (lot.x, lot.y)
+            if jsHypot(lot.x - c.x, lot.y - c.y) < 1 { c.landed = true; return }
+        } else if c.wp == nil || jsHypot(c.wp!.0 - c.x, c.wp!.1 - c.y) < 2 { c.wp = waypoint(c) }
         let dx = c.wp!.0 - c.x, dy = c.wp!.1 - c.y, dd = jsHypot(dx, dy), d = dd == 0 ? 1 : dd
         let speed = CRUISE * (c.working ? 1.3 : 1), turn = min(1, dt * 0.9)
         c.vx += (dx / d * speed - c.vx) * turn; c.vy += (dy / d * speed - c.vy) * turn
         c.px = c.x; c.py = c.y
         c.x += c.vx * dt; c.y += c.vy * dt
         c.z = c.alt + sin(now / 2400 + c.p) * 1.2
+        if c.leaving { c.z *= min(1, jsHypot(c.wp!.0 - c.x, c.wp!.1 - c.y) / 10) }
     }
 
     private func send(_ from: Entity, _ to: Entity, _ now: Double) {   // every line is a beam between a spire and a cab
@@ -779,8 +810,8 @@ final class DelamainSaverView: ScreenSaverView {
         }
     }
 
-    private func install(_ img: StaticImage, replacing old: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?)
-        -> (img: StaticImage, layer: CALayer, dash: CAShapeLayer) {
+    private func install(_ img: StaticImage, replacing old: (img: StaticImage, layer: CALayer)?)
+        -> (img: StaticImage, layer: CALayer) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let l = mk(CALayer())
         l.anchorPoint = .zero
@@ -788,25 +819,16 @@ final class DelamainSaverView: ScreenSaverView {
         l.contents = img.image
         l.contentsGravity = .resize
         l.magnificationFilter = .linear; l.minificationFilter = .trilinear
-        let dash = mk(CAShapeLayer(), l)
-        dash.frame = l.bounds
-        dash.path = img.dashes
-        dash.fillColor = nil
-        dash.strokeColor = RGB(255, 214, 150).cg(0.5)
-        dash.lineWidth = CGFloat(max(1, img.unit * 0.2))
-        dash.lineCap = .round
-        dash.lineDashPattern = [NSNumber(value: img.unit * 0.6), NSNumber(value: img.unit * 1.8)]
-        dash.contentsScale = backing
         if img.view.z > 1, let o = overview?.layer { staticGroup.insertSublayer(l, above: o) }
         else { staticGroup.insertSublayer(l, at: 0) }
         old?.layer.removeFromSuperlayer()
         CATransaction.commit()
-        return (img, l, dash)
+        return (img, l)
     }
 
     /// Places a static image so it tracks the live camera; returns whether it covers the whole screen.
     @discardableResult
-    private func track(_ t: (img: StaticImage, layer: CALayer, dash: CAShapeLayer), _ now: Double) -> Bool {
+    private func track(_ t: (img: StaticImage, layer: CALayer), _ now: Double) -> Bool {
         let v = t.img.view
         var s = cam.z / v.z
         if abs(s - 1) < 1e-6 { s = 1 }
@@ -814,11 +836,13 @@ final class DelamainSaverView: ScreenSaverView {
         var ox = W / 2 + (v.cx - cam.x) * u + (-v.pad - W / 2) * s
         var oy = H / 2 + 30 + (v.cy - cam.y) * u + (-v.pad - (H / 2 + 30)) * s
         let bs = Double(backing)
-        if s == 1 { ox = (ox * bs).rounded() / bs; oy = (oy * bs).rounded() / bs }   // 1:1 on the pixel grid: crisp
+        if s == 1 {   // 1:1 on the pixel grid: crisp
+            let rx = (ox * bs).rounded() / bs, ry = (oy * bs).rounded() / bs
+            snapX = rx - ox; snapY = ry - oy
+            ox = rx; oy = ry
+        } else { snapX = 0; snapY = 0 }
         t.layer.position = CGPoint(x: ox, y: oy)
         t.layer.transform = s == 1 ? CATransform3DIdentity : CATransform3DMakeScale(CGFloat(s), CGFloat(s), 1)
-        let period = t.img.unit * 2.4
-        t.dash.lineDashPhase = CGFloat((-(now / 40) / s).truncatingRemainder(dividingBy: period))
         let w = (v.W + 2 * v.pad) * s, h = (v.H + 2 * v.pad) * s
         return ox <= 0 && oy <= 0 && ox + w >= W && oy + h >= H
     }
@@ -832,6 +856,7 @@ final class DelamainSaverView: ScreenSaverView {
         feed.tick(now)
         moveCamera(now, dt)
         for c in cabs.values { fly(c, now, dt) }
+        sweepLanded()
         for c in npcs { drive(c, dt) }
 
         // towers on the map now, and the lots their static layer must leave empty
@@ -965,18 +990,28 @@ final class DelamainSaverView: ScreenSaverView {
                 tw.layers = l
                 return l
             }()
-            let p = P(lot.x, lot.y), stepW = isOwner ? 6.5 : TOWER_STEP
+            if !isOwner { let g = ctxScale(tw), cur = tw.sc ?? g; tw.sc = cur + (g - cur) * 0.04 }
+            let p = P(lot.x, lot.y), stepW = isOwner ? 6.5 : TOWER_STEP * towerScale(tw)
             let w = stepW * 2 * u * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86
             L.group.zPosition = CGFloat(lot.x + lot.y)
             placeGlow(L.glow, p, u * stepW * (0.9 + tw.pulse * 0.8), 0.25 + tw.pulse * 0.5)
             L.sprite.frame = CGRect(x: Double(p.x) - w / 2, y: Double(p.y) - h * base, width: w, height: h)
             let top = P(lot.x, lot.y, towerLift(tw)).y, beat = 0.5 + 0.5 * sin(now / 700 + Double(jsHash(tw.key) % 10))
-            placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), 0.55 + tw.pulse * 0.4)
+            // owner questions open: the beacon and the sign flash gold on and off once a second
+            let bl = !isOwner && tw.questions > 0 ? max(0, min(1, 0.5 + 1.4 * sin(now * 2 * Double.pi / 1000))) : -1
+            if bl >= 0 {
+                setGlow(L.beacon, Pal.gold)
+                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (2 + bl * 2.2 + tw.pulse * 2), 0.1 + bl * 0.85)
+            } else {
+                setGlow(L.beacon, isOwner ? Pal.gold : Pal.magenta)
+                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), 0.55 + tw.pulse * 0.4)
+            }
             if let sign = L.sign {   // the stage's name as a neon sign over the street
                 let dim = tw.open ? 1.0 : 0.45
                 sign.set(tw.label, CGFloat(max(10, u * 1.15)))
-                sign.foregroundColor = (tw.open ? RGB(0xffd6f6) : Pal.dim).cg(0.92 * dim)
-                sign.shadowRadius = CGFloat((8 + tw.pulse * 14) / 2)
+                sign.foregroundColor = bl >= 0 ? Pal.gold.cg(0.3 + 0.7 * bl) : (tw.open ? RGB(0xffd6f6) : Pal.dim).cg(0.92 * dim)
+                sign.shadowColor = (bl >= 0 ? Pal.gold : Pal.magenta).cg()
+                sign.shadowRadius = CGFloat((bl >= 0 ? 4 + bl * 16 : 8 + tw.pulse * 14) / 2)
                 sign.place(p.x, baseline: p.y + CGFloat(u * 2.4), align: 0.5)
             }
             tw.pulse *= decay

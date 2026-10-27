@@ -34,7 +34,6 @@
   are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
   journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
   (row 1).
-
 - **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs.** `agent-top` now
   gives every role `last_written_age_s` (its own journal line, signed with its tag; for a hub also the time of its session's
   last turn, when that is fresher: the newest `assistant`/`user` record of the Claude transcript or the newest event of the

@@ -23,6 +23,18 @@
   Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
   `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
   a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
+- **Sub-agents may do more, and every sub-agent of a registered session is in the journal.** On Claude a quick, bounded
+  code change with nothing to push or wait on may run as a background sub-agent with `isolation: "worktree"` that
+  commits on its branch; the hub or executor pushes, opens the PR and runs `await` (new row 5 of the decision table in
+  [launch modes](docs/launch-modes.md), the `hub` skill, the executor brief footer and template). Anything that pushes,
+  waits, touches production or must be reached by other sessions stays `agent spawn`. New `SubagentStart` /
+  `SubagentStop` hooks (`hooks/subagent_journal.py`, async, fail-open) write `[<parent tag>/<agent id>] SUB start <type>
+  <model>: <description>` and `… SUB end done|error` to the stage journal of a session in the role registry, so
+  `hub why`, the history and agent-top see sub-agents like headless agents; status words and `@` in the description
+  are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
+  journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
+  (row 1).
+
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

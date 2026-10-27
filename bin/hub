@@ -1685,7 +1685,7 @@ def cmd_handoff(a) -> int:
     try:
         for line in hc.journal_path(stage).read_text(encoding="utf-8").splitlines():
             p = hc.parse_journal_line(line)
-            if p and hc.tag_is(p[1], tag):
+            if p and hc.tag_is(p[1], tag) and not hc.sub_agent_line(p[1], p[2]):  # SUB start/end: history, not a statement
                 own_lines.append(line[:220])
     except FileNotFoundError:
         pass

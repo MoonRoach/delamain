@@ -1897,6 +1897,21 @@ def journal_append(stage: str, tag: str, text: str) -> str:
     return line
 
 
+SUB_LINE_PREFIXES = ("SUB start ", "SUB end ")
+
+
+def sub_agent_line(tag: str, text: str) -> bool:
+    """A sub-agent's start or end line (hooks/subagent_journal.py): `[<parent tag>/<agent id>] SUB start …` or
+    `… SUB end …`. It is for the record, so jwait never wakes on it, whatever its description says."""
+    return bool(tag) and "/" in tag and (text + " ").startswith(SUB_LINE_PREFIXES)
+
+
+def quiet(text: str) -> str:
+    """A text the journal will carry without waking anyone: status words lower-cased, no @."""
+    text = one_line(text).replace("@", "at ")
+    return re.sub(status_pattern(), lambda m: m.group(0).lower(), text)
+
+
 def parse_journal_line(line: str):
     """(time, tag, text) or None."""
     m = JOURNAL_LINE_RE.match(line)

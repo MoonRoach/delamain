@@ -1,6 +1,6 @@
 # Launching work, reviews, executors, locks, configuration, rules
 
-Read this when the four rows of *Choosing how to launch work* in `SKILL.md` do not settle a launch, when you need a
+Read this when the five rows of *Choosing how to launch work* in `SKILL.md` do not settle a launch, when you need a
 review, spawn or steer an executor, choose a model or worktree, take a lock, configure a project, run a night queue or
 watch agents. The full text moved from the hub skill follows; the Codex-only model and CLI checks are in
 [codex-hub.md](codex-hub.md#engine-models-and-hook-trust).
@@ -10,15 +10,20 @@ watch agents. The full text moved from the hub skill follows; the Codex-only mod
 Decide from what is visible before the start — what the work does and who must reach it. The first "yes" decides
 (table, modes and the experiments behind them: `<plugin-root>/docs/launch-modes.md`). Estimated duration is a
 hint, never the criterion: a hub cannot estimate task time reliably. The owner is not asked which launch to use. When
-no row applies — a small change with nothing to wait on and nobody else to reach it — the hub may write it itself: one
-line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
+no row applies it is almost always row 3. A change smaller than its brief (a typo, a doc line) the hub may make
+itself: one line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
 
 1. **A review** → `hub reviewer --for <class>`, then start what it prints (*Reviews*, below).
 2. **The owner should talk to it** → an interactive session in their chosen host. Claude additionally supports
    `claude --bg`; Codex detached workers are reached through `agent send` or a separate CLI resume after they stop.
-3. **It commits or pushes, waits on CI, a deploy or another party, touches production, or must be reachable by
-   someone other than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
-4. **Read-only, the answer is a short digest, nothing external to wait on** (read a log, check a fact, probe an
+3. **It pushes, waits on CI, a deploy or another party, touches production, or must be reachable by someone other
+   than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
+4. **Claude: a quick, bounded code change — specified, a few files, nothing to push or wait on** → a background
+   sub-agent with `isolation: "worktree"`. It commits on its worktree branch and returns the branch, the commit and the
+   test result in a few lines; you push, open the PR, order its review like any change (row 1) and run `await`. When it finds it needs a push, a CI run or
+   someone's answer, it commits what it has and returns; the rest goes to `agent spawn`. Codex: `agent spawn` (no
+   worktree isolation for native sub-agents, no journal lines).
+5. **Read-only, the answer is a short digest, nothing external to wait on** (read a log, check a fact, probe an
    environment, summarise a file) → a sub-agent: **foreground** when the hub has nothing else to do until the answer,
    otherwise **background** (through the host's native subagent API).
 
@@ -33,10 +38,14 @@ line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
   Three ways out, per sub-agent: wait for it (its notice is minutes away); stop it and re-launch the rest with
   `agent spawn`, with its brief and the partial result; or record it as lost — `hub handoff --allow-live-subagents`
   writes the list into the draft's TODO section.
+- **A sub-agent of a registered session is journaled** by the plugin's hooks: `[<parent tag>/<agent id>] SUB start
+  <type> <model>: <description>` and `… SUB end done|error`, in the parent's stage (`hub why`, the history and
+  agent-top see it). `jwait` never wakes on these lines; the completion notice wakes you, an executor's `DONE` reports
+  for its sub-agents. Codex sub-agents are not journaled.
 - Its shell inherits your `HUB_TAG`: if it journals, one final line `jlog --tag hub-<N>/<name> "DONE <path>"` (your
-  `jwait` ignores your sub-tags; the notice wakes you). An executor's sub-agents do not journal — its `DONE` reports
-  for them, and any `DONE` line wakes the hub.
-- A headless agent may use native sub-agents. For Claude, `agent spawn` lifts its 10-minute wait ceiling
+  `jwait` ignores your sub-tags; the notice wakes you). An executor's sub-agents write no line of their own.
+- A headless agent is encouraged to use native sub-agents the same way: read-only digests, and quick bounded changes in a
+  worktree whose commits it takes into its own branch before it pushes. For Claude, `agent spawn` lifts its 10-minute wait ceiling
   (`AGENT_HUB_BG_WAIT_CEILING_MS`); Codex uses its own native subagent lifecycle. `agent-top` lists the sub-agents of registered sessions as `<role>/<id>`, read-only.
 
 ## Reviews
@@ -166,13 +175,16 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    and every wake-up re-reads the hub's whole context.
 2. **A wake-up with nothing new is a turn of "no action"**, without analysis. *Why:* the same — a hub that thinks
    aloud on every wake-up spends its context on nothing.
-3. **Work that commits or pushes, waits on something external, touches production or must be reachable by others is a
-   headless agent.** *Why:* an in-session sub-agent belongs to its parent session — another session cannot address it
-   and it does not carry over to the next hub; a headless one has its own session id, keeps working through a handoff
-   and any hub can message it.
-4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** *Why:* the
-   hub's context is the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a
-   review.
+3. **Work that pushes, waits on something external, touches production or must be reachable by others is a headless
+   agent; a quick bounded change that only commits may be a worktree sub-agent (Claude).** *Why:* an in-session
+   sub-agent belongs to its parent session — another session cannot address it and it does not carry over to the next
+   hub; a headless one has its own session id, keeps working through a handoff and any hub can message it. A change
+   that commits in its own worktree and leaves the push and the wait to its caller loses nothing when its parent ends
+   (the commit stays), costs no second process and ~10k fewer starting tokens, and its `SUB` lines keep it in the
+   stage's history.
+4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** A worktree
+   sub-agent (row 4) is an executor here: its change gets the same `hub reviewer` review. *Why:* the hub's context is
+   the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a review.
 5. **A review of one artifact runs at most 3 rounds.** After that only blockers with a concrete failure scenario are
    accepted; the hub decides and records `ask decided`. *Why:* later rounds find style, not bugs, and each costs a
    full read.

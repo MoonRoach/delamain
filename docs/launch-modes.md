@@ -14,8 +14,11 @@ the start — what the work does and who must reach it — not on an estimate of
 | Ends with | its turn | its turn; killed when the hub's process exits (E5) | its turn; survives the hub's exit and handoff | `claude stop`; survives the terminal | its task | the owner |
 | Who can talk to it | nobody while it runs | only the parent session: `SendMessage` to its id (E8) | any session: `agent send` (inbox while alive, resume after) | any local session by name (E14); the owner with `claude attach` | nobody | the owner |
 | What reaches the hub | its whole result | a ~1 KB launch note, a ~0.7 KB completion notice and its result (E4) | one journal status line; the report is a file | nothing unless it writes the journal | a fetched report | nothing |
-| Visible in | the hub's UI, `agent-top` | `agent-top` (rows `<parent role>/<id>`), `/tasks` | `agent-top`, `agent status`, the journal | `claude agents` | the cloud UI | Desktop |
+| Visible in | the hub's UI, `agent-top`, the journal (*) | `agent-top` (rows `<parent role>/<id>`), `/tasks`, the journal (*) | `agent-top`, `agent status`, the journal | `claude agents` | the cloud UI | Desktop |
 | Starting context | ~16k tokens (E13) | ~16k tokens | ~27k tokens + the brief footer | as a new session | — | — |
+
+(*) A `SUB start` and a `SUB end` line under `<parent tag>/<agent id>` when the parent session is in the role registry
+(*Journal lines from sub-agents*, below); Claude only.
 
 A cloud session fits read-only work such as a review (a bundle made from a GitLab checkout cannot push back); a user
 who has the credit for it plugs it in as a reviewer skill (`docs/reviewers.md`), it is not a launch mode of its own
@@ -44,13 +47,19 @@ Ask the questions in order; the first "yes" decides. Estimated duration is a hin
 |---|---|---|
 | 1 | Is it a review of a change? | `hub reviewer --for <class>` — the reviewer the user configured; by default an `agent spawn` ([reviewers](reviewers.md)) |
 | 2 | Should the owner talk to it directly? | Desktop session (or `claude --bg` if the owner lives in a terminal) |
-| 3 | Does it commit or push, wait on CI, a deploy or another party, or touch production? Must anyone except this hub session talk to it, or must other sessions see its status in the journal? | `agent spawn` |
+| 3 | Does it push, wait on CI, a deploy or another party, or touch production? Must anyone except this session talk to it, or must it outlive this session? | `agent spawn` |
 | 4 | Is the hub near its handoff threshold (see below)? | `agent spawn` |
-| 5 | Is it read-only, with a short digest as its answer and nothing external to wait on — and does the hub have nothing else to do until the answer? | foreground sub-agent |
-| 6 | The same, but the hub has other work meanwhile | background sub-agent |
+| 5 | Claude: is it a quick, bounded code change — specified, a few files, nothing to push or wait on? | background sub-agent with `isolation: "worktree"`; it commits on its branch, the caller pushes, opens the PR, orders its review (row 1) and runs `await` |
+| 6 | Is it read-only, with a short digest as its answer and nothing external to wait on — and does the hub have nothing else to do until the answer? | foreground sub-agent |
+| 7 | The same, but the hub has other work meanwhile | background sub-agent |
 
-What a read-only digest is: read a log, check a fact, probe an environment, summarise a file. If the work is not that
-and none of rows 1–4 fit, it is almost always row 3: something is committed, waited for or reached by someone else.
+What a read-only digest is: read a log, check a fact, probe an environment, summarise a file. What row 5 is: a change
+whose design is settled, done in one sitting, that returns its branch, commit and test result in a few lines; when it
+finds it needs a push, a CI run or someone else's answer, it commits what it has and returns, and the rest goes to
+`agent spawn`. The worktree keeps its files out of the caller's checkout, and the commit survives the sub-agent's death
+with the parent's process (E5). Its change is reviewed like any other: row 1 still applies. If none of rows 1–7 fit, it is
+almost always row 3; a change smaller than its brief (a typo, a doc line) the hub may make itself. A Codex hub has no worktree
+isolation for its native sub-agents, and they are not journaled: for Codex row 5 is `agent spawn`.
 
 Other axes:
 - **Parallelism.** Background sub-agents run in parallel inside the hub's process (20 at once and 3 levels of
@@ -68,7 +77,8 @@ Other axes:
 Why not by duration: a hub cannot estimate task time reliably, and a wrong guess costs the same whatever the number —
 a sub-agent dies with the hub's process and only the hub's own session can resume it (E5, E6, E8). What the hub can see
 before the start is what the work does. Work that commits, waits or must be reached by others needs a process of its
-own; a read-only digest does not. The one dangerous moment, the hub's session ending while a sub-agent of it still
+own; a read-only digest does not, nor does a bounded change that commits in a worktree and leaves the push and the
+wait to its caller (row 5). The one dangerous moment, the hub's session ending while a sub-agent of it still
 runs, is closed mechanically: `hub handoff` refuses while one is live (next section).
 
 **A call budget in every sub-agent brief.** Nobody watches a sub-agent, so its brief ends with a limit: "if not done
@@ -100,8 +110,8 @@ A headless agent is a `claude -p` run. When its turn ends it waits for its backg
 CLI's ceiling (10 min by default), then kills them (E10); a sub-agent's own activity does not extend the wait (E11).
 `agent spawn` therefore starts every run with `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (wait until they finish —
 a 19-minute sub-agent completed, E12; `AGENT_HUB_BG_WAIT_CEILING_MS` sets another value). While they run the agent shows as alive; `agent stop` ends
-both. The executor reports for its sub-agents — they do not write the journal, because the hub's `jwait` wakes on any
-`DONE` line.
+both. An executor may use sub-agents the way a hub does — read-only digests, and quick bounded changes in a worktree
+whose commits it takes into its own branch before it pushes; it reports for them in its own `DONE`.
 
 The ceiling covers background sub-agents, not background Bash tasks: in a `claude -p` run a background Bash command
 such as `jwait` is killed when the turn ends. A hub run as `claude -p` therefore learns about `DONE` only from its next
@@ -123,12 +133,26 @@ which is why the `kill_guard.py` hook refuses `pkill`, `killall` and `kill $(pgr
 
 ## Journal lines from sub-agents
 
+Every sub-agent of a session in the role registry (a hub, an executor) is journaled by the plugin's `SubagentStart` and
+`SubagentStop` hooks (`hooks/subagent_journal.py`), in the stage that lists the session:
+
+    - 14:02 [hub-3-builder/a644cb2a41db26acd] SUB start delamain:worker-high sonnet: fix the parser
+    - 14:09 [hub-3-builder/a644cb2a41db26acd] SUB end done
+
+The type, model and description come from the sub-agent's meta file; `inherit` means no model was given. `error` is
+an API error as its last message. Status words in the description are lower-cased and `@` is dropped, and `jwait` never
+delivers a `SUB start` / `SUB end` line of a sub-tag, whoever waits: the lines are history for `hub why`, the journal
+and agent-top, and the parent's completion notice or the executor's own `DONE` is what wakes. The hooks run `async`,
+so they never delay a sub-agent, and fail open: an unregistered session gets no line. Codex has no such hook events:
+its sub-agents are not journaled.
+
 A sub-agent's shell inherits the parent's environment, `HUB_TAG` and `CLAUDE_CODE_SESSION_ID` included (E2), so a
-bare `jlog` writes under the parent's tag. The convention:
+bare `jlog` writes under the parent's tag. Beyond the hook's lines:
 - the hub's own background sub-agent may write one final line for the record under a sub-tag:
   `jlog --tag hub-<N>/<name> "DONE <report path>"`; the hub's `jwait` drops its own sub-tags, and the completion
   notice is what wakes the hub;
-- an executor's sub-agents write nothing to the journal (above).
+- an executor's sub-agents write nothing to the journal themselves: the executor's `DONE` reports for them, and the
+  hub's `jwait` wakes on any `DONE` line.
 
 ## Waiting for CI, a merge or a lock
 

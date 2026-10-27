@@ -124,6 +124,7 @@ PreToolUse hook imports it on every Bash call.
 | `handoff_size` | PreToolUse, Write or Edit of `HANDOFF-*.md` | Only in the hub home, in a repository with `.agent-hub/`, or under a directory of `AGENT_HUB_SCOPE_DIRS`. |
 | `questions` | SessionStart | The same places, and in hub agents (`HUB_TAG` set by `agent spawn`). |
 | `session_cards` | PreToolUse of Desktop's `start_session` / `hand_off_to_session`; SessionStart | Only in a session registered as the `hub` role of a stage; a non-hub, or a registry that cannot be read, is never blocked. |
+| `subagent_journal` | SubagentStart, SubagentStop (async) | Only for a session registered in a stage's role registry: one `SUB start` / `SUB end` line in that stage's journal ([launch modes](launch-modes.md#journal-lines-from-sub-agents)); it never blocks a sub-agent. |
 
 `AGENT_HUB_SCOPE_DIRS` is a hub-wide setting (directories separated by `:`; the hub home's `config.json` or the
 environment, never a repository's). A session in an unrelated project hears nothing from the last two.

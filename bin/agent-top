@@ -4,6 +4,7 @@
   agent-top [--stage S ...] [--all] [--interval 1.5] [--read-only]   interactive (curses)
   agent-top --once [--stage S ...] [--all] [--width N] [--agent R] [--lines N]   text picture, no curses
   agent-top --json [--stage S ...] [--all] [--agent R] [--feed N]     the same data for scripts
+  (no terminal — a Bash tool, a pipe: --agent / --feed / --lines without --json act as --once, --feed setting --lines)
   agent-top --widget [--stage S ...] [--all]                          HTML fragment of the snapshot (host CSS variables, no scripts)
 
 Shows every agent of every stage (<hub home>/<stage>/agents/<R>/): state (live / done / error / died — decided as
@@ -2548,8 +2549,8 @@ def main(argv: list) -> int:
     p.add_argument("--json", action="store_true", help="the same data as JSON, for scripts")
     p.add_argument("--widget", action="store_true", help="HTML fragment of the snapshot, for scripts")
     p.add_argument("--agent", help="with --once/--json: card and feed of this agent (role or folder name)")
-    p.add_argument("--lines", type=int, default=25, help="with --once --agent: feed lines")
-    p.add_argument("--feed", type=int, default=40, help="with --json --agent: feed events")
+    p.add_argument("--lines", type=int, help="with --once --agent: feed lines (default 25)")
+    p.add_argument("--feed", type=int, help="with --json --agent: feed events (default 40); without a terminal and without --json it sets --lines")
     p.add_argument("--width", type=int, help="width of the --once picture (default: the terminal, else 100)")
     p.add_argument("--interval", type=float, default=1.5, help="refresh period, seconds (1–2)")
     p.add_argument("--stale", type=int, default=STALE_S, help="a live agent with no log events for longer than this many seconds is marked \"quiet\"")
@@ -2557,6 +2558,9 @@ def main(argv: list) -> int:
     a = p.parse_args(argv)
     if a.interval < 0.3:
         raise hc.UsageError("--interval must be at least 0.3 s")
+    no_tty = not sys.stdout.isatty() or not sys.stdin.isatty()
+    if no_tty and not (a.once or a.json or a.widget) and (a.agent or a.feed is not None or a.lines is not None):
+        a.once = True   # a flag that asks for a picture or a feed (a skill suggests them) cannot open the console: print once
     if a.once or a.json or a.widget:
         coll = Collector(a.stage, a.all, a.stale)
         snap = coll.snapshot(wait_ext=True)
@@ -2565,12 +2569,12 @@ def main(argv: list) -> int:
         if a.widget:
             sys.stdout.write(render_widget(snap))
         elif a.json:
-            print(json.dumps(snapshot_json(snap, coll, a.agent, a.feed), ensure_ascii=False, indent=1, default=str))
+            print(json.dumps(snapshot_json(snap, coll, a.agent, 40 if a.feed is None else a.feed), ensure_ascii=False, indent=1, default=str))
         else:
             width = a.width or shutil.get_terminal_size((100, 24)).columns
-            sys.stdout.write(render_once(snap, coll, max(40, width), a.agent, a.lines))
+            sys.stdout.write(render_once(snap, coll, max(40, width), a.agent, a.lines or a.feed or 25))
         return 0
-    if not sys.stdout.isatty() or not sys.stdin.isatty():
+    if no_tty:
         raise hc.UsageError("interactive mode needs a terminal; for scripts use --once or --json")
     return run_ui(a)
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`hub takeover` / `hub handoff --finish` no longer warn falsely on prefixed lesson ids (#142).** The check of § 7
+  accepted only `L-<digits>`, so a stage that numbers lessons `L-MC-005` got "names no lesson id" on every handoff. It now
+  also accepts `L-<LETTERS>-<digits>`.
+- **`agent-top --agent R --feed N` works without a terminal (#144).** The `status` skill suggested it, but a Bash tool has
+  no TTY and the command died with "interactive mode needs a terminal". Without a terminal, `--agent`, `--feed` or
+  `--lines` alone now print the `--once` picture (`--feed` sets the number of feed lines); a bare `agent-top` still needs a
+  terminal. The skill now says `--json --agent <role> --feed 10`, which is what returns the feed as data.
+
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

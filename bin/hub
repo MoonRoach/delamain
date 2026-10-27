@@ -501,7 +501,7 @@ def open_lessons_todos(text: str) -> list:
     return found
 
 
-LESSON_ID_RE = re.compile(r"\bL-\d{1,6}\b")
+LESSON_ID_RE = re.compile(r"\bL-(?:[A-Z]+-)?\d{1,6}\b")   # L-007, or with a stage prefix: L-MC-005
 LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
 NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
 MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")

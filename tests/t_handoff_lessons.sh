@@ -260,4 +260,27 @@ PY2
   $B/hub handoff --stage stage-a --finish --handoff $C/ph.md > $R/ph.out 2> $R/ph.err
   grep -qF "$DISMISS" $R/ph.err; check $? 0 "placeholder answer warns: $(printf %s "$v" | head -1)"
 done
+# 10c. a lesson id with a stage prefix (merge-coord: L-MC-005) is an answer, like L-007 (issue #142); a prefix without a
+# number, or a lowercase one, is not
+for v in 'New entries: L-MC-005 (cue), L-MC-006 (cue).
+Verdicts: L-MC-001 helped (journal 10:12 [hub-1])' 'Verdicts: L-007 helped (journal 10:12 [hub-1])'; do
+  python3 - $C/on3-done.md $C/pf.md "$v" <<'PY2'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read(); i = t.index("## 7. Lessons")
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\n" + sys.argv[3] + "\n")
+PY2
+  $B/hub handoff --stage stage-a --finish --handoff $C/pf.md > $R/pf.out 2> $R/pf.err
+  grep -qF "$DISMISS" $R/pf.err; check $? 1 "id answers § 7, no warning: $(printf %s "$v" | head -1)"
+  $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/pf.md --dry-run > $R/pf2.out 2>&1
+  grep -q 'ATTENTION: the handoff pf.md' $R/pf2.out; check $? 1 "…and none at the takeover"
+done
+for v in 'New entries: L-MC (cue)' 'New entries: l-mc-005 (cue)' 'New entries: L-MC-0000007 (cue)'; do
+  python3 - $C/on3-done.md $C/pf.md "$v" <<'PY2'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read(); i = t.index("## 7. Lessons")
+open(sys.argv[2], "w", encoding="utf-8").write(t[:i] + "## 7. Lessons of this shift\n" + sys.argv[3] + "\n")
+PY2
+  $B/hub handoff --stage stage-a --finish --handoff $C/pf.md > $R/pf.out 2> $R/pf.err
+  grep -qF "$DISMISS" $R/pf.err; check $? 0 "negative: not an id, warns: $v"
+done
 exit $fail

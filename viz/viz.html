@@ -308,6 +308,17 @@ function ensureCab(src, stageName, w) {   // a live worker of the state: its cab
   }
   Object.assign(c, { engine: w.engine || c.engine, model: w.model, working: w.working, title: w.title });
   c.color = engineColor(c.engine);
+  c.leaving = false;   // back in /state while it was landing: it takes off again
+}
+
+// A cab whose process ended flies home and lands on its hub's tower before it goes; a stage that left the map keeps
+// its tower until its cabs have landed.
+function land(c) { if (!c.leaving) { c.leaving = true; c.wp = null; } }
+function sweepLanded(m) {
+  for (const [name, st] of m.stages) {
+    for (const [role, c] of st.workers) if (c.landed) { st.workers.delete(role); cabs.delete(c.key); }
+    if (st.gone && st.workers.size === 0) { if (st.hub) towers.delete(st.hub.key); m.stages.delete(name); }
+  }
 }
 
 function applyState(src, s) {
@@ -320,12 +331,12 @@ function applyState(src, s) {
     st.hub.title = (sv.hub && sv.hub.title) || sv.goal || ""; st.hub.open = sv.open;
     const roles = new Set();
     for (const w of sv.workers) if (w.role !== "hub") { ensureCab(src, sv.name, w); roles.add(w.role); }
-    for (const [role, c] of st.workers) if (!roles.has(role)) { st.workers.delete(role); cabs.delete(c.key); }   // its process ended
+    st.gone = false;
+    for (const c of st.workers.values()) if (!roles.has(c.role)) land(c);   // its process ended
   }
-  for (const [name, st] of m.stages) if (!seen.has(name)) {   // off the map at once: closed, or its hub sleeps
-    for (const c of st.workers.values()) cabs.delete(c.key);
-    if (st.hub) towers.delete(st.hub.key);
-    m.stages.delete(name);
+  for (const [name, st] of m.stages) if (!seen.has(name)) {   // closed, or its hub sleeps
+    st.gone = true;
+    for (const c of st.workers.values()) land(c);
   }
   hud();
 }
@@ -382,7 +393,7 @@ function focus(x, y) {   // the camera flies to where the city just spoke, then 
   cam.tx = a; cam.ty = b; cam.tz = 2.1; cam.until = performance.now() + 7000;
 }
 function moveCamera(now, dt) {
-  if (now > cam.until) { cam.tx = BASE.x + Math.sin(now / 23000) * 6; cam.ty = BASE.y + Math.cos(now / 31000) * 4; cam.tz = 1; }
+  if (now > cam.until) { cam.tx = BASE.x; cam.ty = BASE.y; cam.tz = 1; }   // at rest the camera stands still
   const k = 1 - Math.pow(0.25, dt);
   cam.x += (cam.tx - cam.x) * k * 0.6; cam.y += (cam.ty - cam.y) * k * 0.6; cam.z += (cam.tz - cam.z) * k * 0.5;
 }
@@ -434,13 +445,18 @@ function waypoint(c) {
   return [CX, CY];
 }
 function fly(c, now, dt) {
-  if (!c.wp || Math.hypot(c.wp[0] - c.x, c.wp[1] - c.y) < 2) c.wp = waypoint(c);
+  if (c.leaving) {   // home to the hub's lot, descending as it closes in; landed within a unit of it
+    c.wp = [c.home.lot.x, c.home.lot.y];
+    const left = Math.hypot(c.wp[0] - c.x, c.wp[1] - c.y);
+    if (left < 1) { c.landed = true; return; }
+  } else if (!c.wp || Math.hypot(c.wp[0] - c.x, c.wp[1] - c.y) < 2) c.wp = waypoint(c);
   const dx = c.wp[0] - c.x, dy = c.wp[1] - c.y, d = Math.hypot(dx, dy) || 1;
   const speed = CRUISE * (c.working ? 1.3 : 1), turn = Math.min(1, dt * 0.9);
   c.vx += (dx / d * speed - c.vx) * turn; c.vy += (dy / d * speed - c.vy) * turn;
   c.px = c.x; c.py = c.y;
   c.x += c.vx * dt; c.y += c.vy * dt;
   c.z = c.alt + Math.sin(now / 2400 + c.p) * 1.2;
+  if (c.leaving) c.z *= Math.min(1, Math.hypot(c.wp[0] - c.x, c.wp[1] - c.y) / 10);
 }
 
 function anchor(n) {
@@ -784,6 +800,7 @@ function frame(now) {
   drawBackdrop();
   drawGround(now);
   for (const c of cabs.values()) fly(c, now, dt);
+  for (const m of machines.values()) sweepLanded(m);
   for (const c of npcs) drive(c, dt);
   const hubLots = new Set([...towers.values()].map(t => t.lot));
   const items = [];   // painter's order by depth on the map

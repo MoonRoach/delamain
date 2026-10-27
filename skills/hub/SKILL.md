@@ -143,14 +143,14 @@ Full recipe: `references/owner-and-planning.md`.
 
 Decide from what is visible before the start — what the work does and who must reach it; the first "yes" decides
 (table: `<plugin-root>/docs/launch-modes.md`). Duration is a hint, never the criterion; the owner is not asked which
-launch to use. When no row applies the hub may write it itself: one line with the reason, and `ask decided`.
+launch to use. A change smaller than its brief (a typo, a doc line) the hub may make itself: a line why, `ask decided`.
 
 1. **A review** → `hub reviewer --for <class> --author <role>`, then start what it prints (`references/launch-and-executors.md`, *Reviews*).
 2. **The owner should talk to it** → an interactive session in their chosen host.
 3. **It pushes, waits on CI, a deploy or another party, touches production, or must be reachable by someone other
    than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
 4. **Claude: a quick bounded code change, nothing to push or wait on** → a background sub-agent with
-   `isolation: "worktree"`, committing on its branch; you push and `await`.
+   `isolation: "worktree"` commits on its branch; you push, order its review (row 1), `await`.
 5. **Read-only, the answer is a short digest, nothing external to wait on** → a sub-agent: **foreground** when the hub
    has nothing else to do until the answer, otherwise **background**.
 
@@ -174,7 +174,7 @@ lines, details in a file. `hub handoff` refuses while a sub-agent of your sessio
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
   An agent's question arrives as `@hub QUESTION …`; answer with `agent send`.
-- Executors may use sub-agents for digests and bounded worktree changes (the footer says so).
+- Executors may use sub-agents too: digests, bounded worktree changes.
 - Why is code here: `hub why <sha|file:line>` — its agent run, brief, report, journal.
 - Every agent that writes code gets `--worktree [BRANCH]` (two agents in one checkout overwrite each other's files);
   at handoff `agent worktrees --prune --dry-run`, then `--prune` (finished only); stop background processes the project started.

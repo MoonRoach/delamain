@@ -32,7 +32,8 @@
   <model>: <description>` and `… SUB end done|error` to the stage journal of a session in the role registry, so
   `hub why`, the history and agent-top see sub-agents like headless agents; status words and `@` in the description
   are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
-  journaled.
+  journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
+  (row 1).
 
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what

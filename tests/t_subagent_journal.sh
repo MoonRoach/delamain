@@ -103,6 +103,23 @@ with patch.object(hc, "sub_agent_line", return_value=False):
     assert flt.classify(line) == "wake"
 PY
 
+# ---- hub handoff: the draft's "last own lines" keep the hub's statements, not its sub-agents' SUB lines
+$B/jlog --tag hub-3 "PROGRESS plan agreed, three pieces out" >/dev/null
+for i in 1 2 3 4; do $B/jlog --tag hub-3/a$i "SUB start general-purpose haiku: piece $i" >/dev/null; $B/jlog --tag hub-3/a$i "SUB end done" >/dev/null; done
+$B/hub handoff --stage stage-a --session $HUBSID --out $R/H.md > $R/h.out 2>&1; check $? 0 "hub handoff writes a draft"
+sed -n '/Last \[hub-3\] journal lines/,/-->/p' $R/H.md > $R/tail.md
+grep -q 'plan agreed, three pieces out' $R/tail.md; check $? 0 "handoff tail: the hub's own statement survives eight SUB lines"
+grep -q 'SUB ' $R/tail.md; check $? 1 "handoff tail: no SUB line"
+
+# ---- a tag with a space (roles set does not refuse one): its SUB line is still a sub-agent line
+python3 - "$B" <<'PY'; check $? 0 "sub_agent_line: a tag with a space, '/' anywhere in it"
+import sys
+sys.path.insert(0, sys.argv[1])
+import hubcore as hc
+assert hc.sub_agent_line("qa r5/a1", "SUB start x y: z")
+assert not hc.sub_agent_line("qa r5", "SUB start x y: z")
+PY
+
 # ---- the executor footer tells a Claude executor about sub-agents, not a Codex one
 python3 - "$B" "$R" <<'PY'; check $? 0 "footer: the sub-agent bullet for Claude only"
 import importlib.machinery, importlib.util, sys

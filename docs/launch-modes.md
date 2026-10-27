@@ -49,7 +49,7 @@ Ask the questions in order; the first "yes" decides. Estimated duration is a hin
 | 2 | Should the owner talk to it directly? | Desktop session (or `claude --bg` if the owner lives in a terminal) |
 | 3 | Does it push, wait on CI, a deploy or another party, or touch production? Must anyone except this session talk to it, or must it outlive this session? | `agent spawn` |
 | 4 | Is the hub near its handoff threshold (see below)? | `agent spawn` |
-| 5 | Claude: is it a quick, bounded code change — specified, a few files, nothing to push or wait on? | background sub-agent with `isolation: "worktree"`; it commits on its branch, the caller pushes, opens the PR and runs `await` |
+| 5 | Claude: is it a quick, bounded code change — specified, a few files, nothing to push or wait on? | background sub-agent with `isolation: "worktree"`; it commits on its branch, the caller pushes, opens the PR, orders its review (row 1) and runs `await` |
 | 6 | Is it read-only, with a short digest as its answer and nothing external to wait on — and does the hub have nothing else to do until the answer? | foreground sub-agent |
 | 7 | The same, but the hub has other work meanwhile | background sub-agent |
 
@@ -57,7 +57,8 @@ What a read-only digest is: read a log, check a fact, probe an environment, summ
 whose design is settled, done in one sitting, that returns its branch, commit and test result in a few lines; when it
 finds it needs a push, a CI run or someone else's answer, it commits what it has and returns, and the rest goes to
 `agent spawn`. The worktree keeps its files out of the caller's checkout, and the commit survives the sub-agent's death
-with the parent's process (E5). If none of rows 1–7 fit, it is almost always row 3. A Codex hub has no worktree
+with the parent's process (E5). Its change is reviewed like any other: row 1 still applies. If none of rows 1–7 fit, it is
+almost always row 3; a change smaller than its brief (a typo, a doc line) the hub may make itself. A Codex hub has no worktree
 isolation for its native sub-agents, and they are not journaled: for Codex row 5 is `agent spawn`.
 
 Other axes:

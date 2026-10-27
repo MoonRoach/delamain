@@ -1903,8 +1903,7 @@ SUB_LINE_PREFIXES = ("SUB start ", "SUB end ")
 def sub_agent_line(tag: str, text: str) -> bool:
     """A sub-agent's start or end line (hooks/subagent_journal.py): `[<parent tag>/<agent id>] SUB start …` or
     `… SUB end …`. It is for the record, so jwait never wakes on it, whatever its description says."""
-    first = tag.split()[0] if tag and tag.split() else ""
-    return "/" in first and (text + " ").startswith(SUB_LINE_PREFIXES)
+    return bool(tag) and "/" in tag and (text + " ").startswith(SUB_LINE_PREFIXES)
 
 
 def quiet(text: str) -> str:

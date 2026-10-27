@@ -10,8 +10,8 @@ watch agents. The full text moved from the hub skill follows; the Codex-only mod
 Decide from what is visible before the start — what the work does and who must reach it. The first "yes" decides
 (table, modes and the experiments behind them: `<plugin-root>/docs/launch-modes.md`). Estimated duration is a
 hint, never the criterion: a hub cannot estimate task time reliably. The owner is not asked which launch to use. When
-no row applies — a small change with nothing to wait on and nobody else to reach it — the hub may write it itself: one
-line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
+no row applies it is almost always row 3. A change smaller than its brief (a typo, a doc line) the hub may make
+itself: one line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
 
 1. **A review** → `hub reviewer --for <class>`, then start what it prints (*Reviews*, below).
 2. **The owner should talk to it** → an interactive session in their chosen host. Claude additionally supports
@@ -20,7 +20,7 @@ line with the reason, and `ask decided` (*Planning a stage* in `SKILL.md`).
    than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
 4. **Claude: a quick, bounded code change — specified, a few files, nothing to push or wait on** → a background
    sub-agent with `isolation: "worktree"`. It commits on its worktree branch and returns the branch, the commit and the
-   test result in a few lines; you push, open the PR and run `await`. When it finds it needs a push, a CI run or
+   test result in a few lines; you push, open the PR, order its review like any change (row 1) and run `await`. When it finds it needs a push, a CI run or
    someone's answer, it commits what it has and returns; the rest goes to `agent spawn`. Codex: `agent spawn` (no
    worktree isolation for native sub-agents, no journal lines).
 5. **Read-only, the answer is a short digest, nothing external to wait on** (read a log, check a fact, probe an
@@ -182,9 +182,9 @@ These are the defaults of the plugin's author, each paid for by an incident or a
    that commits in its own worktree and leaves the push and the wait to its caller loses nothing when its parent ends
    (the commit stays), costs no second process and ~10k fewer starting tokens, and its `SUB` lines keep it in the
    stage's history.
-4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** *Why:* the
-   hub's context is the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a
-   review.
+4. **A change to a production script is written by an executor and reviewed; the hub does not write it.** A worktree
+   sub-agent (row 4) is an executor here: its change gets the same `hub reviewer` review. *Why:* the hub's context is
+   the stage's memory; spending it on code costs the plan, and a hub reviewing its own code is not a review.
 5. **A review of one artifact runs at most 3 rounds.** After that only blockers with a concrete failure scenario are
    accepted; the hub decides and records `ask decided`. *Why:* later rounds find style, not bugs, and each costs a
    full read.

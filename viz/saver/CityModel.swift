@@ -105,7 +105,8 @@ final class GNode {
 final class Lot {
     var idx = 0
     let x: Double, y: Double, d: String, size: Double, quad: [Int], tall: Double
-    let flip: Bool, scale: Double, sprite: String, h: UInt32
+    let flip: Bool, scale: Double, h: UInt32
+    var sprite: String
     var landmark = false, owner = false
     init(x: Double, y: Double, d: String, size: Double, quad: [Int], tall: Double, flip: Bool, scale: Double,
          sprite: String, h: UInt32) {
@@ -113,6 +114,18 @@ final class Lot {
         self.flip = flip; self.scale = scale; self.sprite = sprite; self.h = h
     }
 }
+
+/// A landmark's buildings per district, in the landmarks' order (the page's LANDMARKS).
+let LANDMARKS: [String: [String]] = [
+    "core": ["megamall", "data-center", "landing-pad", "corpo-block"], "foundry": ["power-plant", "industrial-block", "data-center"],
+    "docks": ["container-ship", "oil-rig", "port-block"], "bazaar": ["billboard-tower", "market-block", "residential-block"],
+    "heights": ["park", "luxury-block"], "sprawl": ["slum-block", "temple", "residential-block", "stadium"],
+    "smelter": ["power-plant", "industrial-block"], "riviera": ["luxury-block", "park"],
+    "wastes": ["water-tower", "badlands-block"]]
+
+/// Plain blocks may repeat within a district; any other landmark building stands once per district.
+let BLOCKS: Set<String> = ["block", "corpo-block", "industrial-block", "residential-block", "market-block", "port-block",
+                           "luxury-block", "badlands-block"]
 
 func pickMix(_ mix: [(String, Double)], _ r: Double) -> String {
     var acc = 0.0
@@ -261,11 +274,25 @@ final class CityModel {
         holos = Array(lots.filter { ($0.d == "core" || $0.d == "bazaar") && $0.h % 11 == 0 }.prefix(5))
         // a few sprite landmarks per district, never next to each other; every other lot is drawn as a schematic block
         var marks: [Lot] = []
+        var turn: [String: Int] = [:], stationDone = false
         let sorted = lots.enumerated().sorted { $0.element.h != $1.element.h ? $0.element.h < $1.element.h : $0.offset < $1.offset }
         for (_, l) in sorted {
             if l.owner || l.h % 5 != 0 { continue }
             if marks.contains(where: { jsHypot($0.x - l.x, $0.y - l.y) < 11 }) { continue }
-            l.landmark = true
+            // the next building in its district's list, skipping a repeat; none fits: the lot stays a schematic block
+            var sprite: String?
+            if !stationDone && abs(jsHypot((l.x - CX + 2) / 21, (l.y - CY + 4) / 26) - 1) < 0.12 {
+                stationDone = true; sprite = "monorail-station"   // the first lot on the ring road (no draws)
+            } else {
+                let list = LANDMARKS[l.d] ?? [], k = turn[l.d] ?? 0
+                for i in 0..<list.count {
+                    let s = list[(k + i) % list.count]
+                    if marks.contains(where: { $0.sprite == s && (jsHypot($0.x - l.x, $0.y - l.y) < 24 || ($0.d == l.d && !BLOCKS.contains(s))) }) { continue }
+                    turn[l.d] = k + i + 1; sprite = s; break
+                }
+            }
+            guard let sprite else { continue }
+            l.landmark = true; l.sprite = sprite
             marks.append(l)
         }
     }

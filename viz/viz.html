@@ -103,18 +103,25 @@ function loadSprite(name, file, key, solid = false) {
     img.src = `${ASSET}/assets/${file}`;
   });
 }
-const SPRITES = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "block", "corpo-block", "industrial-block",
-  "residential-block", "market-block", "port-block", "luxury-block", "badlands-block", "holo", "flyer"];
-const FALLBACK = { "residential-block": "block", "luxury-block": "corpo-block" };   // until those images exist
-const SOLID = new Set(["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "flyer"]);
-const ready = Promise.all([...SPRITES.map(n => loadSprite(n, n + ".png", true, SOLID.has(n))), loadSprite("sky", "skyline.jpg", false)])
-  .then(() => {
-    if (!sprites["hub-tower-red"] && sprites["hub-tower"]) {   // a red tower from the violet one
-      const src = sprites["hub-tower"], c = document.createElement("canvas"); c.width = src.width; c.height = src.height;
-      const g = c.getContext("2d"); g.filter = "hue-rotate(75deg) saturate(1.4)"; g.drawImage(src, 0, 0); sprites["hub-tower-red"] = c;
-    }
-  });
-const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red"];   // one per machine
+const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green", "hub-tower-gold", "hub-tower-blue",
+  "hub-tower-white"];   // one per stage, by its name's hash
+const CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"];
+// A worker's flyer shows its model's tier (its glow shows the engine): a limo for the flagship, a sports flyer for Opus,
+// the plain flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+function cabSprite(c) {
+  const m = (c.model || "").toLowerCase();
+  if (/fable|astra/.test(m)) return "flyer-limo";
+  if (/opus/.test(m)) return "flyer-sport";
+  if (/sonnet|(^|[^a-z])sol([^a-z]|$)/.test(m)) return "flyer";   // sol as a word, not inside one
+  if (/haiku|luna/.test(m)) return "flyer-bike";
+  if (c.engine && c.engine !== "claude" && c.engine !== "codex") return "flyer-van";
+  return CABS[hash(c.key) % CABS.length];
+}
+const SPRITES = [...TOWERS, ...CABS, "owner-tower", "holo", "block", "corpo-block", "industrial-block", "residential-block",
+  "market-block", "port-block", "luxury-block", "badlands-block", "megamall", "data-center", "landing-pad", "power-plant",
+  "container-ship", "oil-rig", "billboard-tower", "park", "slum-block", "temple", "stadium", "water-tower", "monorail-station"];
+const SOLID = new Set([...TOWERS, ...CABS, "owner-tower"]);
+const ready = Promise.all([...SPRITES.map(n => loadSprite(n, n + ".png", true, SOLID.has(n))), loadSprite("sky", "skyline.jpg", false)]);
 
 // ---- deterministic randomness -------------------------------------------------------------------------
 function hash(s) { let h = 2166136261; for (const ch of String(s)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return h >>> 0; }
@@ -231,12 +238,37 @@ function buildCity() {
   G.owner.owner = true;
   G.holos = G.lots.filter(l => (l.d === "core" || l.d === "bazaar") && l.h % 11 === 0).slice(0, 5);
   // a few sprite landmarks per district, never next to each other; every other lot is drawn as a schematic block
-  const marks = [];
+  const marks = [], turn = {};
   for (const l of [...G.lots].sort((a, b) => a.h - b.h)) {
     if (l.owner || l.h % 5) continue;
     if (marks.some(m => Math.hypot(m.x - l.x, m.y - l.y) < 11)) continue;
-    l.landmark = true; marks.push(l);
+    const sprite = landmarkSprite(l, turn, marks); if (!sprite) continue;
+    l.landmark = true; l.sprite = sprite; marks.push(l);
   }
+}
+
+// A landmark's building: the next one in its district's list, in the landmarks' order (no draws, so the saver's port
+// agrees), skipping one that would repeat: the same building within 24 units, or a unique one (not a plain block) already
+// in the district. A lot with nothing left stays a schematic block. The first lot on the ring road is a monorail station;
+// the docks' ship and rig stand in the bay off their lot.
+const LANDMARKS = {
+  core: ["megamall", "data-center", "landing-pad", "corpo-block"], foundry: ["power-plant", "industrial-block", "data-center"],
+  docks: ["container-ship", "oil-rig", "port-block"], bazaar: ["billboard-tower", "market-block", "residential-block"],
+  heights: ["park", "luxury-block"], sprawl: ["slum-block", "temple", "residential-block", "stadium"],
+  smelter: ["power-plant", "industrial-block"], riviera: ["luxury-block", "park"], wastes: ["water-tower", "badlands-block"],
+};
+const AFLOAT = new Set(["container-ship", "oil-rig"]);
+const BLOCKS = new Set(["block", "corpo-block", "industrial-block", "residential-block", "market-block", "port-block", "luxury-block",
+  "badlands-block"]);
+function landmarkSprite(l, turn, marks) {
+  if (!turn.ring && Math.abs(Math.hypot((l.x - CX + 2) / 21, (l.y - CY + 4) / 26) - 1) < 0.12) { turn.ring = 1; return "monorail-station"; }
+  const list = LANDMARKS[l.d], k = turn[l.d] || 0;
+  for (let i = 0; i < list.length; i++) {
+    const s = list[(k + i) % list.length];
+    if (marks.some(m => m.sprite === s && (Math.hypot(m.x - l.x, m.y - l.y) < 24 || (m.d === l.d && !BLOCKS.has(s))))) continue;
+    turn[l.d] = k + i + 1; return s;
+  }
+  return null;
 }
 
 // ---- model -------------------------------------------------------------------------------------------
@@ -646,20 +678,23 @@ function drawLot(l, now) {
 }
 
 // a landmark is a whole building, not one lot: its sprite is drawn this many times a lot's width
-const LANDMARK_SCALE = { "corpo-block": 2.4, "port-block": 2.2, "industrial-block": 2.2, "market-block": 1.8, block: 1.8, "badlands-block": 1.3 };
+const LANDMARK_SCALE = { "corpo-block": 2.4, "port-block": 2.2, "industrial-block": 2.2, "market-block": 1.8, block: 1.8,
+  "badlands-block": 1.3, "residential-block": 1.9, "luxury-block": 2.1, megamall: 2.6, "data-center": 2.2, "landing-pad": 1.9,
+  "power-plant": 2.5, "container-ship": 2.7, "oil-rig": 2.3, "billboard-tower": 1.7, park: 2.1, "slum-block": 2.1, temple: 2,
+  stadium: 2.7, "water-tower": 1.5, "monorail-station": 2.1 };
 function drawLandmark(l) {
-  const s = sprites[l.sprite] || sprites[FALLBACK[l.sprite]] || sprites.block;
+  const s = sprites[l.sprite] || sprites.block;
   if (!s) return;
-  const [x, y] = P(l.x, l.y), w = l.size * 2 * unit() * 1.1 * (LANDMARK_SCALE[l.sprite] || 1.8), h = w * s.height / s.width;
+  const [x, y] = P(AFLOAT.has(l.sprite) ? coast(l.y) - 4 : l.x, l.y), w = l.size * 2 * unit() * 1.1 * (LANDMARK_SCALE[l.sprite] || 1.8), h = w * s.height / s.width;
   if (x < -w || x > W + w || y < -h || y > H + h) return;
   ctx.save(); ctx.translate(x, y); if (l.flip) ctx.scale(-1, 1);
-  ctx.globalAlpha = 0.9 * (DIST[l.d].dim || 1);
+  ctx.globalAlpha = 0.6 * (DIST[l.d].dim || 1);   // scenery: fainter than the towers and cabs, which are live
   ctx.drawImage(s, -w / 2, -h * 0.6, w, h); ctx.restore(); ctx.globalAlpha = 1;
 }
 
 function drawTower(tw, now) {
   const isOwner = tw.kind === "owner", lot = isOwner ? G.owner : tw.lot;
-  const s = isOwner ? sprites["owner-tower"] : sprites[TOWERS[(machines.get(tw.machine)?.idx || 0) % TOWERS.length]] || sprites["hub-tower"];
+  const s = isOwner ? sprites["owner-tower"] : sprites[TOWERS[hash(tw.stage) % TOWERS.length]] || sprites["hub-tower"];
   if (!isOwner) tw.sc = (tw.sc ?? ctxScale(tw)) + (ctxScale(tw) - (tw.sc ?? ctxScale(tw))) * 0.04;
   const [x, y] = P(lot.x, lot.y), step = isOwner ? 6.5 : TOWER_STEP * towerScale(tw);
   const w = step * 2 * unit() * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86;
@@ -712,20 +747,8 @@ function drawNpc(car) {   // a grey ground car: red tail trail, headlight cone
   ctx.globalCompositeOperation = "source-over";
 }
 
-const tinted = {};
-function flyerSprite(color) {
-  const s = sprites.flyer; if (!s) return null;
-  if (!tinted[color]) {
-    const c = document.createElement("canvas"); c.width = s.width; c.height = s.height;
-    const g = c.getContext("2d"); g.drawImage(s, 0, 0);
-    g.globalCompositeOperation = "source-atop"; g.fillStyle = rgba(color, 0.32); g.fillRect(0, 0, c.width, c.height);
-    tinted[color] = c;
-  }
-  return tinted[color];
-}
-
-function drawCab(c, now) {   // a worker: a tinted flyer over its ground shadow, with a trail and a glow
-  const s = flyerSprite(c.color); if (!s) return;
+function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with a trail and a glow in the engine's colour
+  const s = sprites[cabSprite(c)] || sprites.flyer; if (!s) return;
   const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
   c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 18) c.trail.shift();
@@ -749,7 +772,7 @@ function drawCab(c, now) {   // a worker: a tinted flyer over its ground shadow,
 }
 
 function drawFlyer(f, now) {
-  const s = sprites.flyer; if (!s) return;
+  const s = sprites[f.sprite] || sprites.flyer; if (!s) return;
   const t = now / 1000 * f.v + f.p, x = CX + Math.cos(t) * f.rx, y = CY + Math.sin(t * 1.3) * f.ry;
   const [sx, sy] = P(x, y, f.alt), w = unit() * 2.4;
   const [vx] = isoRaw(-Math.sin(t) * f.rx, Math.cos(t * 1.3) * 1.3 * f.ry);
@@ -871,9 +894,11 @@ function resize() { DPR = window.devicePixelRatio || 1;
   cv.width = W * DPR; cv.height = H * DPR; cv.style.width = W + "px"; cv.style.height = H + "px"; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); fit(); }
 addEventListener("resize", resize);
 
+const AMBIENT = ["flyer-police", "flyer-limo", "flyer-van"];   // the three unmanned flyers
 buildCity(); shapes();
 { const r = mulberry(7); for (let k = 0; k < 90; k++) npcs.push(newNpc(r));
-  for (let k = 0; k < 3; k++) flyers.push({ rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10 }); }
+  for (let k = 0; k < 3; k++) flyers.push({ rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10,
+    sprite: AMBIENT[k] }); }
 resize();
 lastLive = performance.now();
 ready.then(() => { SOURCES.forEach((s, i) => connect(s, i)); requestAnimationFrame(frame); });

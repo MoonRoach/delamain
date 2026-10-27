@@ -1,7 +1,6 @@
 // Images and the static city layer: sprites keyed like viz.html, and a Core Graphics render of the ground, streets,
 // highways and schematic lots for one camera view at the screen's backing resolution.
 import AppKit
-import CoreImage
 import QuartzCore
 
 struct RGB {
@@ -21,16 +20,31 @@ enum Pal {
     static func engine(_ e: String) -> RGB { e == "codex" ? cyan : e == "claude" ? amber : tool }
 }
 
-let SPRITE_NAMES = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "block", "corpo-block", "industrial-block",
-                    "residential-block", "market-block", "port-block", "luxury-block", "badlands-block", "holo", "flyer"]
-let FALLBACK = ["residential-block": "block", "luxury-block": "corpo-block"]   // until those images exist
-let SOLID: Set<String> = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "owner-tower", "flyer"]
-let TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red"]   // one per machine
+let TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green", "hub-tower-gold", "hub-tower-blue",
+              "hub-tower-white"]   // one per stage, by its name's hash
+let CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"]
+
+/// A worker's flyer shows its model's tier, as the page's cabSprite: limo for the flagship, sports flyer for Opus, the plain
+/// flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+func cabSprite(model: String, engine: String, key: String) -> String {
+    let m = model.lowercased(), has = { (s: String) in m.contains(s) }
+    if has("fable") || has("astra") { return "flyer-limo" }
+    if has("opus") { return "flyer-sport" }
+    if has("sonnet") || m.range(of: "(^|[^a-z])sol([^a-z]|$)", options: .regularExpression) != nil { return "flyer" }   // sol as a word
+    if has("haiku") || has("luna") { return "flyer-bike" }
+    if !engine.isEmpty && engine != "claude" && engine != "codex" { return "flyer-van" }
+    return CABS[Int(jsHash(key) % UInt32(CABS.count))]
+}
+let SPRITE_NAMES = TOWERS + CABS + ["owner-tower", "holo", "block", "corpo-block", "industrial-block", "residential-block",
+                                    "market-block", "port-block", "luxury-block", "badlands-block", "megamall", "data-center",
+                                    "landing-pad", "power-plant", "container-ship", "oil-rig", "billboard-tower", "park",
+                                    "slum-block", "temple", "stadium", "water-tower", "monorail-station"]
+let SOLID: Set<String> = Set(TOWERS + CABS + ["owner-tower"])
+let AFLOAT: Set<String> = ["container-ship", "oil-rig"]   // standing in the bay off their lot
 
 final class Sprites {
     private(set) var images: [String: CGImage] = [:]
     private(set) var sky: CGImage?
-    private var tinted: [UInt32: CGImage] = [:]
 
     init(bundle: Bundle) {
         for name in SPRITE_NAMES {
@@ -38,7 +52,6 @@ final class Sprites {
             images[name] = Sprites.key(img, solid: SOLID.contains(name))
         }
         if let url = bundle.url(forResource: "skyline", withExtension: "jpg") { sky = Sprites.load(url) }
-        if images["hub-tower-red"] == nil, let violet = images["hub-tower"] { images["hub-tower-red"] = Sprites.hueShift(violet) }
     }
 
     static func load(_ url: URL) -> CGImage? {
@@ -82,38 +95,6 @@ final class Sprites {
             return ctx.makeImage()
         }
         return out ?? img
-    }
-
-    /// A red tower from the violet one: hue-rotate(75deg) saturate(1.4).
-    static func hueShift(_ img: CGImage) -> CGImage {
-        var ci = CIImage(cgImage: img)
-        if let f = CIFilter(name: "CIHueAdjust") {
-            f.setValue(ci, forKey: kCIInputImageKey); f.setValue(75.0 * Double.pi / 180, forKey: kCIInputAngleKey)
-            if let o = f.outputImage { ci = o }
-        }
-        if let f = CIFilter(name: "CIColorControls") {
-            f.setValue(ci, forKey: kCIInputImageKey); f.setValue(1.4, forKey: kCIInputSaturationKey)
-            if let o = f.outputImage { ci = o }
-        }
-        return CIContext().createCGImage(ci, from: CGRect(x: 0, y: 0, width: img.width, height: img.height)) ?? img
-    }
-
-    /// The flyer with source-atop rgba(colour, .32), cached per colour.
-    func flyer(_ c: RGB) -> CGImage? {
-        if let t = tinted[c.key] { return t }
-        guard let s = images["flyer"] else { return nil }
-        let w = s.width, h = s.height
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return s }
-        let r = CGRect(x: 0, y: 0, width: w, height: h)
-        ctx.draw(s, in: r)
-        ctx.setBlendMode(.sourceAtop)
-        ctx.setFillColor(c.cg(0.32))
-        ctx.fill(r)
-        let out = ctx.makeImage() ?? s
-        tinted[c.key] = out
-        return out
     }
 }
 
@@ -242,17 +223,20 @@ enum StaticRenderer {
     }
 
     /// A landmark is a whole building, not one lot: its sprite is drawn this many times a lot's width.
-    private static let LANDMARK_SCALE: [String: Double] = ["corpo-block": 2.4, "port-block": 2.2, "industrial-block": 2.2,
-                                                           "market-block": 1.8, "block": 1.8, "badlands-block": 1.3]
+    private static let LANDMARK_SCALE: [String: Double] = [
+        "corpo-block": 2.4, "port-block": 2.2, "industrial-block": 2.2, "market-block": 1.8, "block": 1.8,
+        "badlands-block": 1.3, "residential-block": 1.9, "luxury-block": 2.1, "megamall": 2.6, "data-center": 2.2,
+        "landing-pad": 1.9, "power-plant": 2.5, "container-ship": 2.7, "oil-rig": 2.3, "billboard-tower": 1.7, "park": 2.1,
+        "slum-block": 2.1, "temple": 2, "stadium": 2.7, "water-tower": 1.5, "monorail-station": 2.1]
     private static func drawLandmark(_ ctx: CGContext, _ l: Lot, _ P: (Double, Double, Double) -> CGPoint, _ u: Double,
                                      _ visible: (CGPoint, Double) -> Bool, _ sprites: [String: CGImage]) {
-        guard let s = sprites[l.sprite] ?? FALLBACK[l.sprite].flatMap({ sprites[$0] }) ?? sprites["block"] else { return }
-        let p = P(l.x, l.y, 0), w = l.size * 2 * u * 1.1 * (LANDMARK_SCALE[l.sprite] ?? 1.8), h = w * Double(s.height) / Double(s.width)
+        guard let s = sprites[l.sprite] ?? sprites["block"] else { return }
+        let p = P(AFLOAT.contains(l.sprite) ? coast(l.y) - 4 : l.x, l.y, 0), w = l.size * 2 * u * 1.1 * (LANDMARK_SCALE[l.sprite] ?? 1.8), h = w * Double(s.height) / Double(s.width)
         if !visible(p, w) { return }
         ctx.saveGState()
         ctx.translateBy(x: p.x, y: p.y)
         ctx.scaleBy(x: l.flip ? -1 : 1, y: -1)   // the context is flipped; images draw upright
-        ctx.setAlpha(CGFloat(0.9 * (DIST[l.d]?.dim ?? 1)))
+        ctx.setAlpha(CGFloat(0.6 * (DIST[l.d]?.dim ?? 1)))   // scenery: fainter than the towers and cabs, which are live
         // canvas rect (-w/2, -h*0.6, w, h) with y down; in the y-up local space its top is at +h*0.6
         ctx.draw(s, in: CGRect(x: -w / 2, y: -(h - h * 0.6), width: w, height: h))
         ctx.restoreGState()

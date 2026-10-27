@@ -7,10 +7,14 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
 - **The city** is procedural and deterministic: a coastal megacity with a bay to the west and desert all round, nine
   districts (CORE, FOUNDRY, DOCKS, BAZAAR, HEIGHTS, SPRAWL, SMELTER, RIVIERA, WASTES), each with its own street grid
   angle and block size, a ring road, curved radial highways and a coast road. Blocks are neon schematics in the
-  district's colour with a few image landmarks; ground traffic is ambient.
+  district's colour with a few image landmarks, each district cycling through its own buildings (megamall and data centre
+  in the core, power plants in the foundry and the smelter, a container ship and an oil rig in the bay off the docks, a
+  monorail station on the ring, a slum, a temple and a stadium in the sprawl, water towers in the wastes); ground traffic is
+  ambient. Landmarks are drawn fainter than the towers and cabs: they are scenery, not something that runs.
 - **A repository is a district** (`claude-agent-hub` the core, `santinel` the foundry, others take free districts; a
   stage with no repository sits in the wastes).
-- **A stage hub is a tower** on a lot of its district (violet, cyan or red by machine) with its name as a neon sign.
+- **A stage hub is a tower** on a lot of its district, one of seven designs by the hash of the stage's name, with its
+  name as a neon sign.
   An open stage has one while it has live workers, its hub wrote to the journal within 30 min, or some process names
   the hub's session. **The owner** is the gold megatower in the core.
   A tower grows with its hub session's context: 0.75x when fresh, 1.5x at 350k tokens (the handoff threshold); `/state`
@@ -19,8 +23,9 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   While its stage has owner questions open (`Q-…` entries with status `open` in `<stage>/questions.md`, the `ask`
   register; `/state` carries the count as `questions`) the tower's beacon and sign flash gold once a second, and the
   page's tooltip says how many.
-- **A worker is a flying cab** roaming the city, amber for Claude, cyan for Codex, grey for a service tool (`pace`,
-  `watchdog`); a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
+- **A worker is a flying cab** roaming the city. Its flyer shows the model's tier: a limo for Fable or Astra, a sports flyer
+  for Opus, the plain flyer for Sonnet or Sol, a bike for Haiku or Luna, a van for a service tool (`pace`, `watchdog`).
+  Its glow and trail are amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
 - **Every journal line is a beam**: from a spire down to a cab, from a cab up to its addressee (`@role`, `@hub <stage>`,
   `@owner`; an unaddressed line goes to the stage's hub), or between spires; the camera flies to where it happened.
 
@@ -82,7 +87,8 @@ The screen saver host makes two full-screen views per process, and both animate.
 
 ## Assets
 
-The images in `assets/` were generated for this page with the Antigravity CLI's image generator (original artwork, no
-game assets); their black background is keyed to transparency at load. `residential-block`, `luxury-block` and
-`hub-tower-red` are not generated yet: the page and the saver stand in other blocks and a hue-shifted tower for them
-(the page's console shows three 404s for them).
+The images in `assets/` are original artwork generated for this page (the Antigravity CLI's image generator and the
+owner's own generations; no game assets); their black background is keyed to transparency at load. Towers are 768×1024,
+buildings 512×512, flyers 384×384. A landmark's sprite and its scale live in `LANDMARKS` and `LANDMARK_SCALE` in both
+`viz.html` and the saver; a new name goes into `SPRITES` / `SPRITE_NAMES` too, and the choice must use no random draws, or
+the page and the saver stop drawing the same city.

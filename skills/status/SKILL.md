@@ -9,7 +9,7 @@ description: Answer questions about Delamain agents, stages and hubs, their task
    (resolve symlinks first, then go two directories above `skills/status`). Run that root's `bin/agent-top --json` through the host's shell tool;
    an unrelated command may shadow it on PATH. This reads the shared hub home and session logs without changing them.
    Use `--stage <stage>` for a named or clearly implied stage (repeatable), otherwise cover every stage.
-   Use `--all` only when the user asks about finished or old work; `--agent <role> --feed 10` gives recent activity.
+   Use `--all` only when the user asks about finished or old work; `--json --agent <role> --feed 10` gives recent activity.
    On the owner's data, snapshots take 20–45 s, `--all` up to ~160 s. In Codex, wait through execution continuation
    tools. In Claude Code, set the shell tool timeout to at least 5 min, or run in background and wait for completion.
    After a timeout, rerun with a longer timeout and wait for a fresh completed snapshot; use no stale data and do

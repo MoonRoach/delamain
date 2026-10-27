@@ -16,6 +16,9 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   A tower grows with its hub session's context: 0.75x when fresh, 1.5x at 350k tokens (the handoff threshold); `/state`
   carries it as `hub.ctx` (the last usage of the session's Claude transcript, else the context-budget hook's last
   recorded count, else 0) and the page's tooltip shows it as `ctx 212k`.
+  While its stage has owner questions open (`Q-…` entries with status `open` in `<stage>/questions.md`, the `ask`
+  register; `/state` carries the count as `questions`) the tower's beacon and sign flash gold once a second, and the
+  page's tooltip says how many.
 - **A worker is a flying cab** roaming the city, amber for Claude, cyan for Codex, grey for a service tool (`pace`,
   `watchdog`); a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
 - **Every journal line is a beam**: from a spire down to a cab, from a cab up to its addressee (`@role`, `@hub <stage>`,

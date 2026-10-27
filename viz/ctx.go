@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -142,4 +143,39 @@ func lastUsage(path string) int {
 		}
 	}
 	return 0
+}
+
+var (
+	questionHeaderRE = regexp.MustCompile(`^## Q-[A-Z0-9]+-\d{3,}\s+—\s+`)
+	statusFieldRE    = regexp.MustCompile(`^- status:\s?(.*)$`)
+)
+
+// openQuestions counts the owner questions a stage has open: the `Q-…` entries of <stage>/questions.md (the `ask`
+// register) whose first `- status:` line says `open`, as `ask list --open` counts them. A question the owner
+// has answered or withdrawn, or whose default was taken, is not open.
+func openQuestions(stageDir string) int {
+	b, err := os.ReadFile(filepath.Join(stageDir, "questions.md"))
+	if err != nil {
+		return 0
+	}
+	n, inQ, seen := 0, false, false
+	for _, line := range strings.Split(string(b), "\n") {
+		if questionHeaderRE.MatchString(line) {
+			inQ, seen = true, false
+			continue
+		}
+		if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# ") {
+			inQ = false
+			continue
+		}
+		if inQ && !seen {
+			if m := statusFieldRE.FindStringSubmatch(line); m != nil {
+				seen = true
+				if strings.TrimSpace(strings.SplitN(m[1], ":", 2)[0]) == "open" {
+					n++
+				}
+			}
+		}
+	}
+	return n
 }

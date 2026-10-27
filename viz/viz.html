@@ -51,10 +51,10 @@ const ASSET = location.origin;   // sprites come from the page's own server, wha
 const STRINGS = {
   en: { connecting: "connecting…", hub: "hub", live: "LIVE", replay: "REPLAY", noRepo: "no repository",
     count: (s, w, b) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"} · ${b} in flight`,
-    lastHours: h => `last ${h} h`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting" },
+    lastHours: h => `last ${h} h`, questions: n => `${n} owner ${n === 1 ? "question" : "questions"}`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting" },
   ru: { connecting: "подключаюсь…", hub: "хаб", live: "LIVE", replay: "REPLAY", noRepo: "без репозитория",
     count: (s, w, b) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси · ${b} в рейсе`,
-    lastHours: h => `последние ${h} ч`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт" },
+    lastHours: h => `последние ${h} ч`, questions: n => `${n} ${ruPlural(n, "вопрос", "вопроса", "вопросов")} владельцу`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт" },
 };
 function ruPlural(n, one, few, many) {
   const a = n % 10, b = n % 100;
@@ -329,7 +329,7 @@ function applyState(src, s) {
     const st = ensureStage(src, sv.name, sv.repo);
     st.open = sv.open; seen.add(sv.name);
     st.hub.title = (sv.hub && sv.hub.title) || sv.goal || ""; st.hub.open = sv.open;
-    st.hub.ctx = (sv.hub && sv.hub.ctx) || 0;
+    st.hub.ctx = (sv.hub && sv.hub.ctx) || 0; st.hub.questions = sv.questions || 0;
     const roles = new Set();
     for (const w of sv.workers) if (w.role !== "hub") { ensureCab(src, sv.name, w); roles.add(w.role); }
     st.gone = false;
@@ -433,6 +433,8 @@ const CTX_FULL = 350000;
 const ctxScale = n => 0.75 + 0.75 * Math.min(1, (n.ctx || 0) / CTX_FULL);
 const towerScale = n => n.kind === "owner" ? 1 : n.sc ?? ctxScale(n);
 const towerLift = n => n.kind === "owner" ? 7.5 : 6.4 * TOWER_STEP / 5.5 * towerScale(n);
+// A hub with owner questions open blinks: its spire beacon and its sign flash gold on and off once a second.
+const blink = (tw, now) => tw.questions > 0 ? Math.max(0, Math.min(1, 0.5 + 1.4 * Math.sin(now * 2 * Math.PI / 1000))) : -1;
 const fmtK = n => Math.round(n / 1000) + "k";
 
 function send(from, to) {   // every line is a beam: from a spire down to a cab, or from a cab up to a spire
@@ -664,15 +666,19 @@ function drawTower(tw, now) {
   glow(x, y, unit() * step * (0.9 + tw.pulse * 0.8), tw.color, 0.25 + tw.pulse * 0.5);
   if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
   const top = P(lot.x, lot.y, towerLift(tw))[1], beat = 0.5 + 0.5 * Math.sin(now / 700 + hash(tw.key) % 10);
-  glow(x, top, unit() * (1.6 + beat * 0.6 + tw.pulse * 2), isOwner ? C.gold : C.magenta, 0.55 + tw.pulse * 0.4);
+  const bl = isOwner ? -1 : blink(tw, now);
+  if (bl >= 0) glow(x, top, unit() * (2 + bl * 2.2 + tw.pulse * 2), C.gold, 0.1 + bl * 0.85);
+  else glow(x, top, unit() * (1.6 + beat * 0.6 + tw.pulse * 2), isOwner ? C.gold : C.magenta, 0.55 + tw.pulse * 0.4);
   tw.pulse *= 0.965;
 }
 
-function drawSign(tw) {   // the stage's name as a neon sign over the street, above every building
+function drawSign(tw, now) {   // the stage's name as a neon sign over the street, above every building
   const [x, y] = P(tw.lot.x, tw.lot.y), dim = tw.open === false ? 0.45 : 1;
   ctx.font = `${Math.max(10, unit() * 1.15)}px ui-monospace, Menlo, monospace`; ctx.textAlign = "center";
-  ctx.shadowColor = C.magenta; ctx.shadowBlur = 8 + tw.pulse * 14;
-  ctx.fillStyle = rgba(tw.open === false ? C.dim : "#ffd6f6", 0.92 * dim); ctx.fillText(tw.label, x, y + unit() * 2.4);
+  const bl = blink(tw, now);
+  ctx.shadowColor = bl >= 0 ? C.gold : C.magenta; ctx.shadowBlur = bl >= 0 ? 4 + bl * 16 : 8 + tw.pulse * 14;
+  ctx.fillStyle = bl >= 0 ? rgba(C.gold, 0.3 + 0.7 * bl) : rgba(tw.open === false ? C.dim : "#ffd6f6", 0.92 * dim);
+  ctx.fillText(tw.label, x, y + unit() * 2.4);
   ctx.shadowBlur = 0; ctx.textAlign = "left";
 }
 
@@ -824,7 +830,7 @@ function frame(now) {
   for (const tw of tall) drawTower(tw, now);
   drawDistrictNames();
   for (const l of G.holos) drawHolo(l, now);
-  for (const tw of towers.values()) if (tw.lot) drawSign(tw);
+  for (const tw of towers.values()) if (tw.lot) drawSign(tw, now);
   for (const c of [...cabs.values()].sort((a, b) => a.x + a.y - b.x - b.y)) drawCab(c, now);
   for (const f of flyers) drawFlyer(f, now);
   drawBeams(now); drawRipples(now); drawLabels(now); drawRain(now);
@@ -849,7 +855,7 @@ addEventListener("mousemove", e => {
   if (!hover) { tip.style.display = "none"; return; }
   const m = hover.machine && machines.get(hover.machine);
   const lines = hover.kind === "owner" ? ["owner"] : hover.kind === "hub"
-    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.ctx ? `ctx ${fmtK(hover.ctx)}` : "", hover.open === false ? T.closed : ""]
+    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.ctx ? `ctx ${fmtK(hover.ctx)}` : "", hover.questions ? T.questions(hover.questions) : "", hover.open === false ? T.closed : ""]
     : [`${hover.role} · ${hover.stage}`, hover.title, [hover.engine, hover.model].filter(Boolean).join(" · "), hover.working ? T.busy : T.idle];
   tip.textContent = lines.filter(Boolean).join("\n");
   tip.style.display = "block";

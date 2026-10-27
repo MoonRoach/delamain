@@ -83,6 +83,7 @@ class Entity {
 
 final class Tower: Entity, Placeable {
     var stage = "", lot: Lot? = nil, district = "", title = "", open = true
+    var questions = 0   // owner questions open: the tower blinks gold while there are any
     var ctx = 0, sc: Double?   // the hub session's context in tokens; the drawn size scale, eased towards its target
     var layers: TowerLayers?
 }
@@ -556,7 +557,7 @@ final class DelamainSaverView: ScreenSaverView {
             st.open = sv.open ?? true; seen.insert(sv.name)
             st.hub.title = (sv.hub?.title).flatMap { $0.isEmpty ? nil : $0 } ?? sv.goal ?? ""
             st.hub.open = st.open
-            st.hub.ctx = sv.hub?.ctx ?? 0
+            st.hub.ctx = sv.hub?.ctx ?? 0; st.hub.questions = sv.questions ?? 0
             var roles = Set<String>()
             for w in sv.workers ?? [] where w.role != "hub" { ensureWorker(sv.name, w); roles.insert(w.role) }
             st.gone = false
@@ -996,12 +997,21 @@ final class DelamainSaverView: ScreenSaverView {
             placeGlow(L.glow, p, u * stepW * (0.9 + tw.pulse * 0.8), 0.25 + tw.pulse * 0.5)
             L.sprite.frame = CGRect(x: Double(p.x) - w / 2, y: Double(p.y) - h * base, width: w, height: h)
             let top = P(lot.x, lot.y, towerLift(tw)).y, beat = 0.5 + 0.5 * sin(now / 700 + Double(jsHash(tw.key) % 10))
-            placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), 0.55 + tw.pulse * 0.4)
+            // owner questions open: the beacon and the sign flash gold on and off once a second
+            let bl = !isOwner && tw.questions > 0 ? max(0, min(1, 0.5 + 1.4 * sin(now * 2 * Double.pi / 1000))) : -1
+            if bl >= 0 {
+                setGlow(L.beacon, Pal.gold)
+                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (2 + bl * 2.2 + tw.pulse * 2), 0.1 + bl * 0.85)
+            } else {
+                setGlow(L.beacon, isOwner ? Pal.gold : Pal.magenta)
+                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), 0.55 + tw.pulse * 0.4)
+            }
             if let sign = L.sign {   // the stage's name as a neon sign over the street
                 let dim = tw.open ? 1.0 : 0.45
                 sign.set(tw.label, CGFloat(max(10, u * 1.15)))
-                sign.foregroundColor = (tw.open ? RGB(0xffd6f6) : Pal.dim).cg(0.92 * dim)
-                sign.shadowRadius = CGFloat((8 + tw.pulse * 14) / 2)
+                sign.foregroundColor = bl >= 0 ? Pal.gold.cg(0.3 + 0.7 * bl) : (tw.open ? RGB(0xffd6f6) : Pal.dim).cg(0.92 * dim)
+                sign.shadowColor = (bl >= 0 ? Pal.gold : Pal.magenta).cg()
+                sign.shadowRadius = CGFloat((bl >= 0 ? 4 + bl * 16 : 8 + tw.pulse * 14) / 2)
                 sign.place(p.x, baseline: p.y + CGFloat(u * 2.4), align: 0.5)
             }
             tw.pulse *= decay

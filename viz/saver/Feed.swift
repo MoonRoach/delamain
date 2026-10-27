@@ -10,6 +10,7 @@ struct Worker: Decodable {
 }
 struct StageView: Decodable {
     var name: String; var repo: String?; var open: Bool?; var goal: String?; var hub: HubInfo?; var workers: [Worker]?
+    var questions: Int?   // owner questions the stage has open
 }
 struct State: Decodable { var machine: String; var at: String?; var stages: [StageView]? }
 struct Event: Decodable {

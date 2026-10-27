@@ -207,6 +207,12 @@ other end: questions asked in chat are read by no one. The brief above is your c
 - Commit unfinished work before long runs: an interrupted turn loses whatever is uncommitted.
 """
 
+# Claude only: Codex native sub-agents have no worktree isolation and are not journaled (hooks/subagent_journal.py).
+CLAUDE_FOOTER = """- Sub-agents are welcome for a read-only digest (a log, a fact, a probe) and for a quick, bounded piece of code: a
+  background Agent call with `isolation: "worktree"` that commits on its branch; you take its commit into your branch,
+  push and wait yourself. Whatever pushes, waits or must reach the hub stays with you. They are journaled for you.
+"""
+
 
 def footer(stage: str, cwd: Path, **fields) -> str:
     """The standard footer plus the first brief-footer.md of the config layers (stage, the agent's repository,
@@ -215,6 +221,8 @@ def footer(stage: str, cwd: Path, **fields) -> str:
     fields.setdefault("engine", "claude")
     fields["jlog"] = '"$HUB_BIN/jlog"'  # not the path itself: a resumed run follows the plugin's current version
     text = FOOTER.format(**fields)
+    if fields["engine"] == "claude":
+        text += CLAUDE_FOOTER
     extra = hc.config_file("brief-footer.md", stage, cwd)
     if extra:
         add = extra.read_text(encoding="utf-8").strip("\n")
@@ -1336,7 +1344,8 @@ def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 m = hc.JOURNAL_LINE_RE.match(line)
-                if not m or not hc.tag_is(m.group(2), tag) or not status_re.search(m.group(3)):
+                if (not m or not hc.tag_is(m.group(2), tag) or not status_re.search(m.group(3))
+                        or hc.sub_agent_line(m.group(2), m.group(3))):
                     continue
                 hh, mm = map(int, m.group(1).split(":"))
                 if hc.dt.datetime.combine(day, hc.dt.time(hh, mm), tzinfo=hc.TZ) >= since.replace(second=0, microsecond=0):

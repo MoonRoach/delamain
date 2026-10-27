@@ -37,6 +37,7 @@ DEADLINES = {
     "handoff_size.py": 8.5,
     "context_budget.py": 8.5,
     "session_cards.py": 8.5,
+    "subagent_journal.py": 8.5,
 }
 
 _state: dict = {}

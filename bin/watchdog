@@ -307,9 +307,8 @@ class Tick:
 
 
 def scrub(text: str) -> str:
-    """A text the journal will carry without waking anyone: status words lower-cased, no @."""
-    text = hc.one_line(text).replace("@", "at ")
-    return re.sub(hc.status_pattern(), lambda m: m.group(0).lower(), text)
+    """A text the journal will carry without waking anyone (hubcore.quiet)."""
+    return hc.quiet(text)
 
 
 def short(text: str) -> str:

@@ -196,8 +196,8 @@ final class DelamainSaverView: ScreenSaverView {
     // layers
     private let scene = CALayer()
     private var backdrop: CAGradientLayer!, skyLayer: CALayer!
-    private var overview: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?
-    private var detail: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?
+    private var overview: (img: StaticImage, layer: CALayer)?
+    private var detail: (img: StaticImage, layer: CALayer)?
     private var staticGroup: CALayer!, npcGroup: CALayer!, npcTrails: CAShapeLayer!, towerGroup: CALayer!, nameGroup: CALayer!
     private var holoGroup: CALayer!, signGroup: CALayer!, cabGroup: CALayer!, flyerGroup: CALayer!, beamGroup: CALayer!
     private var rippleGroup: CALayer!, labelGroup: CALayer!, rainLayer: CAShapeLayer!, hudGroup: CALayer!
@@ -779,8 +779,8 @@ final class DelamainSaverView: ScreenSaverView {
         }
     }
 
-    private func install(_ img: StaticImage, replacing old: (img: StaticImage, layer: CALayer, dash: CAShapeLayer)?)
-        -> (img: StaticImage, layer: CALayer, dash: CAShapeLayer) {
+    private func install(_ img: StaticImage, replacing old: (img: StaticImage, layer: CALayer)?)
+        -> (img: StaticImage, layer: CALayer) {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         let l = mk(CALayer())
         l.anchorPoint = .zero
@@ -788,25 +788,16 @@ final class DelamainSaverView: ScreenSaverView {
         l.contents = img.image
         l.contentsGravity = .resize
         l.magnificationFilter = .linear; l.minificationFilter = .trilinear
-        let dash = mk(CAShapeLayer(), l)
-        dash.frame = l.bounds
-        dash.path = img.dashes
-        dash.fillColor = nil
-        dash.strokeColor = RGB(255, 214, 150).cg(0.5)
-        dash.lineWidth = CGFloat(max(1, img.unit * 0.2))
-        dash.lineCap = .round
-        dash.lineDashPattern = [NSNumber(value: img.unit * 0.6), NSNumber(value: img.unit * 1.8)]
-        dash.contentsScale = backing
         if img.view.z > 1, let o = overview?.layer { staticGroup.insertSublayer(l, above: o) }
         else { staticGroup.insertSublayer(l, at: 0) }
         old?.layer.removeFromSuperlayer()
         CATransaction.commit()
-        return (img, l, dash)
+        return (img, l)
     }
 
     /// Places a static image so it tracks the live camera; returns whether it covers the whole screen.
     @discardableResult
-    private func track(_ t: (img: StaticImage, layer: CALayer, dash: CAShapeLayer), _ now: Double) -> Bool {
+    private func track(_ t: (img: StaticImage, layer: CALayer), _ now: Double) -> Bool {
         let v = t.img.view
         var s = cam.z / v.z
         if abs(s - 1) < 1e-6 { s = 1 }
@@ -817,8 +808,6 @@ final class DelamainSaverView: ScreenSaverView {
         if s == 1 { ox = (ox * bs).rounded() / bs; oy = (oy * bs).rounded() / bs }   // 1:1 on the pixel grid: crisp
         t.layer.position = CGPoint(x: ox, y: oy)
         t.layer.transform = s == 1 ? CATransform3DIdentity : CATransform3DMakeScale(CGFloat(s), CGFloat(s), 1)
-        let period = t.img.unit * 2.4
-        t.dash.lineDashPhase = CGFloat((-(now / 40) / s).truncatingRemainder(dividingBy: period))
         let w = (v.W + 2 * v.pad) * s, h = (v.H + 2 * v.pad) * s
         return ox <= 0 && oy <= 0 && ox + w >= W && oy + h >= H
     }

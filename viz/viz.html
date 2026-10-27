@@ -567,13 +567,10 @@ function drawGround(now) {
   ctx.strokeStyle = "rgba(150,120,230,.15)"; ctx.lineWidth = Math.max(1, unit() * 0.32); ctx.beginPath();
   for (const n of G.nodes) for (const e of n.adj) if (!e.hw && e.to.id > n.id) { ctx.moveTo(...P(n.x, n.y)); ctx.lineTo(...P(e.to.x, e.to.y)); }
   ctx.stroke();
-  ctx.strokeStyle = "rgba(20,16,40,.95)"; ctx.lineWidth = Math.max(2, unit() * 1.1); ctx.beginPath();
+  ctx.strokeStyle = "rgba(150,120,230,.2)"; ctx.lineWidth = Math.max(1, unit() * 0.6); ctx.beginPath();   // highways: plain, wider
   for (const n of G.nodes) for (const e of n.adj) if (e.hw && e.to.id > n.id) { ctx.moveTo(...P(n.x, n.y)); ctx.lineTo(...P(e.to.x, e.to.y)); }
   ctx.stroke();
-  ctx.strokeStyle = "rgba(255,79,216,.28)"; ctx.lineWidth = Math.max(1, unit() * 0.16); ctx.stroke();
-  ctx.setLineDash([unit() * 0.6, unit() * 1.8]); ctx.lineDashOffset = -now / 40;
-  ctx.strokeStyle = "rgba(255,214,150,.5)"; ctx.lineWidth = Math.max(1, unit() * 0.2); ctx.stroke();
-  ctx.setLineDash([]); ctx.lineCap = "butt";
+  ctx.lineCap = "butt";
 }
 
 function drawDistrictNames() {

@@ -129,7 +129,6 @@ struct StaticView: Equatable {
 struct StaticImage {
     let view: StaticView
     let image: CGImage
-    let dashes: CGPath    // highway centre lines in the image's point space, for the animated dashes
     let unit: Double
     let ms: Double
 }
@@ -185,20 +184,18 @@ enum StaticRenderer {
         ctx.addPath(polyPath(city.city)); ctx.setFillColor(RGB(9, 9, 20).cg(0.96)); ctx.fillPath()
         // streets first, then highways over them
         let nodes = city.nodes
-        func segPath(_ segs: [(Int, Int)], offset: Double = 0) -> CGPath {
+        func segPath(_ segs: [(Int, Int)]) -> CGPath {
             let path = CGMutablePath()
             for (a, b) in segs {
                 let pa = P(nodes[a].x, nodes[a].y), pb = P(nodes[b].x, nodes[b].y)
                 if !visible(pa, 40) && !visible(pb, 40) { continue }
-                path.move(to: CGPoint(x: pa.x + offset, y: pa.y + offset)); path.addLine(to: CGPoint(x: pb.x + offset, y: pb.y + offset))
+                path.move(to: CGPoint(x: pa.x, y: pa.y)); path.addLine(to: CGPoint(x: pb.x, y: pb.y))
             }
             return path
         }
         ctx.setLineCap(.round)
         ctx.addPath(segPath(city.streets)); ctx.setStrokeColor(RGB(150, 120, 230).cg(0.15)); ctx.setLineWidth(max(1, u * 0.32)); ctx.strokePath()
-        let hw = segPath(city.highways)
-        ctx.addPath(hw); ctx.setStrokeColor(RGB(20, 16, 40).cg(0.95)); ctx.setLineWidth(max(2, u * 1.1)); ctx.strokePath()
-        ctx.addPath(hw); ctx.setStrokeColor(RGB(255, 79, 216).cg(0.28)); ctx.setLineWidth(max(1, u * 0.16)); ctx.strokePath()
+        ctx.addPath(segPath(city.highways)); ctx.setStrokeColor(RGB(150, 120, 230).cg(0.2)); ctx.setLineWidth(max(1, u * 0.6)); ctx.strokePath()   // highways: plain, wider
         ctx.setLineCap(.butt)
         // lots, in painter's order by depth on the map
         let excluded = Set(v.excluded)
@@ -208,7 +205,7 @@ enum StaticRenderer {
             if l.landmark { drawLandmark(ctx, l, P, u, visible, sprites) } else { drawLot(ctx, l, city, P, u, visible) }
         }
         guard let image = ctx.makeImage() else { return nil }
-        return StaticImage(view: v, image: image, dashes: segPath(city.highways, offset: v.pad), unit: u, ms: Date().timeIntervalSince(t0) * 1000)
+        return StaticImage(view: v, image: image, unit: u, ms: Date().timeIntervalSince(t0) * 1000)
     }
 
     private static func drawLot(_ ctx: CGContext, _ l: Lot, _ city: CityModel, _ P: (Double, Double, Double) -> CGPoint, _ u: Double,

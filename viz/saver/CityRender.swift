@@ -26,6 +26,15 @@ let CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "
 
 /// A worker's flyer shows its model's tier, as the page's cabSprite: limo for the flagship, sports flyer for Opus, the plain
 /// flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+/// A worker's trail is its model's colour, as the page's modelColor; the engine's colour stays in its glow.
+func modelColor(model: String, fallback: RGB) -> RGB {
+    let m = model.lowercased()
+    for (k, c) in [("fable", 0xc08bff), ("opus", 0xff4fd8), ("sonnet", 0xffb547), ("haiku", 0x9dff6a), ("astra", 0xff5a5a),
+                   ("luna", 0x7aa8ff)] where m.contains(k) { return RGB(UInt32(c)) }
+    if m.range(of: "(^|[^a-z])sol([^a-z]|$)", options: .regularExpression) != nil { return RGB(0x4fe3ff) }
+    return fallback
+}
+
 func cabSprite(model: String, engine: String, key: String) -> String {
     let m = model.lowercased(), has = { (s: String) in m.contains(s) }
     if has("fable") || has("astra") { return "flyer-limo" }

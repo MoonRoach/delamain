@@ -25,7 +25,8 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   page's tooltip says how many.
 - **A worker is a flying cab** roaming the city. Its flyer shows the model's tier: a limo for Fable or Astra, a sports flyer
   for Opus, the plain flyer for Sonnet or Sol, a bike for Haiku or Luna, a van for a service tool (`pace`, `watchdog`).
-  Its glow and trail are amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
+  Its neon trail is in the model's colour (Fable violet, Opus magenta, Sonnet amber, Haiku lime, Astra red, Sol cyan,
+  Luna blue); its glow is amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
 - **Every journal line is a beam**: from a spire down to a cab, from a cab up to its addressee (`@role`, `@hub <stage>`,
   `@owner`; an unaddressed line goes to the stage's hub), or between spires; the camera flies to where it happened.
 
@@ -45,7 +46,7 @@ page's origin>` on each of the others (the page itself is served by the first). 
 
 Page parameters: `src=http://a:8765,http://b:8765` (several machines, each running `hub-viz`), `quiet=N` (replay the
 last `hours` after N seconds without a live line; off by default: live only), `hours=24`, `speed=120`, `follow=0`
-(keep the overview), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
+(keep the overview), `ui=1.6` (text over the map that much larger, for a projector), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
 written). Keys: `r` replay, `l` back to live, `c` camera back to the overview. Hover a tower or a cab for its title.
 
 ## Screen saver

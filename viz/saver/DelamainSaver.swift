@@ -137,7 +137,7 @@ final class TowerLayers {
 
 final class CabLayers {
     let group: CALayer, shadow: CALayer, trail: CAShapeLayer, glow: CAGradientLayer, sprite: CALayer, label: TextL
-    var tint: UInt32 = 0, spriteName = ""
+    var tint: UInt32 = 0, trailTint: UInt32 = 0, spriteName = ""
     init(_ parent: CALayer, scale: CGFloat) {
         group = mk(CALayer(), parent)
         shadow = mk(CALayer(), group)
@@ -1055,8 +1055,12 @@ final class DelamainSaverView: ScreenSaverView {
             }()
             let name = cabSprite(model: c.model, engine: c.engine, key: c.key)   // the model may arrive after the cab
             if L.spriteName != name { L.spriteName = name; L.sprite.contents = sprites.images[name] ?? sprites.images["flyer"] }
-            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color)
-                L.trail.strokeColor = c.color.cg(0.28) }
+            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color) }
+            let mc = modelColor(model: c.model, fallback: c.color)   // the trail in the model's colour, the glow in the engine's
+            if L.trailTint != mc.key {   // neon: a bright core with a glow of its own colour
+                L.trailTint = mc.key; L.trail.strokeColor = mc.cg(0.85)
+                L.trail.shadowColor = mc.cg(1); L.trail.shadowOpacity = 0.9; L.trail.shadowOffset = .zero
+            }
             let g = P(c.x, c.y), p = P(c.x, c.y, c.z), w = u * 3.4
             L.group.zPosition = CGFloat(c.x + c.y)
             L.shadow.bounds = CGRect(x: 0, y: 0, width: w * 0.7, height: w * 0.7)
@@ -1064,7 +1068,7 @@ final class DelamainSaverView: ScreenSaverView {
             L.shadow.position = g
             L.shadow.transform = CATransform3DMakeScale(1, CGFloat(0.16 / 0.35), 1)
             c.trail.append((c.x, c.y, c.z, now))
-            while let f = c.trail.first, now - f.t > 300 { c.trail.removeFirst() }   // 18 frames at 60 fps
+            while let f = c.trail.first, now - f.t > 1330 { c.trail.removeFirst() }   // 80 frames at 60 fps, as the page
             let tp = CGMutablePath()
             for (k, t) in c.trail.enumerated() {
                 let q = P(t.x, t.y, t.z), q2 = CGPoint(x: q.x, y: q.y + CGFloat(w * 0.15))
@@ -1072,6 +1076,7 @@ final class DelamainSaverView: ScreenSaverView {
             }
             L.trail.path = tp
             L.trail.lineWidth = CGFloat(max(1, u * 0.3))
+            L.trail.shadowRadius = CGFloat(max(2, u * 0.45))
             let wob = c.working ? 0.15 * (1 + sin(now / 300)) : 0
             placeGlow(L.glow, CGPoint(x: p.x, y: p.y + CGFloat(w * 0.2)), w * (0.55 + c.pulse * 0.6 + wob), 0.35 + c.pulse * 0.5)
             let vx = (c.x - c.px) - (c.y - c.py)

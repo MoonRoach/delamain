@@ -137,7 +137,7 @@ final class TowerLayers {
 
 final class CabLayers {
     let group: CALayer, shadow: CALayer, trail: CAShapeLayer, glow: CAGradientLayer, sprite: CALayer, label: TextL
-    var tint: UInt32 = 0
+    var tint: UInt32 = 0, spriteName = ""
     init(_ parent: CALayer, scale: CGFloat) {
         group = mk(CALayer(), parent)
         shadow = mk(CALayer(), group)
@@ -1051,9 +1051,10 @@ final class DelamainSaverView: ScreenSaverView {
         for c in cabs.values {
             let L = c.layers ?? {
                 let l = CabLayers(cabGroup, scale: backing); l.glow.contentsScale = backing
-                l.sprite.contents = sprites.images[CABS[Int(jsHash(c.key) % UInt32(CABS.count))]] ?? sprites.images["flyer"]   // untinted
                 c.layers = l; return l
             }()
+            let name = cabSprite(model: c.model, engine: c.engine, key: c.key)   // the model may arrive after the cab
+            if L.spriteName != name { L.spriteName = name; L.sprite.contents = sprites.images[name] ?? sprites.images["flyer"] }
             if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color)
                 L.trail.strokeColor = c.color.cg(0.28) }
             let g = P(c.x, c.y), p = P(c.x, c.y, c.z), w = u * 3.4

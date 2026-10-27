@@ -22,7 +22,19 @@ enum Pal {
 
 let TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green", "hub-tower-gold", "hub-tower-blue",
               "hub-tower-white"]   // one per stage, by its name's hash
-let CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"]   // one per worker, by its key's hash
+let CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"]
+
+/// A worker's flyer shows its model's tier, as the page's cabSprite: limo for the flagship, sports flyer for Opus, the plain
+/// flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+func cabSprite(model: String, engine: String, key: String) -> String {
+    let m = model.lowercased(), has = { (s: String) in m.contains(s) }
+    if has("fable") || has("astra") { return "flyer-limo" }
+    if has("opus") { return "flyer-sport" }
+    if has("sonnet") || has("sol") { return "flyer" }
+    if has("haiku") || has("luna") { return "flyer-bike" }
+    if !engine.isEmpty && engine != "claude" && engine != "codex" { return "flyer-van" }
+    return CABS[Int(jsHash(key) % UInt32(CABS.count))]
+}
 let SPRITE_NAMES = TOWERS + CABS + ["owner-tower", "holo", "block", "corpo-block", "industrial-block", "residential-block",
                                     "market-block", "port-block", "luxury-block", "badlands-block", "megamall", "data-center",
                                     "landing-pad", "power-plant", "container-ship", "oil-rig", "billboard-tower", "park",
@@ -224,7 +236,7 @@ enum StaticRenderer {
         ctx.saveGState()
         ctx.translateBy(x: p.x, y: p.y)
         ctx.scaleBy(x: l.flip ? -1 : 1, y: -1)   // the context is flipped; images draw upright
-        ctx.setAlpha(CGFloat(0.9 * (DIST[l.d]?.dim ?? 1)))
+        ctx.setAlpha(CGFloat(0.6 * (DIST[l.d]?.dim ?? 1)))   // scenery: fainter than the towers and cabs, which are live
         // canvas rect (-w/2, -h*0.6, w, h) with y down; in the y-up local space its top is at +h*0.6
         ctx.draw(s, in: CGRect(x: -w / 2, y: -(h - h * 0.6), width: w, height: h))
         ctx.restoreGState()

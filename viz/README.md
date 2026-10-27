@@ -10,7 +10,7 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   district's colour with a few image landmarks, each district cycling through its own buildings (megamall and data centre
   in the core, power plants in the foundry and the smelter, a container ship and an oil rig in the bay off the docks, a
   monorail station on the ring, a slum, a temple and a stadium in the sprawl, water towers in the wastes); ground traffic is
-  ambient.
+  ambient. Landmarks are drawn fainter than the towers and cabs: they are scenery, not something that runs.
 - **A repository is a district** (`claude-agent-hub` the core, `santinel` the foundry, others take free districts; a
   stage with no repository sits in the wastes).
 - **A stage hub is a tower** on a lot of its district, one of seven designs by the hash of the stage's name, with its
@@ -23,8 +23,9 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   While its stage has owner questions open (`Q-…` entries with status `open` in `<stage>/questions.md`, the `ask`
   register; `/state` carries the count as `questions`) the tower's beacon and sign flash gold once a second, and the
   page's tooltip says how many.
-- **A worker is a flying cab** roaming the city, one of six flyers by the hash of its key, its glow and trail amber for
-  Claude, cyan for Codex, grey for a service tool (`pace`, `watchdog`); a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
+- **A worker is a flying cab** roaming the city. Its flyer shows the model's tier: a limo for Fable or Astra, a sports flyer
+  for Opus, the plain flyer for Sonnet or Sol, a bike for Haiku or Luna, a van for a service tool (`pace`, `watchdog`).
+  Its glow and trail are amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
 - **Every journal line is a beam**: from a spire down to a cab, from a cab up to its addressee (`@role`, `@hub <stage>`,
   `@owner`; an unaddressed line goes to the stage's hub), or between spires; the camera flies to where it happened.
 

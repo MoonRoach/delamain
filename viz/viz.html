@@ -105,7 +105,18 @@ function loadSprite(name, file, key, solid = false) {
 }
 const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green", "hub-tower-gold", "hub-tower-blue",
   "hub-tower-white"];   // one per stage, by its name's hash
-const CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"];   // one per worker, by its key's hash
+const CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"];
+// A worker's flyer shows its model's tier (its glow shows the engine): a limo for the flagship, a sports flyer for Opus,
+// the plain flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+function cabSprite(c) {
+  const m = (c.model || "").toLowerCase();
+  if (/fable|astra/.test(m)) return "flyer-limo";
+  if (/opus/.test(m)) return "flyer-sport";
+  if (/sonnet|sol/.test(m)) return "flyer";
+  if (/haiku|luna/.test(m)) return "flyer-bike";
+  if (c.engine && c.engine !== "claude" && c.engine !== "codex") return "flyer-van";
+  return CABS[hash(c.key) % CABS.length];
+}
 const SPRITES = [...TOWERS, ...CABS, "owner-tower", "holo", "block", "corpo-block", "industrial-block", "residential-block",
   "market-block", "port-block", "luxury-block", "badlands-block", "megamall", "data-center", "landing-pad", "power-plant",
   "container-ship", "oil-rig", "billboard-tower", "park", "slum-block", "temple", "stadium", "water-tower", "monorail-station"];
@@ -677,7 +688,7 @@ function drawLandmark(l) {
   const [x, y] = P(AFLOAT.has(l.sprite) ? coast(l.y) - 4 : l.x, l.y), w = l.size * 2 * unit() * 1.1 * (LANDMARK_SCALE[l.sprite] || 1.8), h = w * s.height / s.width;
   if (x < -w || x > W + w || y < -h || y > H + h) return;
   ctx.save(); ctx.translate(x, y); if (l.flip) ctx.scale(-1, 1);
-  ctx.globalAlpha = 0.9 * (DIST[l.d].dim || 1);
+  ctx.globalAlpha = 0.6 * (DIST[l.d].dim || 1);   // scenery: fainter than the towers and cabs, which are live
   ctx.drawImage(s, -w / 2, -h * 0.6, w, h); ctx.restore(); ctx.globalAlpha = 1;
 }
 
@@ -737,7 +748,7 @@ function drawNpc(car) {   // a grey ground car: red tail trail, headlight cone
 }
 
 function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with a trail and a glow in the engine's colour
-  const s = sprites[CABS[hash(c.key) % CABS.length]] || sprites.flyer; if (!s) return;
+  const s = sprites[cabSprite(c)] || sprites.flyer; if (!s) return;
   const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
   c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 18) c.trail.shift();

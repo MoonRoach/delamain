@@ -17,19 +17,65 @@
   #mode.replay b { color: var(--violet); }
   #legend { position: fixed; right: 26px; top: 66px; color: var(--dim); text-align: right; pointer-events: none; }
   #legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px 0 14px; }
-  #ticker { position: fixed; left: 26px; bottom: 22px; width: min(820px, calc(100vw - 52px)); pointer-events: none;
+  #ticker { position: fixed; left: 26px; bottom: 22px; width: min(820px, calc(100vw / var(--ui, 1) - 52px)); pointer-events: none;
     padding: 10px 12px; background: linear-gradient(90deg, rgba(3,4,9,.85), rgba(3,4,9,0)); border-left: 2px solid rgba(255,79,216,.5); }
   #ticker div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #ticker .t { color: var(--dim); }
   #ticker .s { color: var(--violet); }
-  #tip { position: fixed; display: none; max-width: 420px; padding: 8px 10px; background: rgba(6,8,16,.94);
+  #tip { position: fixed; display: none; max-width: min(420px, calc(100vw - 24px)); box-sizing: border-box; padding: 8px 10px; background: rgba(6,8,16,.94);
     border: 1px solid rgba(192,139,255,.35); border-radius: 4px; pointer-events: none; white-space: pre-wrap; }
-  body.idle { cursor: none; }
+  canvas.hot { cursor: pointer; }
+  body.idle, body.idle canvas { cursor: none; }
+  /* the roster: the owner, each hub, its cabs; it sits in the HUD's flow, so it starts under the HUD at any ui= */
+  #rtoggle { display: none; pointer-events: auto; margin-top: 8px; padding: 5px 10px; font: inherit; color: var(--ink);
+    background: rgba(3,4,9,.8); border: 1px solid rgba(192,139,255,.4); border-radius: 3px; cursor: pointer; }
+  #rtoggle[aria-expanded="true"] { border-color: rgba(79,227,255,.7); color: var(--cyan); }
+  #roster { pointer-events: auto; margin-top: 14px; width: 250px; max-height: calc(100vh / var(--ui, 1) - 250px); overflow-y: auto;
+    overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(192,139,255,.3) transparent;
+    padding: 6px 0; background: linear-gradient(90deg, rgba(3,4,9,.85), rgba(3,4,9,.45)); border-left: 2px solid rgba(192,139,255,.5); }
+  #roster:empty { display: none; }
+  #roster .rh { padding: 2px 12px 6px; color: var(--dim); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; }
+  #roster .rh small { display: block; letter-spacing: 0; text-transform: none; opacity: .7; margin-top: 2px; }
+  #roster .r { display: flex; align-items: center; gap: 7px; padding: 3px 12px; cursor: pointer; white-space: nowrap; border-left: 2px solid transparent; margin-left: -2px; }
+  #roster .r:hover { background: rgba(223,230,238,.06); }
+  #roster .r.pin { background: rgba(79,227,255,.12); border-left-color: var(--cyan); }
+  #roster .r.pin .n { color: var(--cyan); }
+  #roster .r i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+  #roster .n { overflow: hidden; text-overflow: ellipsis; min-width: 0; margin-right: auto; }
+  #roster .x, #roster .m { color: var(--dim); font-size: 11px; flex: none; }
+  #roster .q { flex: none; color: #030409; background: var(--gold); border-radius: 2px; padding: 0 4px; font-size: 11px; box-shadow: 0 0 8px rgba(255,215,106,.6); }
+  #roster .own .n { color: var(--gold); }
+  #roster .hub { margin-top: 4px; }
+  #roster .hub .n { color: #ffd6f6; }
+  #roster .closed { opacity: .45; }
+  #roster .cab { padding-left: 26px; font-size: 12px; }
+  #roster .cab .n { color: var(--dim); }
+  #roster .cab.busy .n { color: var(--ink); }
+  #roster .cab.busy i { box-shadow: 0 0 7px currentColor; animation: rpulse 1.3s ease-in-out infinite; }
+  #roster .cab.leaving { opacity: .4; }
+  @keyframes rpulse { 50% { opacity: .45; box-shadow: 0 0 2px currentColor; } }
+  canvas { touch-action: manipulation; }
+  /* a phone, either way up: the roster folds into a button that opens it as a sheet; the ticker spans the screen, three lines */
+  @media (max-width: 700px), (max-height: 500px) {
+    #hud { left: 12px; top: 10px; max-width: calc(100vw / var(--ui, 1) - 84px); }
+    #hud .brand { font-size: 13px; letter-spacing: .3em; }
+    #hud .sub { font-size: 11px; margin-top: 3px; }
+    #mode { right: 12px; top: 10px; font-size: 11px; }
+    #legend { display: none; }
+    #ticker { left: 8px; bottom: 8px; width: calc(100vw / var(--ui, 1) - 16px); box-sizing: border-box; padding: 6px 8px; font-size: 11px; }
+    #ticker div:nth-last-child(n+4) { display: none; }
+    #rtoggle { display: inline-block; font-size: 12px; }
+    #roster { display: none; margin-top: 6px; width: calc(100vw / var(--ui, 1) - 24px); box-sizing: border-box; max-height: 55vh;
+      background: rgba(3,4,9,.94); border: 1px solid rgba(192,139,255,.35); border-left-width: 2px; }
+    #roster.open { display: block; }
+    #roster .r { padding-top: 6px; padding-bottom: 6px; }
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hud"><div class="brand">DELAMAIN</div><div class="sub" id="sub"></div></div>
+<div id="hud"><div class="brand">DELAMAIN</div><div class="sub" id="sub"></div>
+  <button id="rtoggle" type="button" aria-expanded="false" aria-controls="roster"></button><div id="roster" role="list"></div></div>
 <div id="mode"></div>
 <div id="legend"><i style="background:var(--violet)"></i><span id="lg-hub"></span><i style="background:var(--amber)"></i>claude<i style="background:var(--cyan)"></i>codex<i style="background:var(--gold)"></i>owner</div>
 <div id="ticker"></div>
@@ -43,7 +89,7 @@ const qs = new URLSearchParams(location.search);
 // ui=N scales the text over the map (labels, ticker, HUD, tooltips) for a big screen; the map keeps its scale
 const UI = Math.max(0.5, Math.min(4, +qs.get("ui") || 1));
 for (const id of ["hud", "mode", "legend", "ticker"]) document.getElementById(id).style.zoom = UI;
-document.getElementById("ticker").style.width = `min(820px, calc(${100 / UI}vw - 52px))`;   // zoomed: in its own units
+document.documentElement.style.setProperty("--ui", UI);   // a zoomed box measures the viewport in its own units: 100vw / ui
 document.getElementById("tip").style.fontSize = `${13 * UI}px`;   // not zoomed: it is placed at the cursor
 const SOURCES = (qs.get("src") || location.origin).split(",").map(s => s.trim().replace(/\/$/, "")).filter(Boolean);
 // Live only by default; ?quiet=N replays the last day after N seconds without a live line.
@@ -56,10 +102,14 @@ const ASSET = location.origin;   // sprites come from the page's own server, wha
 const STRINGS = {
   en: { connecting: "connecting…", hub: "hub", live: "LIVE", replay: "REPLAY", noRepo: "no repository",
     count: (s, w, b) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"} · ${b} in flight`,
-    lastHours: h => `last ${h} h`, questions: n => `${n} owner ${n === 1 ? "question" : "questions"}`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting" },
+    lastHours: h => `last ${h} h`, questions: n => `${n} owner ${n === 1 ? "question" : "questions"}`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting",
+    owner: "owner", roster: "hubs and cabs", rosterHint: "click: follow · Esc: release", rosterHintTouch: "tap: follow · again: release",
+    toggle: (s, w) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"}` },
   ru: { connecting: "подключаюсь…", hub: "хаб", live: "LIVE", replay: "REPLAY", noRepo: "без репозитория",
     count: (s, w, b) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси · ${b} в рейсе`,
-    lastHours: h => `последние ${h} ч`, questions: n => `${n} ${ruPlural(n, "вопрос", "вопроса", "вопросов")} владельцу`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт" },
+    lastHours: h => `последние ${h} ч`, questions: n => `${n} ${ruPlural(n, "вопрос", "вопроса", "вопросов")} владельцу`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт",
+    owner: "владелец", roster: "хабы и такси", rosterHint: "клик — следить · Esc — отпустить", rosterHintTouch: "тап — следить · ещё раз — отпустить",
+    toggle: (s, w) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси` },
 };
 function ruPlural(n, one, few, many) {
   const a = n % 10, b = n % 100;
@@ -421,9 +471,14 @@ let K = 4, BASE = { x: 0, y: 0 };
 const isoRaw = (x, y) => [(x - y), (x + y) * 0.5];
 function fit() {
   if (!W || !G.nodes.length) return;
+  // The iso map is twice as wide as it is tall. On a portrait screen it fits the city, not the desert roads, and lets
+  // the sides go past the screen's edges, or it would fill a quarter of the height.
+  const portrait = H > W * 1.1;
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-  for (const n of G.nodes) { const [a, b] = isoRaw(n.x, n.y); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
-  K = Math.min((W - 60) / (x1 - x0), (H - 200) / (y1 - y0));
+  for (const n of G.nodes) { if (portrait && !inCity(n.x, n.y)) continue;
+    const [a, b] = isoRaw(n.x, n.y); x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
+  const vmargin = Math.min(200, H * 0.3);
+  K = portrait ? Math.min((W - 16) / (x1 - x0) * 1.7, (H - vmargin) / (y1 - y0)) : Math.min((W - 60) / (x1 - x0), (H - vmargin) / (y1 - y0));
   BASE = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
   if (!cam.x) { cam.x = cam.tx = BASE.x; cam.y = cam.ty = BASE.y; }
 }
@@ -433,14 +488,31 @@ function P(x, y, lift = 0) {   // world -> screen, through the camera; lift rais
 }
 const unit = () => K * cam.z;   // screen pixels per world unit
 function focus(x, y) {   // the camera flies to where the city just spoke, then drifts back to the overview
-  if (qs.get("follow") === "0") return;
+  if (qs.get("follow") === "0" || pinned) return;   // a pinned camera stays on its object
   const [a, b] = isoRaw(x, y);
   cam.tx = a; cam.ty = b; cam.tz = 2.1; cam.until = performance.now() + 7000;
 }
+// A pinned object (picked in the roster or on the map) holds the camera until it is released or leaves the map.
+let pinned = null;
+function onMap(n) {
+  if (n.kind === "owner") return true;
+  if (n.kind === "hub") return towers.get(n.key) === n && !!n.lot;
+  return cabs.get(n.key) === n && !n.landed;
+}
+function pin(n) {
+  pinned = n && n !== pinned ? n : null;
+  if (!pinned) cam.until = 0;   // back to the overview
+  renderRoster();
+}
 function moveCamera(now, dt) {
+  if (pinned && !onMap(pinned)) pin(null);
+  if (pinned) {   // centred on the object at its height: a cab at its altitude, a tower at half its height
+    const [x, y] = worldOf(pinned), [a, b] = isoRaw(x, y);
+    cam.tx = a; cam.ty = b - (pinned.kind === "cab" ? pinned.z || 0 : towerLift(pinned) * 0.5); cam.tz = 2.6; cam.until = now + 1000;
+  }
   if (now > cam.until) { cam.tx = BASE.x; cam.ty = BASE.y; cam.tz = 1; }   // at rest the camera stands still
-  const k = 1 - Math.pow(0.25, dt);
-  cam.x += (cam.tx - cam.x) * k * 0.6; cam.y += (cam.ty - cam.y) * k * 0.6; cam.z += (cam.tz - cam.z) * k * 0.5;
+  const k = 1 - Math.pow(0.25, dt), pan = pinned ? 1.8 : 0.6;   // a pinned cab moves: keep up with it
+  cam.x += (cam.tx - cam.x) * k * pan; cam.y += (cam.ty - cam.y) * k * pan; cam.z += (cam.tz - cam.z) * k * 0.5;
 }
 
 // ---- journal events -----------------------------------------------------------------------------------
@@ -711,6 +783,7 @@ function drawTower(tw, now) {
   const [x, y] = P(lot.x, lot.y), step = isOwner ? 6.5 : TOWER_STEP * towerScale(tw);
   const w = step * 2 * unit() * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86;
   glow(x, y, unit() * step * (0.9 + tw.pulse * 0.8), tw.color, 0.25 + tw.pulse * 0.5);
+  selRing(tw, x, y, unit() * step * 1.15, now);
   if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
   const top = P(lot.x, lot.y, towerLift(tw))[1], beat = 0.5 + 0.5 * Math.sin(now / 700 + hash(tw.key) % 10);
   const bl = isOwner ? -1 : blink(tw, now);
@@ -719,12 +792,21 @@ function drawTower(tw, now) {
   tw.pulse *= 0.965;
 }
 
+// A selection ring on the ground under the hovered object, brighter and breathing under the pinned one.
+function selRing(n, x, y, r, now) {
+  const on = n === pinned ? 0.65 + 0.3 * Math.sin(now / 350) : n === hover ? 0.4 : 0;
+  if (!on) return;
+  ctx.globalCompositeOperation = "lighter"; ctx.strokeStyle = rgba(C.cyan, on); ctx.lineWidth = Math.max(1.5, unit() * 0.15);
+  ctx.beginPath(); ctx.ellipse(x, y, r, r / 2, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalCompositeOperation = "source-over";
+}
+
 function drawSign(tw, now) {   // the stage's name as a neon sign over the street, above every building
-  const [x, y] = P(tw.lot.x, tw.lot.y), dim = tw.open === false ? 0.45 : 1;
+  const [x, y] = P(tw.lot.x, tw.lot.y), dim = tw.open === false ? 0.45 : 1, sel = tw === pinned || tw === hover;
   ctx.font = `${Math.max(10 * UI, unit() * 1.15)}px ui-monospace, Menlo, monospace`; ctx.textAlign = "center";
   const bl = blink(tw, now);
-  ctx.shadowColor = bl >= 0 ? C.gold : C.magenta; ctx.shadowBlur = bl >= 0 ? 4 + bl * 16 : 8 + tw.pulse * 14;
-  ctx.fillStyle = bl >= 0 ? rgba(C.gold, 0.3 + 0.7 * bl) : rgba(tw.open === false ? C.dim : "#ffd6f6", 0.92 * dim);
+  ctx.shadowColor = bl >= 0 ? C.gold : sel ? C.cyan : C.magenta; ctx.shadowBlur = bl >= 0 ? 4 + bl * 16 : 8 + tw.pulse * 14 + (sel ? 10 : 0);
+  ctx.fillStyle = bl >= 0 ? rgba(C.gold, 0.3 + 0.7 * bl) : sel ? C.ink : rgba(tw.open === false ? C.dim : "#ffd6f6", 0.92 * dim);
   ctx.fillText(tw.label, x, y + unit() * 2.4);
   ctx.shadowBlur = 0; ctx.textAlign = "left";
 }
@@ -763,6 +845,7 @@ function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with
   const s = sprites[cabSprite(c)] || sprites.flyer; if (!s) return;
   const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  selRing(c, x, y + w * 0.2, w * 0.6, now);   // round the flyer itself: a ring on the ground would mark the building under it
   c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 80) c.trail.shift();
   ctx.globalCompositeOperation = "lighter";   // a neon trail: a wide haze under a bright core, both fading to the tail
   const tc = modelColor(c);
@@ -777,9 +860,9 @@ function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with
   const [vx] = isoRaw(c.x - c.px, c.y - c.py);
   ctx.save(); ctx.translate(x, y); if (vx < 0) ctx.scale(-1, 1);
   ctx.drawImage(s, -w / 2, -w / 2, w, w); ctx.restore();
-  if (c.pulse > 0.1 || hover === c) {
+  if (c.pulse > 0.1 || hover === c || pinned === c) {
     ctx.font = `${Math.max(10 * UI, unit() * 0.95)}px ui-monospace, Menlo, monospace`; ctx.textAlign = "center";
-    ctx.fillStyle = rgba(C.ink, Math.max(c.pulse, hover === c ? 1 : 0)); ctx.fillText(c.label, x, y - w * 0.45);
+    ctx.fillStyle = rgba(C.ink, Math.max(c.pulse, hover === c || pinned === c ? 1 : 0)); ctx.fillText(c.label, x, y - w * 0.45);
     ctx.textAlign = "left";
   }
   c.pulse *= 0.965;
@@ -832,11 +915,15 @@ function drawLabels(now) {
     const a = t < .08 ? t / .08 : 1 - Math.max(0, (t - .6) / .4);
     let [x, y] = anchor(l.who)();
     ctx.font = `${12 * UI}px ui-monospace, Menlo, monospace`;
-    const w = ctx.measureText(l.text).width + 18 * UI;
+    if (l.fitW !== W) {   // a label never runs off a narrow screen: cut to its width once per screen size
+      l.fitW = W; l.shown = l.text;
+      while (l.shown.length > 8 && ctx.measureText(l.shown).width + 18 * UI > W - 16) l.shown = l.shown.slice(0, -3) + "…";
+    }
+    const w = ctx.measureText(l.shown).width + 18 * UI;
     x = Math.max(8, Math.min(x + 18, W - w - 8)); y = y - 10 - t * 12;
     ctx.fillStyle = `rgba(6,6,16,${0.84 * a})`; ctx.fillRect(x, y - 14 * UI, w, 21 * UI);
     ctx.fillStyle = rgba(l.who.color || C.ink, a); ctx.fillRect(x, y - 14 * UI, 2, 21 * UI);
-    ctx.fillStyle = rgba(C.ink, a); ctx.fillText(l.text, x + 10 * UI, y + UI);
+    ctx.fillStyle = rgba(C.ink, a); ctx.fillText(l.shown, x + 10 * UI, y + UI);
   }
 }
 
@@ -877,43 +964,126 @@ function frame(now) {
 }
 
 // ---- interaction ---------------------------------------------------------------------------------------
-let hover = null, idleTimer = 0;
+let hover = null, idleTimer = 0, tipTimer = 0;
 const tip = document.getElementById("tip");
-addEventListener("mousemove", e => {
-  document.body.classList.remove("idle"); clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000);
-  hover = null; let best = (unit() * 2) ** 2;
-  for (const c of cabs.values()) { const [x, y] = P(c.x, c.y, c.z), d = (x - e.clientX) ** 2 + (y - e.clientY) ** 2; if (d < best) { best = d; hover = c; } }
-  if (!hover) for (const tw of [...towers.values(), owner]) {
+const roster = document.getElementById("roster"), rtoggle = document.getElementById("rtoggle");
+const narrow = matchMedia("(max-width: 700px), (max-height: 500px)"), coarse = matchMedia("(pointer: coarse)");
+const escA = s => esc(s).replace(/"/g, "&quot;");
+
+// The object under a screen point: the nearest cab within two units, else a tower whose body covers the point.
+function hitTest(px, py) {
+  let hit = null, best = (unit() * 2) ** 2;
+  for (const c of cabs.values()) { const [x, y] = P(c.x, c.y, c.z), d = (x - px) ** 2 + (y - py) ** 2; if (d < best) { best = d; hit = c; } }
+  if (hit) return hit;
+  for (const tw of [...towers.values(), owner]) {
     if (tw.kind === "hub" && !tw.lot) continue;
     const [wx, wy] = worldOf(tw), [x, y] = P(wx, wy), top = P(wx, wy, towerLift(tw))[1];
-    if (Math.abs(e.clientX - x) < unit() * 2.5 && e.clientY > top && e.clientY < y + unit() * 3) { hover = tw; break; }
+    if (Math.abs(px - x) < unit() * 2.5 && py > top && py < y + unit() * 3) return tw;
   }
-  if (!hover) { tip.style.display = "none"; return; }
-  const m = hover.machine && machines.get(hover.machine);
-  const lines = hover.kind === "owner" ? ["owner"] : hover.kind === "hub"
-    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.ctx ? `ctx ${fmtK(hover.ctx)}` : "", hover.questions ? T.questions(hover.questions) : "", hover.open === false ? T.closed : ""]
-    : [`${hover.role} · ${hover.stage}`, hover.title, [hover.engine, hover.model].filter(Boolean).join(" · "), hover.working ? T.busy : T.idle];
-  tip.textContent = lines.filter(Boolean).join("\n");
-  tip.style.display = "block";
-  tip.style.left = Math.min(e.clientX + 14, W - 440) + "px"; tip.style.top = (e.clientY + 14) + "px";
+  return null;
+}
+function tipLines(n) {
+  const m = n.machine && machines.get(n.machine);
+  const lines = n.kind === "owner" ? [T.owner] : n.kind === "hub"
+    ? [`${T.hub} · ${n.stage}`, n.title, `${DIST[n.district]?.name || ""} · ${m ? m.name : ""}`, n.ctx ? `ctx ${fmtK(n.ctx)}` : "", n.questions ? T.questions(n.questions) : "", n.open === false ? T.closed : ""]
+    : [`${n.role} · ${n.stage}`, n.title, [n.engine, n.model].filter(Boolean).join(" · "), n.working ? T.busy : T.idle];
+  return lines.filter(Boolean);
+}
+function showTip(n, x, y) {   // by the point, kept on the screen
+  if (!n) { tip.style.display = "none"; return; }
+  tip.textContent = tipLines(n).join("\n"); tip.style.display = "block";
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(x + 14, W - w - 8)) + "px";
+  tip.style.top = (y + 14 + h > H - 8 ? Math.max(8, y - h - 14) : y + 14) + "px";
+}
+
+// A mouse hovers; a touch never does (its tooltip shows on the tap and hides again, so none is left stuck).
+addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse") return;
+  document.body.classList.remove("idle"); clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000);
+  if (e.target !== cv) { if (!roster.contains(e.target)) hover = null; cv.classList.remove("hot"); showTip(null); return; }   // the roster's rows set hover
+  hover = hitTest(e.clientX, e.clientY);
+  cv.classList.toggle("hot", !!hover);
+  showTip(hover, e.clientX, e.clientY);
+});
+// A click or a tap on the map pins what it hits; on empty map it releases the pinned one.
+let down = null;
+cv.addEventListener("pointerdown", e => {
+  down = { x: e.clientX, y: e.clientY };
+  if (e.pointerType !== "mouse") { clearTimeout(tipTimer); hover = null; showTip(null); }
+});
+cv.addEventListener("pointerup", e => {
+  const d = down; down = null;
+  if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;
+  const hit = hitTest(e.clientX, e.clientY);
+  if (hit) pin(hit); else if (pinned) pin(null);
+  if (e.pointerType !== "mouse") {   // a tap: the tooltip for a moment
+    hover = hit; showTip(hit, e.clientX, e.clientY);
+    tipTimer = setTimeout(() => { hover = null; showTip(null); }, 2500);
+  }
+  if (narrow.matches) openSheet(false);
 });
 addEventListener("keydown", e => {
   if (e.key === "r") { stopReplay(); startReplay(); }
   if (e.key === "l") { stopReplay(); lastLive = performance.now(); }
-  if (e.key === "c") cam.until = 0;
+  if (e.key === "c" || e.key === "Escape") { if (pinned) pin(null); cam.until = 0; openSheet(false); }
 });
-function resize() { DPR = window.devicePixelRatio || 1;
+
+// ---- roster: the owner, each hub tower and its cabs, rebuilt once a second ------------------------------
+let rosterObjs = [], rosterHTML = "";
+function shortModel(c) {   // claude-opus-5-5 -> opus 5.5, gpt-6.1-sol -> sol 6.1
+  const m = (c.model || "").toLowerCase().replace(/\[.*?\]/g, "");
+  if (!m) return c.engine || "";
+  const fam = MODEL_COLORS.map(([k]) => k).find(k => k === "sol" ? /(^|[^a-z])sol([^a-z]|$)/.test(m) : m.includes(k));
+  const ver = (m.match(/\d+(?:[.-]\d+)?/) || [""])[0].replace("-", ".");
+  return fam ? fam + (ver && ver.length < 6 ? " " + ver : "") : short(m.replace(/^(claude|gpt)-/, ""), 14);
+}
+function renderRoster() {
+  const rows = [], objs = [];
+  const row = (n, cls, inner) => { objs.push(n);
+    rows.push(`<div class="r ${cls}${n === pinned ? " pin" : ""}" role="listitem" data-i="${objs.length - 1}" title="${escA(tipLines(n).join("\n"))}">${inner}</div>`); };
+  row(owner, "own", `<i style="background:var(--gold)"></i><span class="n">${esc(T.owner)}</span>`);
+  const hubs = [...towers.values()].filter(t => t.lot).sort((a, b) => (a.open === false) - (b.open === false)
+    || (machines.get(a.machine)?.idx ?? 0) - (machines.get(b.machine)?.idx ?? 0) || a.stage.localeCompare(b.stage));
+  let ncabs = 0;
+  for (const tw of hubs) {
+    row(tw, `hub${tw.open === false ? " closed" : ""}`, `<i style="background:${tw.color}"></i><span class="n">${esc(tw.stage)}</span>` +
+      (tw.ctx ? `<span class="x">ctx ${fmtK(tw.ctx)}</span>` : "") + (tw.questions ? `<span class="q">?${tw.questions}</span>` : ""));
+    const st = machines.get(tw.machine)?.stages.get(tw.stage);
+    for (const c of [...(st ? st.workers.values() : [])].sort((a, b) => a.role.localeCompare(b.role))) {
+      ncabs++;
+      const mc = modelColor(c);
+      row(c, `cab${c.working ? " busy" : ""}${c.leaving ? " leaving" : ""}`,
+        `<i style="background:${mc};color:${mc}"></i><span class="n">${esc(c.role)}</span><span class="m">${esc(shortModel(c))}</span>`);
+    }
+  }
+  rosterObjs = objs;
+  const html = `<div class="rh">${esc(T.roster)}<small>${esc(coarse.matches ? T.rosterHintTouch : T.rosterHint)}</small></div>` + rows.join("");
+  if (html !== rosterHTML) { rosterHTML = html; roster.innerHTML = html; }   // unchanged: the rows, their hover and the scroll stay
+  rtoggle.textContent = `☰ ${T.toggle(hubs.length, ncabs)}` + (pinned ? ` · ◎ ${pinned.kind === "owner" ? T.owner : pinned.label}` : "");   // the folded roster still says what the camera follows
+}
+const rowObj = e => { const r = e.target.closest(".r"); return r ? rosterObjs[+r.dataset.i] || null : null; };
+roster.addEventListener("pointerover", e => { if (e.pointerType === "mouse") hover = rowObj(e); });
+roster.addEventListener("pointerleave", () => { hover = null; });
+roster.addEventListener("click", e => { const n = rowObj(e); if (!n) return; pin(n); if (narrow.matches && pinned) openSheet(false); });
+function openSheet(on) { roster.classList.toggle("open", on); rtoggle.setAttribute("aria-expanded", String(on)); }
+rtoggle.addEventListener("click", () => openSheet(!roster.classList.contains("open")));
+setInterval(renderRoster, 1000);
+
+function resize() { DPR = Math.min(2, window.devicePixelRatio || 1);   // a phone's 3x only costs fill time
   W = innerWidth; H = innerHeight;
-  cv.width = W * DPR; cv.height = H * DPR; cv.style.width = W + "px"; cv.style.height = H + "px"; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); fit(); }
+  cv.width = W * DPR; cv.height = H * DPR; cv.style.width = W + "px"; cv.style.height = H + "px"; ctx.setTransform(DPR, 0, 0, DPR, 0, 0); fit();
+  if (!narrow.matches) openSheet(false); }
 addEventListener("resize", resize);
+addEventListener("orientationchange", () => setTimeout(resize, 250));   // some phones report the new size late
 
 const AMBIENT = ["flyer-police", "flyer-limo", "flyer-van"];   // the three unmanned flyers
 buildCity(); shapes();
 { const r = mulberry(7); for (let k = 0; k < 90; k++) npcs.push(newNpc(r));
   for (let k = 0; k < 3; k++) flyers.push({ rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10,
     sprite: AMBIENT[k] }); }
-resize();
+resize(); renderRoster();
 lastLive = performance.now();
 ready.then(() => { SOURCES.forEach((s, i) => connect(s, i)); requestAnimationFrame(frame); });
 </script>

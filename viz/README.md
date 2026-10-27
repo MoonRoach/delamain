@@ -47,7 +47,20 @@ page's origin>` on each of the others (the page itself is served by the first). 
 Page parameters: `src=http://a:8765,http://b:8765` (several machines, each running `hub-viz`), `quiet=N` (replay the
 last `hours` after N seconds without a live line; off by default: live only), `hours=24`, `speed=120`, `follow=0`
 (keep the overview), `ui=1.6` (text over the map that much larger, for a projector), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
-written). Keys: `r` replay, `l` back to live, `c` camera back to the overview. Hover a tower or a cab for its title.
+written). Keys: `r` replay, `l` back to live, `c` or `Esc` camera back to the overview (and release a pinned object).
+Hover a tower or a cab for its title.
+
+- **The roster** on the left, under the HUD, lists the owner, each hub tower (its stage, `ctx 212k` when known, a gold
+  `?N` while it has open owner questions, dimmed when closed) and under it its cabs (a dot in the model's colour, the
+  role, the short model name; a busy cab's dot pulses). It is rebuilt about once a second; hovering a row highlights its
+  object on the map.
+- **Pinning.** Clicking a roster row, a tower or a cab pins the camera to it: the camera follows it, zoomed in, and a
+  journal line no longer pulls it away; the pinned row and a cyan ring on the map mark it. Clicking it again, clicking
+  empty map, `Esc` or `c` releases it; it is released by itself when the object leaves the map (a cab landed, a hub gone).
+- **On a phone** (at most 700 px wide, or at most 500 px tall) the roster folds into a button under the HUD
+  (`☰ 3 hubs · 5 cabs`, plus the pinned object) that opens it as a sheet; the legend hides, the ticker spans the screen
+  and keeps three lines. A tap pins like a click and shows the tooltip for 2.5 s. In portrait the map fits the city,
+  not the desert roads, and lets the sides run past the screen's edges. The canvas renders at most at 2x.
 
 ## Screen saver
 

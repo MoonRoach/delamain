@@ -57,6 +57,11 @@ Env: AGENT_HUB_HOME (hub home; `hub home` shows which and why), CLAUDE_CONFIG_DI
 default: local), AGENT_TOP_AGENT_BIN (the `agent` script; tests), AGENT_TOP_SCAN_MAX (bytes, default 8 MB),
 AGENT_TOP_CACHE (0: no disk cache), AGENT_TOP_IDLE_S (seconds, default 172800), AGENT_TOP_HUB_BIN (the `hub` script; tests),
 NO_COLOR.
+Desktop sessions: the summary (`s`, and --once) lists Claude Desktop sessions idle for 12 h or more that still hold their
+`claude` and MCP processes — memory held, and whether archiving loses anything (a changed file, a commit on no remote, an open
+pull request): the clean ones are safe to archive, the others are named and left alone. --json has the same as `desktop_idle`
+(null while the first check runs). It runs git and gh/glab, so the answer is kept for 5 minutes in the cache; `agent desktop-idle`
+checks afresh and prints the ids to archive. Nothing here archives or stops anything.
 Exit: 0 ok, 1 unknown agent, 2 usage.  Python 3.10+ stdlib only.
 """
 from __future__ import annotations
@@ -86,6 +91,7 @@ import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
 import codex_rollouts  # noqa: E402
 import codex_limits  # noqa: E402
+import desktop_idle  # noqa: E402
 import limit_pace  # noqa: E402
 import subagents  # noqa: E402  (sub-agent discovery and state, shared with `hub handoff`)
 import topcache  # noqa: E402  (the readers' offsets between runs: <state dir>/agent-top/cache.sqlite)
@@ -945,6 +951,56 @@ class External:
             return None
 
 
+class DesktopIdle:
+    """The idle Claude Desktop sessions (bin/desktop_idle.py), refreshed in a thread and kept in the disk cache: the check
+    runs git and gh/glab for every session's directory, and the mod starts a fresh `--json` every few seconds. A process
+    that finds the cached answer older than TTL claims the refresh by writing the time into the cache first, so the next
+    `--json` does not start the same check again while it runs."""
+    TTL = 300.0
+    WAIT_S = 60.0
+    KIND, KEY = "desktop-idle", "report"
+
+    def __init__(self, store):
+        self.store, self.data, self.at, self.busy, self.thread, self.result = store, None, 0.0, False, None, None
+        self.loaded = False
+
+    def poll(self, wait: bool = False):
+        """The last answer (desktop_idle.as_dict plus `at`, the time it was made), None while there is none yet. `wait`
+        waits for a refresh in flight (a one-shot --json / --once)."""
+        if not self.loaded:
+            self.loaded = True
+            row = self.store.get(self.KIND, self.KEY)
+            if isinstance(row, dict) and isinstance(row.get("at"), (int, float)):
+                self.data, self.at = row.get("data"), row["at"]
+        if not self.busy and self.thread is None and time.time() - self.at > self.TTL:
+            self.busy, self.at = True, time.time()
+            self._save()                      # the claim: the cached time is fresh while the refresh runs
+            self.thread = threading.Thread(target=self._fetch, daemon=True)
+            self.thread.start()
+        if wait and self.thread is not None:
+            self.thread.join(self.WAIT_S)
+        if self.thread is not None and not self.busy:
+            self.thread = None
+            if self.result is not None:       # taken here: the cache connection belongs to this thread
+                self.data, self.result, self.at = self.result, None, time.time()
+                if isinstance(self.data, dict):
+                    self.data["at"] = self.at
+                self._save()
+        return self.data
+
+    def _save(self) -> None:
+        self.store.put(self.KIND, self.KEY, {"at": self.at, "data": self.data})
+        self.store.flush()
+
+    def _fetch(self) -> None:
+        try:
+            self.result = desktop_idle.as_dict(desktop_idle.collect(hc.parse_duration(desktop_idle.DEFAULT_IDLE)))
+        except BaseException:  # noqa: BLE001 — a failed check is "no answer yet", never a crash of the screen
+            self.result = None
+        finally:
+            self.busy = False
+
+
 def open_store(kh=None):
     """The disk cache of one home's readers (bin/topcache.py), dropped whenever one of the modules that fill it changes; a
     store that keeps nothing when the hub home does not exist (agent-top never creates one). `kh`: a hubcore.KnownHome
@@ -953,7 +1009,7 @@ def open_store(kh=None):
     if not path.is_dir():
         return topcache.Null()
     here = Path(__file__).resolve()
-    mods = [here] + [BIN / m for m in ("subagents.py", "codex_rollouts.py", "engines.py", "topcache.py")]
+    mods = [here] + [BIN / m for m in ("subagents.py", "codex_rollouts.py", "engines.py", "topcache.py", "desktop_idle.py")]
     with hc.in_home(path, layer):
         cache = hc.state_dir() / "agent-top" / "cache.sqlite"
     return topcache.Store(cache, topcache.code_signature(*map(str, mods), extra=f"scan_max={SCAN_MAX}"))
@@ -977,6 +1033,7 @@ class Collector:
         codex_rollouts.INDEX.store = self.store
         self.subs = subagents.Finder(lambda log: self.log_state(log).last_user_ts, self.store)
         self.ext = External()
+        self.desktop = DesktopIdle(self.store)
         self.codex_limits = codex_limits.Reader()
         self.feed = None
 
@@ -1066,7 +1123,7 @@ class Collector:
                "stage_info": {r.sid: stage_info(r, agents, now) for r in refs}, "agents": agents, "counts": counts, "locks": locks, "roles": roles, "spend": spend,
                "questions": self.ext.poll(refs, wait=wait_ext), "questions_ok": self.ext.ok,
                "limits": ({"info": rate[0], "seen_at": rate[1]} if rate else None),
-               "codex_limits": self.codex_limits.snapshot()}
+               "codex_limits": self.codex_limits.snapshot(), "desktop_idle": self.desktop.poll(wait=wait_ext)}
         self.flush()
         return out
 
@@ -1764,8 +1821,31 @@ def lock_home(snap: dict, lk: dict) -> str:
     return f" ({lk['home_label']})" if snap.get("multi_home") and lk.get("home_label") else ""
 
 
+def desktop_rows(snap: dict, width: int) -> list:
+    """Idle Claude Desktop sessions that still hold processes: what they hold, which are safe to archive, which are left
+    alone and why. Nothing when there are none (or no Desktop on this machine)."""
+    d = snap.get("desktop_idle")
+    if not isinstance(d, dict) or not d.get("sessions"):
+        return []
+    ago = max(0, snap["now"] - d["at"]) if isinstance(d.get("at"), (int, float)) else 0
+    lim = desktop_idle.fmt_idle(d["idle_limit_s"])
+    rows = [R(("", "norm")), R((f"Desktop sessions idle ≥ {lim} that hold processes (agent desktop-idle; checked {fmt_age(ago)} ago)", "bold_u"))]
+    rows += wrap_rows(d["summary"], width, "norm", "  ", "    ", 3)
+    kept = [s for s in d["sessions"] if not s["candidate"]]
+    for s in kept[:8]:
+        why = "; ".join(r["text"] for r in s["reasons"])
+        rows += wrap_rows(f"{one_line(s['title']) or s['id']} — idle {desktop_idle.fmt_idle(s['idle_s'] + ago)}, "
+                          f"{desktop_idle.fmt_mem(s['rss_kb'])}: {why}", width, "dim", "  left alone: ", "    ", 2)
+    if len(kept) > 8:
+        rows.append(R((f"  …and {len(kept) - 8} more left alone (agent desktop-idle lists them)", "dim")))
+    if d["candidate_ids"]:
+        rows += wrap_rows("archive the clean ones from a Desktop session, after the owner's yes: `agent desktop-idle --ids`, then "
+                          "archive_session for each (skills/status)", width, "dim", "  ", "    ", 2)
+    return rows
+
+
 def summary_rows(snap: dict, width: int) -> list:
-    rows = stage_rows(snap, width) + [R(("", "norm")), R(("Locks (lock list)", "bold_u"))]
+    rows = stage_rows(snap, width) + desktop_rows(snap, width) + [R(("", "norm")), R(("Locks (lock list)", "bold_u"))]
     if not snap["locks"]:
         rows.append(R(("  no locks", "dim")))
     for lk in snap["locks"]:
@@ -1987,7 +2067,7 @@ def snapshot_json(snap: dict, coll: Collector, agent=None, feed_n: int = 40) -> 
            "homes": snap["homes"], "multi_home": snap["multi_home"], "idle_after_s": snap["idle_after_s"], "stage_info": snap["stage_info"], "counts": snap["counts"], "agents": agents,
            "roles": snap["roles"], "spend": snap["spend"], "locks": snap["locks"], "questions": snap["questions"],
            "questions_ok": snap.get("questions_ok", False), "limits": snap["limits"],
-           "codex_limits": snap.get("codex_limits", {}),
+           "codex_limits": snap.get("codex_limits", {}), "desktop_idle": snap.get("desktop_idle"),
            "limit_pace": {e: {"level": p.level if p else "unknown", "used": p.used if p else None,
                               "expected": p.expected if p else None, "resets_at": p.resets_at if p else None,
                               "eta": p.eta if p else None, "confirmed": bool(p and p.confirmed), "text": text}

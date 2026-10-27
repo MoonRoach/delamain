@@ -60,6 +60,7 @@ flowchart LR
 |---|---|
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `agent worktrees` | List every worktree of a repository — who made it, in use or not, dirty, on a remote, merged (squash merges through `gh`), age — and, with `--prune`, remove the finished ones. Read-only by default; never removes unpushed or uncommitted work. [Details](#agent-worktrees-the-ledger-of-a-repositorys-worktrees). |
+| `agent desktop-idle` | List the Claude Desktop sessions idle for `--idle-for` (default 12 h) that still hold their `claude` and MCP processes, with the memory each holds, and which are safe to archive (clean worktree, nothing unpushed, no open PR/MR). Read-only; `--ids` prints the ids to archive. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
 | `broadcast` | One line to the hub of every open stage at once: `tell` to each stage of every known hub home (`--this-home`: only the resolved one) whose registry has a live hub, leaving out your own hub (`--include-self`), closed stages and `--exclude S`. `--urgent` / `--question` as in `tell`; `--dry-run` lists the recipients; `--json` for scripts. Signed with your stage-qualified tag, or `owner` from an unregistered terminal or the Desktop `/broadcast`. Exit 1 when any recipient did not take the line (each failure is printed with tell's output). Not `roles broadcast`, which addresses roles within one stage. |
@@ -266,6 +267,40 @@ has it checked out; the default branch is never deleted. The summary says `remov
 their first reason. `--dry-run` prints the same and removes nothing. The listing is read-only; `--json` adds
 `removable` and `keep` per worktree (and a `prune` object with `--prune`). Exit 0 whenever the command ran, 2 for a usage
 error (not a repository, `--dry-run` without `--prune`).
+
+### `agent desktop-idle`: idle Claude Desktop sessions and what they hold
+
+```bash
+agent desktop-idle                  # idle for 12 h or more: the clean ones to archive, the others with why they stay
+agent desktop-idle --idle-for 6h    # another limit (90s, 30m, 6h, 1h30m, 2d)
+agent desktop-idle --ids            # only the Desktop ids that are safe to archive, one per line
+agent desktop-idle --json           # everything as data (the same object is `desktop_idle` in `agent-top --json`)
+```
+
+A Desktop Code session keeps its `claude` CLI and the MCP servers it started alive until it is archived. The command reads
+three things and changes none: the CLI's pid records (`<claude config>/sessions/<pid>.json`: the Desktop id in
+`hostSessionId`, `status`, `statusUpdatedAt`; a record of a dead or recycled pid is ignored), Desktop's own record of the
+session (`claude-code-sessions`: title, working directory, branch, `lastActivityAt`, archived or not) and `ps` (resident
+memory of the CLI and everything below it; command lines are never printed, an MCP server's carries its API key). A session is
+listed when its status is `idle` and nothing happened for the limit (the later of Desktop's last activity and the CLI's last
+status change).
+
+A listed session is **to archive** when archiving loses nothing: no changed or untracked file, no git operation under way,
+no commit on no remote ref (`git rev-list HEAD --not --remotes`) and no open pull request of its branch (`gh pr list --state
+open --head BRANCH` for a github.com remote, `glab mr list --source-branch BRANCH` for any other host). A branch whose commits sit on no remote ref only because
+a squash or rebase merge rewrote them counts as pushed when HEAD is inside the head commit of a request merged into the default
+branch (the rule of `agent worktrees`). It is **left alone**,
+with the reason, when any of that holds or cannot be told (`unknown`: git or the forge gave no answer, the directory is not a
+git repository or is gone, `--no-gh`), and also when it is the calling session (`$CLAUDE_CODE_HOST_SESSION_ID`), a role
+registered in a known hub home (a hub waiting for events looks idle), marked `autoArchiveExempt` by Desktop, or its directory
+is also used by a session that is not idle for long. A process that is not the CLI, `node`, `npm` or an MCP server is named
+(`ends with it: …`): it dies with the session.
+
+Archiving is Desktop's tool `archive_session`, which only a Desktop-hosted session can call, after the owner agrees; the
+procedure is in `skills/hub/references/stage-lifecycle.md` (*Idle Desktop sessions*). The command never stops a process. In
+agent-top the summary has a block with the same split and `desktop_idle` is in `--json`; the answer is cached for 5 minutes
+because it runs git and `gh`/`glab` (`agent desktop-idle` always checks afresh). `hub close` names the stage's own idle
+Desktop sessions (its roles and the hubs it retired). Exit 0 whenever the command ran, 2 for a usage error.
 
 ## Cost and turn limits
 

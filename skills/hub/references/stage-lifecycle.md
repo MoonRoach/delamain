@@ -138,6 +138,8 @@ nag or hold a lock any more. The owner decides that (in words, or in the stage p
 4. Tell the owner in one or two lines what the stage delivered and what stays open, and where. If you are the hub being
    closed, that is your last message: no more tool calls. A Desktop hub is archived by the owner, or by another session
    with `mcp__ccd_session_mgmt__archive_session`; a busy or terminal one is named in the command's ATTENTION line.
+   When `hub close` also named the stage's idle Desktop sessions (earlier hub shifts), offer the owner to archive the
+   clean ones as in *Idle Desktop sessions* below; a Desktop hub archives its own session last, after that.
 Asked from another session to close a stage whose hub is alive: `tell <S> "…"` first, so its hub reports and stops;
 a hub that is gone or silent is closed directly. The owner can close an idle stage from agent-top: Summary lists the
 stages and marks as idle an open one with no live agent and no activity for 48 h; `c` in the terminal console, the
@@ -154,3 +156,27 @@ HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, k
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
 "…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back.
+
+## Idle Desktop sessions
+
+A Claude Desktop Code session keeps its `claude` process and the MCP servers it started (about 150–370 MB plus a few node
+processes) until it is archived, and idle ones pile up (16 of them held 3.5 GB; the laptop reached load 224). `agent
+desktop-idle` (`--idle-for 12h` by default) lists the sessions idle that long with the memory each holds and sorts them. A
+*clean* one has no changed or untracked file, no git operation under way, no commit on no remote and no open pull/merge
+request (`gh`; `glab` for other hosts), so archiving loses nothing; the rest are named with the reason and never touched,
+and so is anything that cannot be checked (`unknown`). Not listed to archive either: the calling session, a role registered
+in a hub home, a session Desktop marks exempt, a directory another session still uses. The same list is in agent-top's
+summary and in `desktop_idle` of its `--json`; `hub close` names the stage's own sessions.
+
+Archiving is Desktop's own tool; no command line or file does it (Desktop's records are its own state, not an interface).
+From a Desktop-hosted session:
+1. Run `agent desktop-idle` and show the owner the clean sessions (title, idle time, memory) and the ones left alone with
+   why. Archive only after an explicit yes naming which; the tool itself says never to call it speculatively.
+2. For each agreed id (`agent desktop-idle --ids` prints the clean ones) call `mcp__ccd_session_mgmt__archive_session` with
+   `session_id` and a short `reason` ("idle 2 d, clean worktree"). Archiving stops the session's process and cleans up its
+   worktree; the session stays in the Archived list (`unarchive_session` restores it). A session that is working, pinned
+   or open on screen is refused: report it, do not retry.
+3. Report in the owner's terms: archived N (about X MB), refused M, left alone K with reasons.
+Never stop their processes by hand (`kill`, `pkill`): that bypasses the check and Desktop's own bookkeeping. A headless or
+terminal session has no such tool: give the owner the ids to archive in Desktop. Desktop can also archive a session when its
+PR closes (setting `auto_archive_on_pr_close`, changed through `ccd_settings`, with the owner's approval): offer it once.

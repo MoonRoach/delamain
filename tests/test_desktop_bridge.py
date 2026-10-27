@@ -82,6 +82,20 @@ class PathTests(unittest.TestCase):
 
 
 class NoCompactionPackageTests(unittest.TestCase):
+    def test_builder_packages_terminal_launcher_without_changing_core(self):
+        spec = importlib.util.spec_from_file_location("desktop_builder", ROOT / "windows/build_desktop_plugin.py")
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory(prefix="agent-top-package-") as scratch:
+            package = Path(scratch) / "package"
+            receipt = builder.build(ROOT, package, {"Distro": "fixture"})
+            self.assertEqual(receipt['version'], '1.0.9-wsl.1')
+            self.assertTrue(receipt['core_unchanged'])
+            self.assertEqual((package / 'windows/agent-top.ps1').read_bytes(),
+                             (ROOT / 'windows/agent-top.ps1').read_bytes())
+            self.assertEqual((package / 'bin/agent-top').read_bytes(), (ROOT / 'bin/agent-top').read_bytes())
+            self.assertEqual(json.loads((package / '.codex-plugin/plugin.json').read_text())['version'], receipt['version'])
+
     def test_builder_preserves_precompact_registration_and_adds_native_handler(self):
         spec = importlib.util.spec_from_file_location("desktop_builder", ROOT / "windows/build_desktop_plugin.py")
         builder = importlib.util.module_from_spec(spec)
@@ -104,6 +118,109 @@ class NoCompactionPackageTests(unittest.TestCase):
             self.assertEqual((ROOT / 'hooks/no_compaction.py').read_bytes(),
                              (package / 'hooks/no_compaction.py').read_bytes())
         self.assertIn(str(Path('hooks') / 'no_compaction.py'), receipt['core_hashes'])
+
+
+@unittest.skipUnless(os.name == 'nt', 'native Windows PowerShell controls')
+class NativeAgentTopLauncherTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.shells = list(dict.fromkeys(shell for shell in
+            (shutil.which('powershell.exe'), shutil.which('pwsh.exe')) if shell))
+        if not cls.shells:
+            raise unittest.SkipTest('PowerShell executable access is required')
+
+    def probe(self, shell, source):
+        encoded = base64.b64encode(source.encode('utf-16-le')).decode('ascii')
+        return subprocess.run([shell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+                              capture_output=True, encoding='utf-8', errors='replace', timeout=20)
+
+    def test_inherited_terminal_call_ast_with_negative_control(self):
+        launcher = str(ROOT / 'windows/agent-top.ps1').replace("'", "''")
+        # A direct native pipeline with one element inherits handles; assignments,
+        # pipes and subprocess wrappers would take terminal ownership away.
+        source = r"""
+function Test-DirectTerminal($tree) {
+    $calls = @($tree.FindAll({ param($n)
+        $n -is [Management.Automation.Language.CommandAst] -and
+        $n.GetCommandName() -eq 'wsl.exe' -and
+        @($n.CommandElements | Where-Object { $_.Extent.Text -eq 'python3' }).Count -eq 1
+    }, $true))
+    return ($calls.Count -eq 1 -and
+        $calls[0].Parent -is [Management.Automation.Language.PipelineAst] -and
+        $calls[0].Parent.PipelineElements.Count -eq 1 -and
+        $calls[0].Parent.Parent -is [Management.Automation.Language.StatementBlockAst] -and
+        $calls[0].Redirections.Count -eq 0)
+}
+$tokens=$null; $errors=$null
+$tree=[Management.Automation.Language.Parser]::ParseFile('LAUNCHER',[ref]$tokens,[ref]$errors)
+if ($errors.Count -or -not (Test-DirectTerminal $tree)) { exit 91 }
+foreach ($bad in @('$x = & wsl.exe --exec python3 runner',
+                  '& wsl.exe --exec python3 runner | Out-String',
+                  '& wsl.exe --exec python3 runner > output',
+                  'Start-Process wsl.exe -WindowStyle Hidden')) {
+    $tree=[Management.Automation.Language.Parser]::ParseInput($bad,[ref]$tokens,[ref]$errors)
+    if (Test-DirectTerminal $tree) { exit 92 }
+}
+""".replace('LAUNCHER', launcher)
+        for shell in self.shells:
+            with self.subTest(shell=shell):
+                run = self.probe(shell, source)
+                self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_payload_unicode_config_reload_exit_and_cleanup_without_wsl(self):
+        with tempfile.TemporaryDirectory(prefix='agent-top-native-') as scratch:
+            folder = Path(scratch) / 'package юникод' / 'windows'
+            folder.mkdir(parents=True)
+            shutil.copy2(ROOT / 'windows/agent-top.ps1', folder / 'agent-top.ps1')
+            (folder / 'desktop_runtime.py').write_text('# transport fixture\n')
+            report = Path(scratch) / 'report.json'
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            source = r"""
+$env:CODEX_THREAD_ID='SID'
+$env:AGENT_SESSION_ID='stale'
+$env:UNRELATED_SECRET='must-not-forward'
+$env:AGENT_HUB_TEST='forwarded'
+$global:fixtureMaps=@()
+function global:wsl.exe {
+    if ($args[3] -eq 'wslpath') {
+        $global:fixtureMaps += [string]$args[-1]
+        $global:LASTEXITCODE=0
+        return $args[-1]
+    }
+    $file=[string]$args[-1]
+    $data=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([IO.File]::ReadAllText($file))) | ConvertFrom-Json
+    @{payload=$data; command=@($args); maps=$global:fixtureMaps; file=$file} |
+        ConvertTo-Json -Depth 100 | Set-Content -LiteralPath REPORT -Encoding UTF8
+    Write-Output 'terminal-fixture'
+    $global:LASTEXITCODE=17
+}
+& LAUNCHER --once --stage 'этап 😀' --agent 'literal $HOME `text`'
+exit $LASTEXITCODE
+""".replace('SID', SID).replace('REPORT', quote(report)).replace('LAUNCHER', quote(folder / 'agent-top.ps1'))
+            for shell in self.shells:
+                for distro in ('fixture-one', 'fixture-two'):
+                    with self.subTest(shell=shell, distro=distro):
+                        (folder / 'desktop-config.json').write_text(json.dumps({'Distro': distro, 'LinuxHome': '/fixture'}))
+                        run = self.probe(shell, source)
+                        self.assertEqual(run.returncode, 17, run.stderr)
+                        self.assertEqual(run.stdout.strip(), 'terminal-fixture')
+                        data = json.loads(report.read_text(encoding='utf-8-sig'))
+                        payload = data['payload']
+                        self.assertEqual(payload['mode'], 'tool')
+                        self.assertEqual(payload['argv'], ['agent-top', '--once', '--stage', 'этап 😀', '--agent', 'literal $HOME `text`'])
+                        self.assertEqual(payload['pluginroot'], str(folder.parent))
+                        self.assertEqual(payload['config']['Distro'], distro)
+                        self.assertEqual(payload['env']['AGENT_SESSION_ID'], SID)
+                        self.assertEqual(payload['env']['AGENT_HUB_TEST'], 'forwarded')
+                        self.assertNotIn('UNRELATED_SECRET', payload['env'])
+                        self.assertEqual(data['command'][:5], ['--distribution', distro, '--exec', 'python3', str(folder / 'desktop_runtime.py')])
+                        self.assertEqual(data['maps'][0], str(folder / 'desktop_runtime.py'))
+                        self.assertFalse(Path(data['file']).exists())
+                report.unlink()
+                (folder / 'desktop-config.json').unlink()
+                run = self.probe(shell, source)
+                self.assertEqual(run.returncode, 1)
+                self.assertFalse(report.exists(), 'missing config must fail before transport')
 
 
 class NativeNoCompactionTests(unittest.TestCase):

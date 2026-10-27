@@ -91,9 +91,30 @@ startup warning is suppressed: it does not describe the invoked Linux command
 and would otherwise pollute tools that merge stderr with JSON stdout. Other WSL
 diagnostics and real child errors remain visible.
 
+## Agent console in Windows Terminal
+
+Run the installed PowerShell launcher in an interactive Windows Terminal tab:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<installed-plugin>\windows\agent-top.ps1'
+```
+
+For a single text snapshot, use:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<installed-plugin>\windows\agent-top.ps1' --once
+```
+
+Replace `<installed-plugin>` with the installed envelope's root directory. The launcher
+reads that package's `windows/desktop-config.json` on each call and runs the unchanged
+`bin/agent-top` in its configured WSL distribution. Original flags are forwarded.
+The interactive console inherits the terminal directly; use this launcher for curses.
+Opening the extensionless `bin/agent-top` from PowerShell can trigger Windows' app picker.
+
 ## Installed runtime
 
-The native envelope is version `1.0.8-wsl.1`, based on upstream Delamain 1.0.8.
+The native envelope is version `1.0.9-wsl.1`; the builder retains the selected upstream
+Delamain core snapshot unchanged.
 Its build receipt records unchanged hashes of all original `bin/` files and Python
 hooks, and the original skill bodies before the transport prefix.
 

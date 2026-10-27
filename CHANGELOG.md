@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The native Windows envelope `1.0.9-wsl.1` includes an interactive `agent-top` launcher.** Run the packaged
+  `windows/agent-top.ps1` explicitly with PowerShell to keep the terminal attached to WSL; opening the extensionless
+  Linux script in Windows is not a launch command.
+
+- **Codex hubs now have an explicit procedure for closing accepted native agents.** The hub reference distinguishes a
+  completed turn from runtime release: check status and descendants, use `close_agent` when exposed, or native
+  `set_thread_archived` for the exact agent UUID in Desktop without it, then verify runtime and tool-process release.
+  The procedure protects active agents, planned continuations and user chats; this is guidance, not automatic cleanup.
+
 ## 1.0.22 — 2026-10-26
 
 - **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch

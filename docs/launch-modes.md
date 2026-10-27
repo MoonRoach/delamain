@@ -7,6 +7,10 @@ the start — what the work does and who must reach it — not on an estimate of
 
 ## The modes
 
+The table and experiments below describe Claude Code. For Codex native agents, follow
+[Closing completed native agents](../skills/hub/references/codex-hub.md#closing-completed-native-agents) after
+accepting a result: a completed turn alone does not establish runtime or tool-process release.
+
 | | Foreground sub-agent | Background sub-agent | Headless agent (`agent spawn`) | `claude --bg` session | Cloud session | Desktop session |
 |---|---|---|---|---|---|---|
 | Started by | Agent tool | Agent tool, `run_in_background: true` | `agent spawn` | `claude --bg "<task>"` | `claude --cloud` | the owner or an app tool |

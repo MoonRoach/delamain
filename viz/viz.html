@@ -489,10 +489,10 @@ let K = 4, BASE = { x: 0, y: 0 }, MAPB = null;   // MAPB: the world box of the w
 // The automatic camera flies to each line unless follow is off: ?follow=0|1, else the last toggle (f), else on.
 const FOLLOW_KEY = "delamain.viz.follow";
 let followOn = qs.has("follow") ? qs.get("follow") !== "0" : (() => { try { return localStorage.getItem(FOLLOW_KEY) !== "0"; } catch (e) { return true; } })();
-// A hand pan or zoom makes the view manual: the automatic camera stands down until c, Esc or the overview control, or,
-// with follow on, until the next line after MANUAL_HOLD of no hand gestures.
-let manual = false, manualAt = 0;
-const MANUAL_HOLD = 3000;
+let followPref = followOn;   // the chosen setting; a hand gesture turns followOn off for its view only
+// A hand pan or zoom makes the view manual and switches follow off (not in the saved setting), so the control says what
+// the camera does; follow on again, the overview control, c or Esc give the camera back.
+let manual = false;
 const ZMIN = 0.7, ZMAX = 6;   // zoom against the overview
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isoRaw = (x, y) => [(x - y), (x + y) * 0.5];
@@ -517,7 +517,6 @@ function P(x, y, lift = 0) {   // world -> screen, through the camera; lift rais
 }
 const unit = () => K * cam.z;   // screen pixels per world unit
 function focus(x, y) {   // the camera flies to where the city just spoke, then drifts back to the overview
-  if (manual && followOn && performance.now() - manualAt > MANUAL_HOLD) { manual = false; syncCtl(); }   // the hand let go
   if (!followOn || pinned || manual) return;   // a pinned camera stays on its object, a manual view where the user left it
   const [a, b] = isoRaw(x, y);
   cam.tx = a; cam.ty = b; cam.tz = 2.1; cam.until = performance.now() + 7000;
@@ -531,14 +530,13 @@ function onMap(n) {
 }
 function pin(n) {   // a pin outranks a manual view; its release goes back to the overview
   pinned = n && n !== pinned ? n : null;
-  if (pinned) { manual = false; pinZ = 2.6; } else cam.until = 0;
+  if (pinned) { manual = false; followOn = followPref; pinZ = 2.6; } else cam.until = 0;
   syncCtl(); renderRoster();
 }
 // ---- hand camera: pan by screen pixels, zoom by a factor around a screen point --------------------------------
 function manualView() {   // a hand gesture: release a pin, stop the automatic camera, hold the view where it is
   if (pinned) pin(null);
-  if (!manual) { manual = true; syncCtl(); }
-  manualAt = performance.now();
+  if (!manual) { manual = true; followOn = false; syncCtl(); }
   cam.tx = cam.x; cam.ty = cam.y; cam.tz = cam.z;
 }
 function clampCam() {   // the view's centre stays over the map's ground (a diamond on screen), so the city cannot be lost
@@ -555,10 +553,11 @@ function zoomAt(sx, sy, f) {   // the world point under (sx, sy) stays under it
 }
 function overview() {   // c, Esc, the overview control: release, back to the overview, the follow setting rules again
   if (pinned) pin(null);
-  manual = false; cam.until = 0; syncCtl();
+  manual = false; cam.until = 0;
+  followOn = followPref; syncCtl();
 }
 function setFollow(on) {
-  followOn = on;
+  followOn = followPref = on;
   try { localStorage.setItem(FOLLOW_KEY, on ? "1" : "0"); } catch (e) {}
   if (!on && !pinned && !manual) cam.until = 0;   // off: leave the line it flew to
   if (on && manual) { manual = false; cam.until = 0; }   // on: the camera is the events' again, from the overview

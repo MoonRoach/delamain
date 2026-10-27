@@ -159,7 +159,7 @@ class NoCompactionPackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="agent-top-package-") as scratch:
             package = Path(scratch) / "package"
             receipt = builder.build(ROOT, package, {"Distro": "fixture"})
-            self.assertEqual(receipt['version'], '1.0.9-wsl.1')
+            self.assertEqual(receipt['version'], '1.0.10-wsl.1')
             self.assertTrue(receipt['core_unchanged'])
             self.assertEqual((package / 'windows/agent-top.ps1').read_bytes(),
                              (ROOT / 'windows/agent-top.ps1').read_bytes())

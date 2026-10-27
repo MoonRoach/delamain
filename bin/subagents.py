@@ -183,25 +183,69 @@ def transcript_paths(sid: str) -> list:
     return sorted(projects_root().glob(f"*/{sid}.jsonl"))
 
 
+TURN_TYPES = frozenset({"assistant", "user"})   # the records of a Claude transcript that a running session writes
+TAIL_STEPS = (256_000, 1_000_000, 4_000_000)    # how much of a session file's end last_record_ts reads, widening until it finds one
+_last_record_cache = {}                          # path -> ((inode, size, mtime_ns), epoch or None)
+
+
+def last_record_ts(path: Path, types=None):
+    """Epoch of the newest record that carries its own top-level "timestamp" (and, with `types`, whose "type" is one of
+    them), read from the end of a session file; None when there is none in the last TAIL_STEPS[-1] bytes. A file that has
+    not changed since the last call is not read again.
+
+    The file's mtime is not this time: Claude Code appends `last-prompt`, `cost-state`, `bridge-session` and the like when
+    its process exits or a Desktop bridge reconnects, hours after the last turn, so a dead session reads as written
+    a minute ago."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    sig = (st.st_ino, st.st_size, st.st_mtime_ns)
+    hit = _last_record_cache.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    found = None
+    try:
+        with open(path, "rb") as fh:
+            for width in TAIL_STEPS:
+                start = max(0, st.st_size - width)
+                fh.seek(start)
+                chunk = fh.read(st.st_size - start)
+                lines = chunk.split(b"\n")
+                if start:
+                    lines = lines[1:]                      # the first line is cut
+                for line in reversed(lines[:-1] if not chunk.endswith(b"\n") else lines):   # a last line still being written is skipped
+                    if b'"timestamp"' not in line or (types and not any(t.encode() in line for t in types)):
+                        continue
+                    ev = loads(line)
+                    if ev is None or (types and ev.get("type") not in types):
+                        continue
+                    found = parse_ts(ev.get("timestamp"))
+                    if found is not None:
+                        break
+                if found is not None or start == 0:
+                    break
+    except OSError:
+        return None
+    _last_record_cache[path] = (sig, found)
+    return found
+
+
 def session_write_time(rec: dict, find=transcript_paths):
-    """When the transcript (Claude) or rollout (Codex) of a role's session was last written, as epoch seconds; None
-    when the record names no session or its file is not found. A line written *to* the session is not a write of it:
-    only its own turns touch the file. `find(sid)` lists a Claude session's transcript files (a caller with a path cache
-    passes its own)."""
+    """When a role's session last did something itself, as epoch seconds: the newest `assistant` or `user` record of its
+    Claude transcript, or the newest record of its Codex rollout (each carries its timestamp; the latest is the last
+    event, as agent-top reads a native Codex session's activity elsewhere). None when the record names no session, its
+    file is not found or holds no such record. Not the file's mtime (see last_record_ts); a line written *to* the session is
+    not here either. `find(sid)` lists a Claude session's transcript files (a caller with a path cache passes its own); a
+    session resumed from another directory has more than one, and the newest write of them counts."""
     sid = session_id_of(rec)
     if sid is None:
         return None
     if rec.get("engine") == "codex":
         found = codex_rollouts.INDEX.session(sid)
-        return None if found is None else found[2]
-    best = None
-    for path in find(sid):
-        try:
-            m = path.stat().st_mtime
-        except OSError:
-            continue
-        best = m if best is None else max(best, m)
-    return best
+        return None if found is None else last_record_ts(found[0])
+    stamps = [t for t in (last_record_ts(path, TURN_TYPES) for path in find(sid)) if t is not None]
+    return max(stamps, default=None)
 
 
 def parent_alive(rec: dict, sid: str, table, live):

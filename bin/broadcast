@@ -21,7 +21,8 @@ and a headless hub that `agent send` had already resumed may still read it; look
 A recipient that has not written for over --silent-hours (default 12; 0 turns the check off) is named in a warning
 before the summary, also in --dry-run: a line to it waits until it wakes, and for a hub in a dead session that is never.
 "Written" is what the holder itself did: its newest journal line signed with its tag (a line addressed to it, such as
-`[pace] @hub …` or this broadcast, is not its activity) or the last write of its session's transcript, whichever is
+`[pace] @hub …` or this broadcast, is not its activity) or the time of its session's last turn (the newest `assistant` /
+`user` record of the transcript, not the file's mtime: Claude Code touches the file when its process exits), whichever is
 fresher. No sign of either counts as silent.
 Exit: 0 every recipient took the line, 1 a delivery failed or is unknown, or there is no recipient, 2 usage.
 """
@@ -73,7 +74,7 @@ def is_self(rec: dict) -> bool:
 
 def written_age(stage: str, role: str, rec: dict, silent_hours: float):
     """Seconds since the holder of `role` last wrote, or None when no sign is found: the newest journal line signed with
-    its tag (looked for as far back as the threshold needs) or the last write of its session, the fresher of the two.
+    its tag (looked for as far back as the threshold needs) or the time of its session's last turn, the fresher of the two.
     Run in the stage's home."""
     days = min(JOURNAL_DAYS_MAX, int(silent_hours // 24) + 2)
     line = hc.last_line_by_tag(stage, rec.get("tag") or role, days)

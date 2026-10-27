@@ -221,7 +221,8 @@ def pct(w) -> str:
 def is_stage_author(author: str, tags: list) -> bool:
     """Whether a journal line's author is the stage's own: a registered role's tag, its sub-tags (`T/sub`, `T-await`,
     `T-<role>`) or a hub of the stage by number (`hub-N…`). The service tags (`pace`, `watchdog`, `autopilot`), `owner` and
-    another stage's `<stage>-<tag>` are not."""
+    another stage's `<stage>-<tag>` are not. By decision a `T-await` line counts also when the await writes its ALARM after
+    the hub's session has ended: it can keep a dead stage "not idle" for one more idle period."""
     for c in {author, *author.split()[:1]}:
         if HUB_AUTHOR_RE.fullmatch(c) or any(c == t or c.startswith((t + "-", t + "/")) for t in tags if t):
             return True
@@ -1031,7 +1032,7 @@ class Collector:
     def __init__(self, stages_arg, show_all: bool, stale_s: int = STALE_S):
         self.stages_arg, self.show_all, self.stale_s = stages_arg, show_all, stale_s
         self.logs, self.journal_cache = {}, {}
-        self.transcripts, self.transcript_paths = {}, {}
+        self.transcripts, self.transcript_lists = {}, {}
         self.where: dict = {}                 # stage id -> StageRef of the last snapshot
         self.homes = hc.known_homes()
         self.stores: dict = {}                # one cache per home (one, when $AGENT_HUB_STATE_DIR puts every home's in one file)
@@ -1281,13 +1282,18 @@ class Collector:
                     tokens[model] = tokens.get(model, 0.0) + weighted_tokens(u, snake=False)
         return {m: cost[m] / tokens[m] for m in cost if tokens[m] > 0}
 
+    def transcript_files(self, sid: str) -> list:
+        """The transcript files of a session (one per project folder it was run from, in name order); found once and
+        looked for again after SUB_DIRS_TTL or when one is gone."""
+        hit = self.transcript_lists.get(sid)
+        if hit is None or time.monotonic() - hit[0] >= subagents.SUB_DIRS_TTL or not all(p.exists() for p in hit[1]):
+            hit = self.transcript_lists[sid] = (time.monotonic(), subagents.transcript_paths(sid))
+        return hit[1]
+
     def transcript_file(self, sid: str):
-        """The path of a session's transcript (the first of its folders by name), or None; found once, then remembered."""
-        path = self.transcript_paths.get(sid)
-        if path is None or not path.exists():
-            found = subagents.transcript_paths(sid)
-            path = self.transcript_paths[sid] = found[0] if found else None
-        return path
+        """The first of a session's transcript files by name (what the spend estimate reads), or None."""
+        files = self.transcript_files(sid)
+        return files[0] if files else None
 
     def transcript(self, sid: str):
         """The reader of a session's transcript, brought up to date (at most SCAN_MAX bytes per call), or None."""
@@ -1423,7 +1429,7 @@ class Collector:
 
     def own_activity(self, stage: str, roles: dict):
         """When the stage itself last did something, as epoch seconds, or None: its newest journal line written by one of
-        its own (see is_stage_author) or its hub's session write. What the stage is *told* (`[pace] @hub`, `[watchdog]`,
+        its own (see is_stage_author) or the time of its hub's last turn. What the stage is *told* (`[pace] @hub`, `[watchdog]`,
         `[owner] @hub`, another stage's hub) is not here. The newest journal files are read until one has such a line."""
         tags = [rec.get("tag") or name for name, rec in roles.items()]
         ref, today, found = self.where[stage], hc.now().date(), None
@@ -1444,8 +1450,8 @@ class Collector:
         return max([t for t in [found, *sessions] if t is not None], default=None)
 
     def _session_write(self, rec: dict):
-        """When the role's session transcript was last written (see subagents.session_write_time), via the path cache."""
-        return subagents.session_write_time(rec, lambda sid: [p] if (p := self.transcript_file(sid)) else [])
+        """When the role's session last did something itself (see subagents.session_write_time), via the file-list cache."""
+        return subagents.session_write_time(rec, self.transcript_files)
 
     # -- journal
     def journal_lines(self, stage: str, day_off: int) -> list:

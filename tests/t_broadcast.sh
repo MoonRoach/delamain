@@ -101,7 +101,16 @@ import os; os.makedirs(os.path.dirname(path), exist_ok=True)
 open(path, "a").write(f"- {t:%H:%M} [{tag}] {text}\n")
 PY3
 }
-touch_ago(){ python3 -c 'import os,sys,time; os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); open(sys.argv[1], "a").close(); t = time.time() - float(sys.argv[2]) * 3600; os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
+transcript_ago(){ python3 - "$1" "$2" <<'PY4'
+import datetime as dt, json, os, sys   # transcript_ago FILE HOURS: a transcript as Claude Code leaves it after its process exited:
+path, hours = sys.argv[1], float(sys.argv[2])   # the last turn HOURS ago, then a fresh timestamped service record and trailers with
+os.makedirs(os.path.dirname(path), exist_ok=True)   # no timestamp, so the file's mtime is now
+stamp = lambda h: (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+recs = [{"type": "user", "timestamp": stamp(hours + 0.01)}, {"type": "assistant", "timestamp": stamp(hours)},
+        {"type": "pr-link", "timestamp": stamp(0)}, {"type": "bridge-session"}, {"type": "last-prompt"}, {"type": "cost-state"}]
+open(path, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+PY4
+}
 bc --this-home --dry-run "who is alive?" > $A/s1.txt 2>&1; check $? 0 "silent: --dry-run exits 0"
 grep -q '^warn 2 of 2 @hub have not written for over 12 h' $A/s1.txt; check $? 0 "…hubs with only addressed lines (the broadcasts above, no line of their own) are silent"
 grep -A3 '^warn' $A/s1.txt | grep -q 'bc-core .*no sign of life'; check $? 0 "…and the line names the stage and that no sign of life was found"
@@ -112,21 +121,27 @@ grep -A3 '^warn' $A/s2.txt | grep -q 'bc-core .* 20 h$'; check $? 0 "own line 20
 bc --this-home --dry-run --silent-hours 24 "who is alive?" > $A/s3.txt 2>&1
 grep -A3 '^warn' $A/s3.txt | grep -q 'bc-core'; check $? 1 "negative: with --silent-hours 24 the 20-hour hub is not named"
 # a transcript write of the session is a sign of life too (bc-web: 30 h ago -> still silent at 24, alive at 48)
-touch_ago $A/claude/projects/p/$WEB_SID.jsonl 30
+transcript_ago $A/claude/projects/p/$WEB_SID.jsonl 30
 bc --this-home --dry-run --silent-hours 24 "who is alive?" > $A/s4.txt 2>&1
-grep -A3 '^warn' $A/s4.txt | grep -q 'bc-web .* 30 h$'; check $? 0 "transcript written 30 h ago: bc-web is silent for 30 h (the journal has none of its lines)"
+grep -A3 '^warn' $A/s4.txt | grep -q 'bc-web .* 30 h$'; check $? 0 "last turn 30 h ago, the file touched just now (cost-state at exit): bc-web is silent for 30 h, not alive by mtime"
 grep -q '^warn 1 of 2 ' $A/s4.txt; check $? 0 "…and it is the only one at 24 h"
 bc --this-home --dry-run --silent-hours 48 "who is alive?" > $A/s5.txt 2>&1
 grep -q '^warn' $A/s5.txt; check $? 1 "negative: --silent-hours 48 names nobody"
-touch_ago $A/claude/projects/p/$WEB_SID.jsonl 0.01
+transcript_ago $A/claude/projects/p/$WEB_SID.jsonl 0.01
 ago_line $A/bc-core 0.05 hub-30 "back"
 bc --this-home --dry-run "who is alive?" > $A/s6.txt 2>&1
 grep -q '^warn' $A/s6.txt; check $? 1 "negative: a fresh transcript and a fresh own line — nobody is silent"
 bc --this-home --dry-run --silent-hours 0 "x" > $A/s7.txt 2>&1; check $? 0 "--silent-hours 0 exits 0"
 bc --this-home --dry-run --silent-hours 0 --json "x" > $A/s8.json 2>&1
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["silent_hours"]==0 and not any(r["silent"] for r in d["sent"]) else 1)' $A/s8.json; check $? 0 "--silent-hours 0: nobody is flagged"
+# a session resumed from another directory has two files: the newest turn of either counts
+transcript_ago $A/claude/projects/p/$WEB_SID.jsonl 30
+transcript_ago $A/claude/projects/zzz-other/$WEB_SID.jsonl 1
+bc --this-home --dry-run --silent-hours 24 "who is alive?" > $A/s8b.txt 2>&1
+grep -q '^warn' $A/s8b.txt; check $? 1 "two transcript files (30 h and 1 h): the 1 h one counts, bc-web is not silent"
+rm -rf $A/claude/projects/zzz-other
 ago_line $A/bc-core 40 hub-30 "x"   # older than the line of a minute ago: the newest own line decides
-touch_ago $A/claude/projects/p/$WEB_SID.jsonl 50
+transcript_ago $A/claude/projects/p/$WEB_SID.jsonl 50
 bc --this-home --dry-run --json --silent-hours 36 "x" > $A/s9.json 2>&1
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); r={x["stage"]: x for x in d["sent"]}; sys.exit(0 if d["silent_hours"]==36 and r["bc-web"]["silent"] and 49*3600 <= r["bc-web"]["last_written_age_s"] <= 51*3600 and not r["bc-core"]["silent"] and r["bc-core"]["last_written_age_s"] < 600 else 1)' $A/s9.json
 check $? 0 "--json: last_written_age_s and silent per recipient"

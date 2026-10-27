@@ -139,13 +139,19 @@ $B/agent-top --interval 0.1 > /dev/null 2>&1; check $? 2 "negative: --interval 0
 $B/agent-top < /dev/null > $R/st-notty.out 2>&1; check $? 2 "negative: interactive mode without a terminal -> exit 2"
 grep -q -- '--once' $R/st-notty.out; check $? 0 "no terminal: the message points to --once/--json"
 
+# bounded SECS cmd...: a hard time limit without GNU timeout (not on macOS runners); exit 124 on timeout
+bounded(){ python3 -c 'import subprocess, sys
+try:
+    sys.exit(subprocess.run(sys.argv[2:], timeout=float(sys.argv[1])).returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)' "$@"; }
 # no terminal and a flag that asks for a feed (the status skill suggests them): printed once, not an error, and promptly
-timeout 60 $B/agent-top --stage stage-a --agent alive1 --feed 4 < /dev/null > $R/st-feed.out 2>&1; check $? 0 "no terminal: --agent --feed acts as --once (exit 0)"
+bounded 60 $B/agent-top --stage stage-a --agent alive1 --feed 4 < /dev/null > $R/st-feed.out 2>&1; check $? 0 "no terminal: --agent --feed acts as --once (exit 0)"
 grep -q 'interactive mode needs a terminal' $R/st-feed.out; check $? 1 "no terminal: --agent --feed does not error"
 grep -q 'alive1' $R/st-feed.out; check $? 0 "no terminal: --agent --feed prints the agent's card"
-timeout 60 $B/agent-top --stage stage-a --feed 4 < /dev/null > $R/st-feed2.out 2>&1; check $? 0 "no terminal: --feed alone acts as --once (exit 0)"
+bounded 60 $B/agent-top --stage stage-a --feed 4 < /dev/null > $R/st-feed2.out 2>&1; check $? 0 "no terminal: --feed alone acts as --once (exit 0)"
 grep -q 'alive1' $R/st-feed2.out; check $? 0 "no terminal: --feed alone prints the picture"
-timeout 60 $B/agent-top --stage stage-a --width 100 < /dev/null > $R/st-w.out 2>&1; check $? 2 "negative: --width alone is not a feed flag, bare console still needs a terminal"
+bounded 60 $B/agent-top --stage stage-a --width 100 < /dev/null > $R/st-w.out 2>&1; check $? 2 "negative: --width alone is not a feed flag, bare console still needs a terminal"
 
 # ---- --once picture
 $B/agent-top --once --width 120 > $R/st-once-all.out; check $? 0 "--once exit 0 (all stages)"

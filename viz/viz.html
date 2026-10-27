@@ -12,10 +12,20 @@
   #hud { position: fixed; left: 26px; top: 22px; pointer-events: none; }
   #hud .brand { letter-spacing: .38em; font-size: 16px; color: var(--magenta); }
   #hud .sub { color: var(--dim); margin-top: 5px; }
-  #mode { position: fixed; right: 26px; top: 22px; color: var(--dim); text-align: right; pointer-events: none; }
+  /* top right: the mode, the camera controls, the legend */
+  #tr { position: fixed; right: 26px; top: 22px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+    text-align: right; pointer-events: none; }
+  #mode { color: var(--dim); }
   #mode b { color: var(--cyan); font-weight: 500; letter-spacing: .2em; }
   #mode.replay b { color: var(--violet); }
-  #legend { position: fixed; right: 26px; top: 66px; color: var(--dim); text-align: right; pointer-events: none; }
+  #legend { color: var(--dim); }
+  #ctl { display: flex; gap: 6px; pointer-events: auto; }
+  #ctl button { padding: 3px 9px; font: inherit; font-size: 12px; color: var(--dim); background: rgba(3,4,9,.8); cursor: pointer;
+    border: 1px solid rgba(138,150,166,.35); border-radius: 3px; touch-action: manipulation; }
+  #ctl button:hover { color: var(--ink); border-color: rgba(192,139,255,.6); }
+  #ctl button[aria-pressed="true"] { color: var(--cyan); border-color: rgba(79,227,255,.6); box-shadow: 0 0 8px rgba(79,227,255,.18); }
+  #ctl #bview { color: var(--magenta); border-color: rgba(255,79,216,.55); }
+  #ctl button[hidden] { display: none; }
   #legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px 0 14px; }
   #ticker { position: fixed; left: 26px; bottom: 22px; width: min(820px, calc(100vw / var(--ui, 1) - 52px)); pointer-events: none;
     padding: 10px 12px; background: linear-gradient(90deg, rgba(3,4,9,.85), rgba(3,4,9,0)); border-left: 2px solid rgba(255,79,216,.5); }
@@ -24,7 +34,9 @@
   #ticker .s { color: var(--violet); }
   #tip { position: fixed; display: none; max-width: min(420px, calc(100vw - 24px)); box-sizing: border-box; padding: 8px 10px; background: rgba(6,8,16,.94);
     border: 1px solid rgba(192,139,255,.35); border-radius: 4px; pointer-events: none; white-space: pre-wrap; }
+  canvas { cursor: grab; }
   canvas.hot { cursor: pointer; }
+  canvas.drag { cursor: grabbing; }
   body.idle, body.idle canvas { cursor: none; }
   /* the roster: the owner, each hub, its cabs; it sits in the HUD's flow, so it starts under the HUD at any ui= */
   #rtoggle { display: none; pointer-events: auto; margin-top: 8px; padding: 5px 10px; font: inherit; color: var(--ink);
@@ -54,13 +66,16 @@
   #roster .cab.busy i { box-shadow: 0 0 7px currentColor; animation: rpulse 1.3s ease-in-out infinite; }
   #roster .cab.leaving { opacity: .4; }
   @keyframes rpulse { 50% { opacity: .45; box-shadow: 0 0 2px currentColor; } }
-  canvas { touch-action: manipulation; }
+  canvas { touch-action: none; }   /* the map takes its own drags and pinches: no page scroll or zoom over it */
   /* a phone, either way up: the roster folds into a button that opens it as a sheet; the ticker spans the screen, three lines */
   @media (max-width: 700px), (max-height: 500px) {
-    #hud { left: 12px; top: 10px; max-width: calc(100vw / var(--ui, 1) - 84px); }
+    #hud { left: 12px; top: 10px; max-width: calc(100vw / var(--ui, 1) - 112px); }
     #hud .brand { font-size: 13px; letter-spacing: .3em; }
     #hud .sub { font-size: 11px; margin-top: 3px; }
-    #mode { right: 12px; top: 10px; font-size: 11px; }
+    #tr { right: 12px; top: 10px; gap: 6px; }
+    #mode { font-size: 11px; }
+    #ctl { flex-direction: column; align-items: flex-end; }
+    #ctl button { font-size: 11px; padding: 5px 8px; }
     #legend { display: none; }
     #ticker { left: 8px; bottom: 8px; width: calc(100vw / var(--ui, 1) - 16px); box-sizing: border-box; padding: 6px 8px; font-size: 11px; }
     #ticker div:nth-last-child(n+4) { display: none; }
@@ -76,8 +91,9 @@
 <canvas id="c"></canvas>
 <div id="hud"><div class="brand">DELAMAIN</div><div class="sub" id="sub"></div>
   <button id="rtoggle" type="button" aria-expanded="false" aria-controls="roster"></button><div id="roster" role="list"></div></div>
-<div id="mode"></div>
-<div id="legend"><i style="background:var(--violet)"></i><span id="lg-hub"></span><i style="background:var(--amber)"></i>claude<i style="background:var(--cyan)"></i>codex<i style="background:var(--gold)"></i>owner</div>
+<div id="tr"><div id="mode"></div>
+  <div id="ctl"><button id="bview" type="button" hidden></button><button id="bfollow" type="button" aria-pressed="true"></button></div>
+<div id="legend"><i style="background:var(--violet)"></i><span id="lg-hub"></span><i style="background:var(--amber)"></i>claude<i style="background:var(--cyan)"></i>codex<i style="background:var(--gold)"></i>owner</div></div>
 <div id="ticker"></div>
 <div id="tip"></div>
 <script>
@@ -88,7 +104,7 @@
 const qs = new URLSearchParams(location.search);
 // ui=N scales the text over the map (labels, ticker, HUD, tooltips) for a big screen; the map keeps its scale
 const UI = Math.max(0.5, Math.min(4, +qs.get("ui") || 1));
-for (const id of ["hud", "mode", "legend", "ticker"]) document.getElementById(id).style.zoom = UI;
+for (const id of ["hud", "tr", "ticker"]) document.getElementById(id).style.zoom = UI;
 document.documentElement.style.setProperty("--ui", UI);   // a zoomed box measures the viewport in its own units: 100vw / ui
 document.getElementById("tip").style.fontSize = `${13 * UI}px`;   // not zoomed: it is placed at the cursor
 const SOURCES = (qs.get("src") || location.origin).split(",").map(s => s.trim().replace(/\/$/, "")).filter(Boolean);
@@ -104,12 +120,14 @@ const STRINGS = {
     count: (s, w, b) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"} · ${b} in flight`,
     lastHours: h => `last ${h} h`, questions: n => `${n} owner ${n === 1 ? "question" : "questions"}`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting",
     owner: "owner", roster: "hubs and cabs", rosterHint: "click: follow · Esc: release", rosterHintTouch: "tap: follow · again: release",
-    toggle: (s, w) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"}` },
+    toggle: (s, w) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"}`,
+    follow: "follow", followTip: "the camera flies to each journal line · f", overview: "overview", overviewTip: "back to the overview · c, Esc" },
   ru: { connecting: "подключаюсь…", hub: "хаб", live: "LIVE", replay: "REPLAY", noRepo: "без репозитория",
     count: (s, w, b) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси · ${b} в рейсе`,
     lastHours: h => `последние ${h} ч`, questions: n => `${n} ${ruPlural(n, "вопрос", "вопроса", "вопросов")} владельцу`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт",
     owner: "владелец", roster: "хабы и такси", rosterHint: "клик — следить · Esc — отпустить", rosterHintTouch: "тап — следить · ещё раз — отпустить",
-    toggle: (s, w) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси` },
+    toggle: (s, w) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси`,
+    follow: "следить", followTip: "камера летит к каждой строке журнала · f", overview: "обзор", overviewTip: "назад к обзору · c, Esc" },
 };
 function ruPlural(n, one, few, many) {
   const a = n % 10, b = n % 100;
@@ -467,7 +485,14 @@ function newNpc(r) {
 
 // ---- camera and projection ---------------------------------------------------------------------------------
 const cam = { x: 0, y: 0, z: 1, tx: 0, ty: 0, tz: 1, until: 0 };
-let K = 4, BASE = { x: 0, y: 0 };
+let K = 4, BASE = { x: 0, y: 0 }, MAPB = null;   // MAPB: the world box of the whole map, where the view's centre may go
+// The automatic camera flies to each line unless follow is off: ?follow=0|1, else the last toggle (f), else on.
+const FOLLOW_KEY = "delamain.viz.follow";
+let followOn = qs.has("follow") ? qs.get("follow") !== "0" : (() => { try { return localStorage.getItem(FOLLOW_KEY) !== "0"; } catch (e) { return true; } })();
+// A hand pan or zoom makes the view manual: the automatic camera stands down until c, Esc or the overview control.
+let manual = false;
+const ZMIN = 0.7, ZMAX = 6;   // zoom against the overview
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isoRaw = (x, y) => [(x - y), (x + y) * 0.5];
 function fit() {
   if (!W || !G.nodes.length) return;
@@ -480,6 +505,8 @@ function fit() {
   const vmargin = Math.min(200, H * 0.3);
   K = portrait ? Math.min((W - 16) / (x1 - x0) * 1.7, (H - vmargin) / (y1 - y0)) : Math.min((W - 60) / (x1 - x0), (H - vmargin) / (y1 - y0));
   BASE = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+  MAPB = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+  for (const n of G.nodes) { MAPB.x0 = Math.min(MAPB.x0, n.x); MAPB.x1 = Math.max(MAPB.x1, n.x); MAPB.y0 = Math.min(MAPB.y0, n.y); MAPB.y1 = Math.max(MAPB.y1, n.y); }
   if (!cam.x) { cam.x = cam.tx = BASE.x; cam.y = cam.ty = BASE.y; }
 }
 function P(x, y, lift = 0) {   // world -> screen, through the camera; lift raises the point by world units
@@ -488,28 +515,65 @@ function P(x, y, lift = 0) {   // world -> screen, through the camera; lift rais
 }
 const unit = () => K * cam.z;   // screen pixels per world unit
 function focus(x, y) {   // the camera flies to where the city just spoke, then drifts back to the overview
-  if (qs.get("follow") === "0" || pinned) return;   // a pinned camera stays on its object
+  if (!followOn || pinned || manual) return;   // a pinned camera stays on its object, a manual view where the user left it
   const [a, b] = isoRaw(x, y);
   cam.tx = a; cam.ty = b; cam.tz = 2.1; cam.until = performance.now() + 7000;
 }
 // A pinned object (picked in the roster or on the map) holds the camera until it is released or leaves the map.
-let pinned = null;
+let pinned = null, pinZ = 2.6;   // pinZ: the pinned view's zoom; the wheel or a pinch changes it without releasing
 function onMap(n) {
   if (n.kind === "owner") return true;
   if (n.kind === "hub") return towers.get(n.key) === n && !!n.lot;
   return cabs.get(n.key) === n && !n.landed;
 }
-function pin(n) {
+function pin(n) {   // a pin outranks a manual view; its release goes back to the overview
   pinned = n && n !== pinned ? n : null;
-  if (!pinned) cam.until = 0;   // back to the overview
-  renderRoster();
+  if (pinned) { manual = false; pinZ = 2.6; } else cam.until = 0;
+  syncCtl(); renderRoster();
 }
+// ---- hand camera: pan by screen pixels, zoom by a factor around a screen point --------------------------------
+function manualView() {   // a hand gesture: release a pin, stop the automatic camera, hold the view where it is
+  if (pinned) pin(null);
+  if (!manual) { manual = true; syncCtl(); }
+  cam.tx = cam.x; cam.ty = cam.y; cam.tz = cam.z;
+}
+function clampCam() {   // the view's centre stays over the map's ground (a diamond on screen), so the city cannot be lost
+  if (MAPB) {   // iso back to world: x = b + a/2, y = b - a/2; clamp there, then forward again
+    const x = clamp(cam.y + cam.x / 2, MAPB.x0, MAPB.x1), y = clamp(cam.y - cam.x / 2, MAPB.y0, MAPB.y1);
+    [cam.x, cam.y] = isoRaw(x, y);
+  }
+  cam.tx = cam.x; cam.ty = cam.y; cam.tz = cam.z;
+}
+function panBy(dx, dy) { cam.x -= dx / unit(); cam.y -= dy / unit(); clampCam(); }
+function zoomAt(sx, sy, f) {   // the world point under (sx, sy) stays under it
+  const ox = sx - W / 2, oy = sy - H / 2 - 30, ax = cam.x + ox / unit(), ay = cam.y + oy / unit();
+  cam.z = clamp(cam.z * f, ZMIN, ZMAX); cam.x = ax - ox / unit(); cam.y = ay - oy / unit(); clampCam();
+}
+function overview() {   // c, Esc, the overview control: release, back to the overview, the follow setting rules again
+  if (pinned) pin(null);
+  manual = false; cam.until = 0; syncCtl();
+}
+function setFollow(on) {
+  followOn = on;
+  try { localStorage.setItem(FOLLOW_KEY, on ? "1" : "0"); } catch (e) {}
+  if (!on && !pinned && !manual) cam.until = 0;   // off: leave the line it flew to
+  syncCtl();
+}
+const bfollow = document.getElementById("bfollow"), bview = document.getElementById("bview");
+function syncCtl() {
+  bfollow.setAttribute("aria-pressed", String(followOn)); bfollow.textContent = `${followOn ? "◉" : "○"} ${T.follow}`;
+  bview.hidden = !manual;
+}
+bfollow.title = T.followTip; bview.title = T.overviewTip; bview.textContent = `⌖ ${T.overview}`;
+bfollow.addEventListener("click", () => setFollow(!followOn));
+bview.addEventListener("click", overview);
 function moveCamera(now, dt) {
   if (pinned && !onMap(pinned)) pin(null);
   if (pinned) {   // centred on the object at its height: a cab at its altitude, a tower at half its height
     const [x, y] = worldOf(pinned), [a, b] = isoRaw(x, y);
-    cam.tx = a; cam.ty = b - (pinned.kind === "cab" ? pinned.z || 0 : towerLift(pinned) * 0.5); cam.tz = 2.6; cam.until = now + 1000;
+    cam.tx = a; cam.ty = b - (pinned.kind === "cab" ? pinned.z || 0 : towerLift(pinned) * 0.5); cam.tz = pinZ; cam.until = now + 1000;
   }
+  if (manual) return;   // the hand set the view: cam already stands on its target
   if (now > cam.until) { cam.tx = BASE.x; cam.ty = BASE.y; cam.tz = 1; }   // at rest the camera stands still
   const k = 1 - Math.pow(0.25, dt), pan = pinned ? 1.8 : 0.6;   // a pinned cab moves: keep up with it
   cam.x += (cam.tx - cam.x) * k * pan; cam.y += (cam.ty - cam.y) * k * pan; cam.z += (cam.tz - cam.z) * k * 0.5;
@@ -615,13 +679,17 @@ async function connect(src, idx) {
   es.onerror = () => { machines.get(src).online = false; hud(); };
 }
 
-function hud() {
+function counts() {   // the HUD's and the roster button's numbers: open stages, live workers, busy ones
   let stages = 0, workers = 0, busy = 0;
   for (const m of machines.values()) for (const st of m.stages.values()) {
     if (st.open) stages++;
     workers += st.workers.size;
     for (const c of st.workers.values()) if (c.working) busy++;
   }
+  return { stages, workers, busy };
+}
+function hud() {
+  const { stages, workers, busy } = counts();
   const names = [...machines.values()].map(m => (m.online ? "● " : "○ ") + m.name).join("   ");
   document.getElementById("sub").textContent = `${names}   ·   ${T.count(stages, workers, busy)}`;
 }
@@ -841,20 +909,26 @@ function drawNpc(car) {   // a grey ground car: red tail trail, headlight cone
   ctx.globalCompositeOperation = "source-over";
 }
 
+const TRAIL_MS = 1330, TRAIL_SEG = 5;   // a cab's trail: the last 1.3 s of flight at any frame rate (the saver: the same 1.3 s)
 function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with a trail and a glow in the engine's colour
   const s = sprites[cabSprite(c)] || sprites.flyer; if (!s) return;
   const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
   selRing(c, x, y + w * 0.2, w * 0.6, now);   // round the flyer itself: a ring on the ground would mark the building under it
-  c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 80) c.trail.shift();
-  ctx.globalCompositeOperation = "lighter";   // a neon trail: a wide haze under a bright core, both fading to the tail
-  const tc = modelColor(c);
-  for (const [width, alpha] of [[0.9, 0.22], [0.3, 0.9]])
-    for (let k = 1; k < c.trail.length; k++) {
-      const [ax, ay] = P(...c.trail[k - 1]), [bx, by] = P(...c.trail[k]);
-      ctx.strokeStyle = rgba(tc, alpha * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * width);
-      ctx.beginPath(); ctx.moveTo(ax, ay + w * 0.15); ctx.lineTo(bx, by + w * 0.15); ctx.stroke();
+  c.trail.push([c.x, c.y, c.z, now]); while (now - c.trail[0][3] > TRAIL_MS) c.trail.shift();
+  // A neon trail: a wide haze under a bright core, both fading to the tail in TRAIL_SEG steps of age, one path per step.
+  ctx.globalCompositeOperation = "lighter"; ctx.lineJoin = "round";
+  const tc = modelColor(c), pts = c.trail.map(t => P(t[0], t[1], t[2]));
+  for (const [width, alpha] of [[0.9, 0.22], [0.3, 0.9]]) {
+    ctx.lineWidth = Math.max(1, unit() * width);
+    for (let s = 0, k = 1; s < TRAIL_SEG && k < pts.length; s++) {
+      const upto = now - TRAIL_MS * (TRAIL_SEG - 1 - s) / TRAIL_SEG, k0 = k;
+      ctx.beginPath(); ctx.moveTo(pts[k - 1][0], pts[k - 1][1] + w * 0.15);
+      for (; k < pts.length && c.trail[k][3] <= upto; k++) ctx.lineTo(pts[k][0], pts[k][1] + w * 0.15);
+      if (k > k0) { ctx.strokeStyle = rgba(tc, alpha * (s + 0.5) / TRAIL_SEG); ctx.stroke(); }
     }
+  }
+  ctx.lineJoin = "miter";
   glow(x, y + w * 0.2, w * (0.55 + c.pulse * 0.6 + (c.working ? 0.15 * (1 + Math.sin(now / 300)) : 0)), c.color, 0.35 + c.pulse * 0.5);
   ctx.globalCompositeOperation = "source-over";
   const [vx] = isoRaw(c.x - c.px, c.y - c.py);
@@ -1002,20 +1076,54 @@ addEventListener("pointermove", e => {
   if (e.pointerType !== "mouse") return;
   document.body.classList.remove("idle"); clearTimeout(idleTimer);
   idleTimer = setTimeout(() => document.body.classList.add("idle"), 3000);
+  if (down && down.drag) return;   // a drag shows no hover
   if (e.target !== cv) { if (!roster.contains(e.target)) hover = null; cv.classList.remove("hot"); showTip(null); return; }   // the roster's rows set hover
   hover = hitTest(e.clientX, e.clientY);
   cv.classList.toggle("hot", !!hover);
   showTip(hover, e.clientX, e.clientY);
 });
-// A click or a tap on the map pins what it hits; on empty map it releases the pinned one.
-let down = null;
+// On the map: one pointer drags the view, two pinch it, the wheel (a trackpad pinch too) zooms at the cursor. A press
+// that has not moved past a few pixels is a click or a tap: it pins what it hits; on empty map it releases the pinned one.
+const ptrs = new Map();   // pointerId -> [x, y] of the pointers down on the map
+let down = null, pinch = null;   // down: the gesture {x, y, tap, drag}; pinch: {d, cx, cy} of the first two pointers
+function pinchOf() {
+  const [[ax, ay], [bx, by]] = ptrs.values();
+  return { d: Math.hypot(bx - ax, by - ay), cx: (ax + bx) / 2, cy: (ay + by) / 2 };
+}
 cv.addEventListener("pointerdown", e => {
-  down = { x: e.clientX, y: e.clientY };
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+  ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 1) down = { x: e.clientX, y: e.clientY, tap: true, drag: false };
+  else { if (down) down.tap = false; pinch = pinchOf(); }
   if (e.pointerType !== "mouse") { clearTimeout(tipTimer); hover = null; showTip(null); }
 });
-cv.addEventListener("pointerup", e => {
-  const d = down; down = null;
-  if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12) return;
+cv.addEventListener("pointermove", e => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  const px = p[0], py = p[1]; p[0] = e.clientX; p[1] = e.clientY;
+  if (ptrs.size >= 2) {   // a pinch: a pinned view only changes its zoom; a free one pans with the centre and zooms at it
+    const g = pinchOf();
+    if (pinch && pinch.d > 0 && g.d > 0) {
+      if (pinned) pinZ = clamp(pinZ * g.d / pinch.d, ZMIN, ZMAX);
+      else { manualView(); panBy(g.cx - pinch.cx, g.cy - pinch.cy); zoomAt(g.cx, g.cy, g.d / pinch.d); }
+    }
+    pinch = g; return;
+  }
+  if (!down) return;
+  if (!down.drag) {
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) < (e.pointerType === "mouse" ? 6 : 10)) return;
+    down.drag = true; down.tap = false; manualView(); cv.classList.add("drag"); cv.classList.remove("hot"); hover = null; showTip(null);
+    panBy(e.clientX - down.x, e.clientY - down.y); return;   // the first step covers the slack
+  }
+  panBy(e.clientX - px, e.clientY - py);
+});
+function lift(e) {
+  if (!ptrs.delete(e.pointerId)) return;
+  if (ptrs.size >= 2) { pinch = pinchOf(); return; }
+  pinch = null;
+  if (ptrs.size === 1) { const [[x, y]] = ptrs.values(); down = { x, y, tap: false, drag: false }; return; }   // the finger left on drags on
+  const d = down; down = null; cv.classList.remove("drag");
+  if (e.type !== "pointerup" || !d || !d.tap) return;
   const hit = hitTest(e.clientX, e.clientY);
   if (hit) pin(hit); else if (pinned) pin(null);
   if (e.pointerType !== "mouse") {   // a tap: the tooltip for a moment
@@ -1023,11 +1131,20 @@ cv.addEventListener("pointerup", e => {
     tipTimer = setTimeout(() => { hover = null; showTip(null); }, 2500);
   }
   if (narrow.matches) openSheet(false);
-});
+}
+cv.addEventListener("pointerup", lift);
+cv.addEventListener("pointercancel", lift);
+cv.addEventListener("wheel", e => {
+  e.preventDefault();   // no page scroll or browser zoom over the map
+  const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H : 1), f = Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.002));
+  if (pinned) pinZ = clamp(pinZ * f, ZMIN, ZMAX); else { manualView(); zoomAt(e.clientX, e.clientY, f); }
+}, { passive: false });
 addEventListener("keydown", e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "r") { stopReplay(); startReplay(); }
   if (e.key === "l") { stopReplay(); lastLive = performance.now(); }
-  if (e.key === "c" || e.key === "Escape") { if (pinned) pin(null); cam.until = 0; openSheet(false); }
+  if (e.key === "f") setFollow(!followOn);
+  if (e.key === "c" || e.key === "Escape") { overview(); openSheet(false); }
 });
 
 // ---- roster: the owner, each hub tower and its cabs, rebuilt once a second ------------------------------
@@ -1046,13 +1163,14 @@ function renderRoster() {
   row(owner, "own", `<i style="background:var(--gold)"></i><span class="n">${esc(T.owner)}</span>`);
   const hubs = [...towers.values()].filter(t => t.lot).sort((a, b) => (a.open === false) - (b.open === false)
     || (machines.get(a.machine)?.idx ?? 0) - (machines.get(b.machine)?.idx ?? 0) || a.stage.localeCompare(b.stage));
-  let ncabs = 0;
+  const same = new Map();   // several machines: a stage name on two of them gets its machine's name
+  for (const tw of hubs) same.set(tw.stage, (same.get(tw.stage) || 0) + 1);
   for (const tw of hubs) {
-    row(tw, `hub${tw.open === false ? " closed" : ""}`, `<i style="background:${tw.color}"></i><span class="n">${esc(tw.stage)}</span>` +
+    const where = SOURCES.length > 1 && same.get(tw.stage) > 1 ? `<span class="x">${esc((machines.get(tw.machine)?.name || "").replace(/^https?:\/\//, ""))}</span>` : "";
+    row(tw, `hub${tw.open === false ? " closed" : ""}`, `<i style="background:${tw.color}"></i><span class="n">${esc(tw.stage)}</span>` + where +
       (tw.ctx ? `<span class="x">ctx ${fmtK(tw.ctx)}</span>` : "") + (tw.questions ? `<span class="q">?${tw.questions}</span>` : ""));
     const st = machines.get(tw.machine)?.stages.get(tw.stage);
     for (const c of [...(st ? st.workers.values() : [])].sort((a, b) => a.role.localeCompare(b.role))) {
-      ncabs++;
       const mc = modelColor(c);
       row(c, `cab${c.working ? " busy" : ""}${c.leaving ? " leaving" : ""}`,
         `<i style="background:${mc};color:${mc}"></i><span class="n">${esc(c.role)}</span><span class="m">${esc(shortModel(c))}</span>`);
@@ -1061,7 +1179,8 @@ function renderRoster() {
   rosterObjs = objs;
   const html = `<div class="rh">${esc(T.roster)}<small>${esc(coarse.matches ? T.rosterHintTouch : T.rosterHint)}</small></div>` + rows.join("");
   if (html !== rosterHTML) { rosterHTML = html; roster.innerHTML = html; }   // unchanged: the rows, their hover and the scroll stay
-  rtoggle.textContent = `☰ ${T.toggle(hubs.length, ncabs)}` + (pinned ? ` · ◎ ${pinned.kind === "owner" ? T.owner : pinned.label}` : "");   // the folded roster still says what the camera follows
+  const n = counts();
+  rtoggle.textContent = `☰ ${T.toggle(n.stages, n.workers)}` + (pinned ? ` · ◎ ${pinned.kind === "owner" ? T.owner : pinned.label}` : "");   // the folded roster still says what the camera follows
 }
 const rowObj = e => { const r = e.target.closest(".r"); return r ? rosterObjs[+r.dataset.i] || null : null; };
 roster.addEventListener("pointerover", e => { if (e.pointerType === "mouse") hover = rowObj(e); });
@@ -1083,7 +1202,7 @@ buildCity(); shapes();
 { const r = mulberry(7); for (let k = 0; k < 90; k++) npcs.push(newNpc(r));
   for (let k = 0; k < 3; k++) flyers.push({ rx: 20 + r() * 30, ry: 25 + r() * 35, v: 0.03 + r() * 0.05, p: r() * 10, alt: 12 + r() * 10,
     sprite: AMBIENT[k] }); }
-resize(); renderRoster();
+resize(); renderRoster(); syncCtl();
 lastLive = performance.now();
 ready.then(() => { SOURCES.forEach((s, i) => connect(s, i)); requestAnimationFrame(frame); });
 </script>

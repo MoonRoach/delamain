@@ -50,7 +50,7 @@ Desktop Code tab:
   itself and also answers `/delamain:agent-top`. It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
   the `❯` cursor, Enter or the row's digit `1`–`9` opens the agent card), the **agent card** (state, model, turns, a
   context bar against the model's window, cost, result; a live feed of the last 30 events; `b` goes back), **Journal**
-  (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks). Each agent is two lines with a
+  (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks, and idle Claude Desktop sessions that hold memory — which are safe to archive, see `agent desktop-idle`). Each agent is two lines with a
   coloured state badge (LIVE, QUIET, DONE, FAIL, DIED); a long list is a window around the cursor. Docked beside a
   fullscreen transcript the pane is framed and the card takes its state's colour; above the prompt and when narrow it
   drops the frames. It refreshes every 3 s while open; a role opens that agent's card; Esc closes it. Claude and Codex

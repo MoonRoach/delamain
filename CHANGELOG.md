@@ -9,7 +9,20 @@
   no TTY and the command died with "interactive mode needs a terminal". Without a terminal, `--agent`, `--feed` or
   `--lines` alone now print the `--once` picture (`--feed` sets the number of feed lines); a bare `agent-top` still needs a
   terminal. The skill now says `--json --agent <role> --feed 10`, which is what returns the feed as data.
-
+- **Idle Claude Desktop sessions are visible and can be archived in one step (issue #153).** A Desktop Code session keeps its
+  `claude` CLI and its MCP servers alive until someone archives it; sixteen idle ones held 3.5 GB and the laptop reached
+  load 224. New `agent desktop-idle [--idle-for 12h] [--json | --ids]` lists the sessions idle that long with the memory of
+  their whole process tree and sorts them: *to archive* (no changed or untracked file, no commit on no remote, no open
+  pull/merge request — `gh` for GitHub, `glab` for other hosts) and *left alone* with the reason (dirty, unpushed, open
+  PR/MR, unknown, the calling session, a registered hub or worker, exempt, a directory another session uses). It reads the
+  CLI's pid records, Desktop's session records and `ps` and changes nothing; no command line is printed. agent-top's summary
+  has the same block and `--json` has `desktop_idle` (cached for 5 minutes: it runs git and the forge's CLI). `hub close`
+  names the stage's own idle Desktop sessions. Archiving stays Desktop's: from a Desktop-hosted session, after the owner's
+  yes, `mcp__ccd_session_mgmt__archive_session` per id (procedure: hub skill, *Idle Desktop sessions*); no command line or
+  file archives a Desktop session.
+  Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
+  `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
+  a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

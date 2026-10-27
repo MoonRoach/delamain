@@ -13,6 +13,7 @@ session instead of a hub sub-agent: it survives the hub's handoff, and any hub c
                                                       is the message, a word starting with `-` included)
   agent stop R [--stage S]
   agent worktrees [--repo PATH] [--json] [--fetch] [--no-gh] [--prune [--dry-run] [--delete-branches] [--no-fetch] [--idle-for DUR]]
+  agent desktop-idle [--idle-for DUR] [--json | --ids] [--no-gh]
 
 Files: <hub home>/<stage>/agents/<R>/ — log.jsonl (stream-json of every run), stderr.log, meta.json,
 brief.md (copy of the brief), inbox.md (messages while the agent runs), prompt-<run>.txt (the prompt of each run, written once).
@@ -100,6 +101,19 @@ removes nothing when the fetch fails or with --no-fetch (the candidates are show
 fetches only with --fetch, which contradicts --no-fetch. Just before removing it looks again at the processes, the HEAD
 and the worktrees registered inside. Paths compare by directory identity, not spelling. --no-gh skips the pull-request lookup.
 Files git ignores (build output, a local .env) go with the worktree.
+desktop-idle: the Claude Desktop sessions that have been idle for --idle-for (default 12h) and still hold processes — the
+`claude` CLI and the MCP servers it started — with the memory they hold and whether archiving them loses anything. Read-only
+(a session's processes are never stopped from here). Sources: the CLI pid records (`<claude config>/sessions/*.json`, status and
+host session id), Desktop's session records (title, working directory, branch, last activity) and `ps` (memory of the whole
+process tree; command lines are not printed). A session is listed to archive when its working directory has no changed or
+untracked file, no git operation under way, no commit on no remote ref (commits a squash merge left on none count as pushed
+when a merged request holds HEAD) and no open pull request of its branch (`gh` for a github.com remote, `glab` for any other
+host); it is not touched, with the reason named, when any of that holds or cannot be
+told, when it is the calling session, a role registered in a hub home, marked exempt by Desktop, or its directory is used by a
+session that stays. --ids prints the ids to archive, one per line; --json everything; --no-gh skips the pull-request lookup (every
+session is then "unknown", so none is listed to archive). A gh / glab call that does not answer in a few seconds makes the session "unknown". Files git ignores (a local .env, a database)
+are not looked at and go with the worktree; two sessions in one linked worktree both stay (archiving one cleans it up under the other).
+Archiving is the Desktop tool `archive_session` (skills/hub/references/stage-lifecycle.md, *Idle Desktop sessions*).
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
@@ -128,6 +142,7 @@ import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
 import limit_pace  # noqa: E402
 import worktrees  # noqa: E402
+import desktop_idle  # noqa: E402
 import worktree_prep  # noqa: E402
 import provenance  # noqa: E402
 
@@ -1186,6 +1201,10 @@ def cmd_worktrees(a) -> int:
     return worktrees.run(a, alive)
 
 
+def cmd_desktop_idle(a) -> int:
+    return desktop_idle.run(a)
+
+
 def cmd_send(a) -> int:
     stage = hc.check_stage(a.stage or hc.default_stage())
     msg = hc.one_line(" ".join(a.text))
@@ -1464,6 +1483,12 @@ def main(argv: list) -> int:
                          "commit); a branch merged by ancestry always goes; both only at the verified commit")
     wt.add_argument("--idle-for", metavar="DUR", default=worktrees.DEFAULT_IDLE,
                     help=f"a worktree whose use is unknown counts as free after this long without a change (default {worktrees.DEFAULT_IDLE})")
+    di = sub.add_parser("desktop-idle", help="list idle Claude Desktop sessions that hold processes, and which are safe to archive")
+    di.add_argument("--idle-for", metavar="DUR", default=desktop_idle.DEFAULT_IDLE,
+                    help=f"idle for at least this long (default {desktop_idle.DEFAULT_IDLE})")
+    di.add_argument("--json", action="store_true", help="the same report as JSON")
+    di.add_argument("--ids", action="store_true", help="only the Desktop ids that are safe to archive, one per line")
+    di.add_argument("--no-gh", action="store_true", help="do not ask gh / glab for open pull requests (nothing is then safe to archive)")
     en = sub.add_parser("exit-note", help="(internal) journal an EXIT line after the agent process exits")
     en.add_argument("role")
     en.add_argument("--stage")
@@ -1471,7 +1496,7 @@ def main(argv: list) -> int:
     a = parse_send(argv) if argv[:1] == ["send"] and not {"-h", "--help"} & set(argv[:argv.index("--")] if "--" in argv else argv) \
         else p.parse_args(argv)
     return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "stop": cmd_stop,
-            "worktrees": cmd_worktrees, "exit-note": cmd_exit_note}[a.cmd](a)
+            "worktrees": cmd_worktrees, "desktop-idle": cmd_desktop_idle, "exit-note": cmd_exit_note}[a.cmd](a)
 
 
 if __name__ == "__main__":

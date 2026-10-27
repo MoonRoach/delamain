@@ -23,6 +23,7 @@ description: Answer questions about Delamain agents, stages and hubs, their task
    `stage_info.<S>.idle` marks an open stage with no live agent and no activity for `idle_after_s`: name such stages
    once as candidates to close (`hub close`, skill `hub`; the owner decides). `closed_hidden` lists closed stages left
    out of the snapshot: they run nothing; mention them only when asked about old or closed work.
+   `desktop_idle`: idle Desktop sessions holding memory; archiving: skills/hub/references/stage-lifecycle.md § Idle Desktop sessions.
    Infer tasks only from titles, activity, last words or the journal; compare snapshots only when a previous one exists.
 3. Answer in a few plain-text lines in the user's language, prioritizing running work and anything needing attention.
    Summarize large stages and offer detail on request. Include question ids when they help the owner answer.

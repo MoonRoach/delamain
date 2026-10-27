@@ -128,7 +128,7 @@ assert d.remote_host("https://user:pw@gitlab.example.com/acme/gl.git") == "gitla
 assert d.remote_host("ssh://git@host.example:2222/x/y.git") == "host.example"
 PY
 check $? 0 "a command line (with a key in it) is never reduced to more than the executable's name; remote hosts parse"
-ps -axo comm= | grep -q 'S3CR3T'; check $? 0 "control: a retitled stand-in process shows the key in ps's own output"
+ps -ww -axo command= | grep -q 'S3CR3T'; check $? 0 "control: a retitled stand-in process shows the key in ps's own output"
 grep -q 'S3CR3T\|api-key' $P/l1.json $P/l1.txt; check $? 1 "…and none of it reaches the output"
 
 # ---- 2. controls: each rule can be broken and fixed

@@ -241,10 +241,13 @@ enum StaticRenderer {
         }
     }
 
+    /// A landmark is a whole building, not one lot: its sprite is drawn this many times a lot's width.
+    private static let LANDMARK_SCALE: [String: Double] = ["corpo-block": 2.4, "port-block": 2.2, "industrial-block": 2.2,
+                                                           "market-block": 1.8, "block": 1.8, "badlands-block": 1.3]
     private static func drawLandmark(_ ctx: CGContext, _ l: Lot, _ P: (Double, Double, Double) -> CGPoint, _ u: Double,
                                      _ visible: (CGPoint, Double) -> Bool, _ sprites: [String: CGImage]) {
         guard let s = sprites[l.sprite] ?? FALLBACK[l.sprite].flatMap({ sprites[$0] }) ?? sprites["block"] else { return }
-        let p = P(l.x, l.y, 0), w = l.size * 2 * u * 1.1, h = w * Double(s.height) / Double(s.width)
+        let p = P(l.x, l.y, 0), w = l.size * 2 * u * 1.1 * (LANDMARK_SCALE[l.sprite] ?? 1.8), h = w * Double(s.height) / Double(s.width)
         if !visible(p, w) { return }
         ctx.saveGState()
         ctx.translateBy(x: p.x, y: p.y)

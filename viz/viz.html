@@ -492,7 +492,7 @@ let followOn = qs.has("follow") ? qs.get("follow") !== "0" : (() => { try { retu
 // A hand pan or zoom makes the view manual: the automatic camera stands down until c, Esc or the overview control, or,
 // with follow on, until the next line after MANUAL_HOLD of no hand gestures.
 let manual = false, manualAt = 0;
-const MANUAL_HOLD = 8000;
+const MANUAL_HOLD = 3000;
 const ZMIN = 0.7, ZMAX = 6;   // zoom against the overview
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const isoRaw = (x, y) => [(x - y), (x + y) * 0.5];
@@ -1139,6 +1139,11 @@ function lift(e) {
 }
 cv.addEventListener("pointerup", lift);
 cv.addEventListener("pointercancel", lift);
+cv.addEventListener("lostpointercapture", lift);
+// a touch the browser never ends (a call, a system sheet, another tab) must not leave the map in a pinch for good
+function dropPointers() { ptrs.clear(); pinch = null; down = null; cv.classList.remove("drag"); }
+addEventListener("blur", dropPointers);
+document.addEventListener("visibilitychange", () => { if (document.hidden) dropPointers(); });
 cv.addEventListener("wheel", e => {
   e.preventDefault();   // no page scroll or browser zoom over the map
   const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? H : 1), f = Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.002));

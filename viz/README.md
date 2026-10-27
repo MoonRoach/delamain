@@ -56,7 +56,7 @@ pinned object, end a manual view). Hover a tower or a cab for its title.
   zooms around the cursor or the pinch's centre, from 0.7x to 6x of the overview; the view's centre stays over the map.
   A hand pan or zoom makes the view manual: the camera no longer flies to lines nor drifts back to the overview, and an
   `⌖ overview` control appears beside `follow`; it, `c` or `Esc` returns to the overview and the follow setting. With
-  `follow` on, the manual view also ends by itself at the first line after 8 s without a gesture, and switching `follow`
+  `follow` on, the manual view also ends by itself at the first line after 3 s without a gesture, and switching `follow`
   on ends it at once. A press
   that has not moved a few pixels is still a click or a tap. The page itself does not scroll or zoom over the map.
 

@@ -136,14 +136,23 @@ final class TowerLayers {
 }
 
 final class CabLayers {
-    let group: CALayer, shadow: CALayer, trail: CAShapeLayer, glow: CAGradientLayer, sprite: CALayer, label: TextL
-    var tint: UInt32 = 0, spriteName = ""
+    static let trailSegments = 4   // the trail fades to its tail in this many steps of age, each a layer of its own
+    let group: CALayer, shadow: CALayer, glow: CAGradientLayer, sprite: CALayer, label: TextL
+    let haze: [CAShapeLayer], core: [CAShapeLayer]   // tail first; a wide low haze under a thin bright core, no shadow
+    var tint: UInt32 = 0, trailTint: UInt32 = 0, spriteName = ""
     init(_ parent: CALayer, scale: CGFloat) {
         group = mk(CALayer(), parent)
         shadow = mk(CALayer(), group)
         shadow.backgroundColor = CGColor(gray: 0, alpha: 0.35)
-        trail = mk(CAShapeLayer(), group)
-        trail.fillColor = nil; trail.lineCap = .round; trail.lineJoin = .round; trail.contentsScale = scale
+        let g = group
+        func seg(_ alpha: Double, _ s: Int) -> CAShapeLayer {
+            let l = mk(CAShapeLayer(), g)
+            l.fillColor = nil; l.lineCap = .butt; l.lineJoin = .round; l.contentsScale = scale
+            l.opacity = Float(alpha * (Double(s) + 0.5) / Double(CabLayers.trailSegments))
+            return l
+        }
+        haze = (0..<CabLayers.trailSegments).map { seg(0.22, $0) }
+        core = (0..<CabLayers.trailSegments).map { seg(0.9, $0) }
         glow = radial(group)
         sprite = mk(CALayer(), group)
         label = text(group, scale: scale, color: Pal.ink.cg())
@@ -1055,8 +1064,12 @@ final class DelamainSaverView: ScreenSaverView {
             }()
             let name = cabSprite(model: c.model, engine: c.engine, key: c.key)   // the model may arrive after the cab
             if L.spriteName != name { L.spriteName = name; L.sprite.contents = sprites.images[name] ?? sprites.images["flyer"] }
-            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color)
-                L.trail.strokeColor = c.color.cg(0.28) }
+            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color) }
+            let mc = modelColor(model: c.model, fallback: c.color)   // the trail in the model's colour, the glow in the engine's
+            if L.trailTint != mc.key {   // neon: a bright core over a haze of its own colour, as the page draws it
+                L.trailTint = mc.key
+                for l in L.haze + L.core { l.strokeColor = mc.cg(1) }
+            }
             let g = P(c.x, c.y), p = P(c.x, c.y, c.z), w = u * 3.4
             L.group.zPosition = CGFloat(c.x + c.y)
             L.shadow.bounds = CGRect(x: 0, y: 0, width: w * 0.7, height: w * 0.7)
@@ -1064,14 +1077,18 @@ final class DelamainSaverView: ScreenSaverView {
             L.shadow.position = g
             L.shadow.transform = CATransform3DMakeScale(1, CGFloat(0.16 / 0.35), 1)
             c.trail.append((c.x, c.y, c.z, now))
-            while let f = c.trail.first, now - f.t > 300 { c.trail.removeFirst() }   // 18 frames at 60 fps
-            let tp = CGMutablePath()
-            for (k, t) in c.trail.enumerated() {
-                let q = P(t.x, t.y, t.z), q2 = CGPoint(x: q.x, y: q.y + CGFloat(w * 0.15))
-                if k == 0 { tp.move(to: q2) } else { tp.addLine(to: q2) }
+            while let f = c.trail.first, now - f.t > 1330 { c.trail.removeFirst() }   // 1.3 s of flight, as the page
+            let n = CabLayers.trailSegments, pts = c.trail.map { t -> CGPoint in
+                let q = P(t.x, t.y, t.z); return CGPoint(x: q.x, y: q.y + CGFloat(w * 0.15)) }
+            var k = 1
+            for s in 0..<n {   // segment s holds the points up to (n-1-s)/n of the trail's age, joined to the previous one
+                let upto = now - 1330 * Double(n - 1 - s) / Double(n), tp = CGMutablePath(), k0 = k
+                if k < pts.count { tp.move(to: pts[k - 1]) }
+                while k < pts.count, c.trail[k].t <= upto { tp.addLine(to: pts[k]); k += 1 }
+                let path: CGPath? = k > k0 ? tp : nil
+                L.haze[s].path = path; L.core[s].path = path
+                L.haze[s].lineWidth = CGFloat(max(1, u * 0.9)); L.core[s].lineWidth = CGFloat(max(1, u * 0.3))
             }
-            L.trail.path = tp
-            L.trail.lineWidth = CGFloat(max(1, u * 0.3))
             let wob = c.working ? 0.15 * (1 + sin(now / 300)) : 0
             placeGlow(L.glow, CGPoint(x: p.x, y: p.y + CGFloat(w * 0.2)), w * (0.55 + c.pulse * 0.6 + wob), 0.35 + c.pulse * 0.5)
             let vx = (c.x - c.px) - (c.y - c.py)

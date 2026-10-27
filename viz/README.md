@@ -25,7 +25,8 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
   page's tooltip says how many.
 - **A worker is a flying cab** roaming the city. Its flyer shows the model's tier: a limo for Fable or Astra, a sports flyer
   for Opus, the plain flyer for Sonnet or Sol, a bike for Haiku or Luna, a van for a service tool (`pace`, `watchdog`).
-  Its glow and trail are amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
+  Its neon trail, the last 1.3 s of flight fading to the tail, is in the model's colour (Fable violet, Opus magenta,
+  Sonnet amber, Haiku lime, Astra red, Sol cyan, Luna blue); its glow is amber for Claude, cyan for Codex, grey for a service tool; a busy one (log grew in the last 10 min) flies a little faster with a pulsing glow.
 - **Every journal line is a beam**: from a spire down to a cab, from a cab up to its addressee (`@role`, `@hub <stage>`,
   `@owner`; an unaddressed line goes to the stage's hub), or between spires; the camera flies to where it happened.
 
@@ -44,9 +45,32 @@ page's origin>` on each of the others (the page itself is served by the first). 
 `/history?hours=N`, `/events` (SSE: `state` every 5 s, `line` per journal line), `/assets/`.
 
 Page parameters: `src=http://a:8765,http://b:8765` (several machines, each running `hub-viz`), `quiet=N` (replay the
-last `hours` after N seconds without a live line; off by default: live only), `hours=24`, `speed=120`, `follow=0`
-(keep the overview), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
-written). Keys: `r` replay, `l` back to live, `c` camera back to the overview. Hover a tower or a cab for its title.
+last `hours` after N seconds without a live line; off by default: live only), `hours=24`, `speed=120`, `follow=0|1`
+(whether the camera flies to each line; overrides the last toggle), `ui=1.6` (text over the map that much larger, for a projector), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
+written). Keys: `r` replay, `l` back to live, `f` follow on or off, `c` or `Esc` camera back to the overview (release a
+pinned object, end a manual view). Hover a tower or a cab for its title.
+
+- **Follow.** The `◉ follow` control under the mode, top right, switches the camera's flights to each journal line on
+  and off (as `f` does). Its state comes from `follow=`, else the last toggle in this browser (`localStorage`), else on.
+- **Pan and zoom.** Drag the map with the mouse or one finger to pan; the wheel, a trackpad pinch or a two-finger pinch
+  zooms around the cursor or the pinch's centre, from 0.7x to 6x of the overview; the view's centre stays over the map.
+  A hand pan or zoom makes the view manual: the camera no longer flies to lines nor drifts back to the overview, and an
+  `⌖ overview` control appears beside `follow`; it, `c` or `Esc` returns to the overview and the follow setting. A hand
+  gesture also switches `follow` off for this view (the saved setting stays); switching it on ends the manual view. A press
+  that has not moved a few pixels is still a click or a tap. The page itself does not scroll or zoom over the map.
+
+- **The roster** on the left, under the HUD, lists the owner, each hub tower (its stage, `ctx 212k` when known, a gold
+  `?N` while it has open owner questions, dimmed when closed) and under it its cabs (a dot in the model's colour, the
+  role, the short model name; a busy cab's dot pulses). It is rebuilt about once a second; hovering a row highlights its
+  object on the map. With several machines (`src=`), a hub whose stage name appears on two of them shows its machine.
+- **Pinning.** Clicking a roster row, a tower or a cab pins the camera to it: the camera follows it, zoomed in, and a
+  journal line no longer pulls it away; the pinned row and a cyan ring on the map mark it. A pin outranks a manual view;
+  the wheel or a pinch changes its zoom and keeps it, a drag releases it into a manual view. Clicking it again, clicking
+  empty map, `Esc` or `c` releases it; it is released by itself when the object leaves the map (a cab landed, a hub gone).
+- **On a phone** (at most 700 px wide, or at most 500 px tall) the roster folds into a button under the HUD
+  (`☰ 3 hubs · 5 cabs`, the HUD's own count, plus the pinned object) that opens it as a sheet; the legend hides, the ticker spans the screen
+  and keeps three lines. A tap pins like a click and shows the tooltip for 2.5 s. In portrait the map fits the city,
+  not the desert roads, and lets the sides run past the screen's edges. The canvas renders at most at 2x.
 
 ## Screen saver
 

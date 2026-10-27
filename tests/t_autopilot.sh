@@ -3,6 +3,9 @@
 # reset by a manual takeover and by an owner prompt, and the context budget hook's autopilot messages at warn and block.
 # The CLI is tests/fake_claude_bg.py: no real `claude --bg` is ever started.
 . "$(dirname "$0")/lib.sh"
+# Exercise valid PATH entries with spaces, including those inherited from Windows in WSL.
+SPACED_PATH="$(mktemp -d)/path with spaces"; mkdir -p "$SPACED_PATH"
+export PATH="$SPACED_PATH:$PATH"
 unset PLUGIN_ROOT CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p') FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
 # the effort of the hub running `hub succeed` (the Bash tool's $CLAUDE_EFFORT): the successor's, unless something says otherwise
@@ -291,16 +294,16 @@ J | grep -qF 'effort xhigh inherited from this hub (source: env — $CLAUDE_EFFO
 setup; CLAUDE_EFFORT=max succeed --model opus --dry-run > $R/inhd.out 2>&1
 grep -qF -- "--model opus --effort max --settings" $R/inhd.out && grep -qF '[plan] effort max inherited from this hub (source: env' $R/inhd.out; check "$?:$(call --bg count)" "0:none" "effort: the dry run shows the inherited effort and its source"
 setup; CLAUDE_EFFORT=xhigh succeed --model opus --headless > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "xhigh:xhigh" "effort: the headless hub gets the inherited effort"
-setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/ref.out 2>&1; rc=$?
+setup; env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/ref.out 2>&1; rc=$?
 check "$rc:$(call --bg count):$(chain):$(pending n)" "1:none:none:none" "effort: unreadable → exit 1, nothing started, the chain not counted, no reservation"
 grep -q '^FAILED: cannot determine the effort of this session; tried hook: .*env: \$CLAUDE_EFFORT is not set; transcript: .*job: .*desktop: .*argv: .*No successor is started on a guessed effort: pass --effort' $R/ref.out; check $? 0 "effort: …the refusal names every source tried and what to do"
-env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --headless > /dev/null 2>&1; check "$?:$(call --bg count):$(pending n)" "1:none:none" "effort: …also for --headless"
-env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --dry-run > /dev/null 2>&1; check $? 1 "effort: …and for a dry run (it would refuse the real one)"
-env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --effort low > /dev/null 2>&1
+env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --headless > /dev/null 2>&1; check "$?:$(call --bg count):$(pending n)" "1:none:none" "effort: …also for --headless"
+env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --dry-run > /dev/null 2>&1; check $? 1 "effort: …and for a dry run (it would refuse the real one)"
+env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus --effort low > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort low --settings"; check $? 0 "effort: …but --effort given needs no reading"
-setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH AGENT_HUB_SUCCESSOR_EFFORT=medium $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > /dev/null 2>&1
+setup; env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" AGENT_HUB_SUCCESSOR_EFFORT=medium $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort medium --settings"; check $? 0 "effort: …and so does AGENT_HUB_SUCCESSOR_EFFORT"
-setup; env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model haiku > $R/hkref.out 2>&1; rc=$?
+setup; env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model haiku > $R/hkref.out 2>&1; rc=$?
 check "$rc:$(call --bg count):$(grep -c 'cannot determine the effort of this session' $R/hkref.out)" "1:none:1" "effort: negative — an unreadable effort refuses a Haiku successor like any other, nothing starts"
 # a hub on Haiku 4.5 has no effort: the $CLAUDE_EFFORT its Bash shows is an ancestor's leftover (probed), not inherited
 TRH=$HOME/.claude/projects/p/$HUB1.jsonl; mkdir -p $(dirname $TRH); [ -f $TRH ] && cp $TRH $TRH.keep
@@ -317,7 +320,7 @@ call --bg argv | grep -q -- "--model claude-haiku-4-5-20251001 --effort medium -
 echo '{"type":"assistant","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":5}},"effort":"medium","perTurnEffort":"medium"}' > $TRH
 setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=xhigh succeed --model opus > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: positive control — a Haiku 5.5 hub's \$CLAUDE_EFFORT is inherited (a Haiku 4.5 hub's is not)"
-setup; env -u CLAUDE_EFFORT CLAUDE_CODE_SESSION_ID=$HUB1 PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > /dev/null 2>&1
+setup; env -u CLAUDE_EFFORT CLAUDE_CODE_SESSION_ID=$HUB1 PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort medium --settings"; check "$? $(pending effort)" "0 medium" "effort: …and so is the effort in its transcript"
 setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=xhigh succeed > /dev/null 2>&1
 call --bg argv | grep -q -- "--model claude-haiku-5-5 --effort xhigh --settings"; check "$? $(pending effort)" "0 xhigh" "effort: …a Haiku 5.5 successor of a Haiku 5.5 hub starts with the effort too"
@@ -328,14 +331,14 @@ python3 -c 'import json,sys; json.dump({"sessionId": sys.argv[2], "respawnFlags"
 setup; CLAUDE_CODE_SESSION_ID=$HUB1 CLAUDE_EFFORT=high succeed --model opus > /dev/null 2>&1
 call --bg argv | grep -q -- "--model opus --effort medium --settings"; check "$? $(pending effort)" "0 medium" "effort: a --bg hub — the job's effort, not the daemon's \$CLAUDE_EFFORT"
 rm -rf $JD
-setup; CLAUDE_EFFORT=bogus env PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/bogus.out 2>&1
+setup; CLAUDE_EFFORT=bogus env PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --handoff $H --cwd $W --model opus > $R/bogus.out 2>&1
 check "$?:$(grep -c 'is not one of low, medium, high, xhigh, max' $R/bogus.out):$(call --bg count)" "1:1:none" "effort: a \$CLAUDE_EFFORT that is not an effort level is no answer"
 setup; succeed --model opus > /dev/null 2>&1
 python3 - $R/stage-a/auto-handoff.json <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["pending"].pop("effort"); json.dump(d, open(sys.argv[1], "w"))
 PY
-env -u CLAUDE_EFFORT PATH=$NO_PS:$PATH $B/hub succeed --stage stage-a --fallback > $R/fbr.out 2>&1
+env -u CLAUDE_EFFORT PATH="$NO_PS:$PATH" $B/hub succeed --stage stage-a --fallback > $R/fbr.out 2>&1
 check "$?:$(pending kind):$(call stop count)" "1:bg:none" "effort: --fallback of an old record with nothing readable is refused before the reservation"
 
 # ================================================================== review round 2

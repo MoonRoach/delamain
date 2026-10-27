@@ -10,6 +10,8 @@ check(){ if [ "$1" = "$2" ]; then echo "PASS $3"; else echo "FAIL $3 (got $1 wan
 unisolated(){ for f in "$@"; do grep -Eq '^\. "\$\(dirname "(\$0|\$\{BASH_SOURCE\[0\]\})"\)/(lib|isolate)\.sh"' "$f" || echo "$f"; done; }
 check "$(unisolated "$T"/t_*.sh | tr '\n' ' ')" "" "every test script sources lib.sh or isolate.sh"
 S=$(mktemp -d)
+mkdir -p "$S/path with spaces"
+export PATH="$S/path with spaces:$PATH"
 printf '#!/bin/bash\nset -u\necho hello\n' > $S/t_bare.sh
 check "$(unisolated $S/t_bare.sh)" "$S/t_bare.sh" "control: a script that sources neither is caught"
 # a script started alone: its HOME and XDG_CONFIG_HOME are not the caller's, and a registration lands there
@@ -65,12 +67,12 @@ set -u
 . "$T/isolate.sh"
 d=\$(mktemp -d); case "\$d" in "\$DELAMAIN_TEST_SANDBOX"/*) echo inside;; *) echo "outside \$d";; esac
 EOF2
-check "$(env -u DELAMAIN_TEST_SANDBOX PATH=$S/fakebin:$PATH HOME=$REAL/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "a script started alone makes its temporary directories in its sandbox, not under an inherited TMPDIR"
-check "$(env DELAMAIN_TEST_SANDBOX=$SB PATH=$S/fakebin:$PATH HOME=$SB/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "…and so does one run by run_all.sh"
+check "$(env -u DELAMAIN_TEST_SANDBOX PATH="$S/fakebin:$PATH" HOME=$REAL/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "a script started alone makes its temporary directories in its sandbox, not under an inherited TMPDIR"
+check "$(env DELAMAIN_TEST_SANDBOX=$SB PATH="$S/fakebin:$PATH" HOME=$SB/home TMPDIR=$REAL/tmp bash $S/t_tmp.sh)" inside "…and so does one run by run_all.sh"
 # the suite's bootstrap: a copy of run_all.sh over one probe test, with the caller's TMPDIR pointing at a "real" place
 mkdir -p $S/suite/tests $S/suite/bin; cp $T/run_all.sh $T/isolate.sh $T/temp_dirs.sh $S/suite/tests/; cp $T/../bin/jlog $T/../bin/hubcore.py $S/suite/bin/
 printf '#!/bin/bash\n. "$(dirname "$0")/isolate.sh"\nmktemp -d > /dev/null\nprintf "%%s\\n" "$DELAMAIN_TEST_SANDBOX" > "%s"\necho "PASS probe"\n' "$S/probe.path" > $S/suite/tests/t_probe.sh
-(cd $S && env -u DELAMAIN_TEST_SANDBOX PATH=$S/fakebin:$PATH TMPDIR=$REAL/tmp bash $S/suite/tests/run_all.sh $S/out > $S/suite.out 2>&1)
+(cd $S && env -u DELAMAIN_TEST_SANDBOX PATH="$S/fakebin:$PATH" TMPDIR=$REAL/tmp bash $S/suite/tests/run_all.sh $S/out > $S/suite.out 2>&1)
 check "$(find $REAL/tmp | wc -l | tr -d ' ')" 1 "the suite's bootstrap (HOME, sandboxes, logs' scratch) allocates nothing under an inherited TMPDIR"
 grep -q "^t_probe: exit=0 pass=1" $S/suite.out; check $? 0 "…and still runs its scripts (the probe passed)"
 # the suite cleans its sandboxes on exit, so "nothing left" alone would also hold for a bootstrap that did allocate: the probe
@@ -78,6 +80,6 @@ grep -q "^t_probe: exit=0 pass=1" $S/suite.out; check $? 0 "…and still runs it
 case "$(cat $S/probe.path)" in "$REAL/tmp"/*) check in out "…and the probe's own sandbox is not under it";; *) check ok ok "…and the probe's own sandbox is not under it";; esac
 # control: the old bootstrap (mktemp before TMPDIR is replaced) does allocate there
 sed 's|^SANDBOX="$(TMPDIR=/tmp mktemp -d)"; mkdir -p "$SANDBOX/tmp"; export TMPDIR="$SANDBOX/tmp"|SANDBOX="$(mktemp -d)"; mkdir -p "$SANDBOX/tmp"|' $T/run_all.sh > $S/suite/tests/run_all.sh
-(cd $S && env -u DELAMAIN_TEST_SANDBOX PATH=$S/fakebin:$PATH TMPDIR=$REAL/tmp bash $S/suite/tests/run_all.sh $S/out2 > $S/suite2.out 2>&1)
+(cd $S && env -u DELAMAIN_TEST_SANDBOX PATH="$S/fakebin:$PATH" TMPDIR=$REAL/tmp bash $S/suite/tests/run_all.sh $S/out2 > $S/suite2.out 2>&1)
 case "$(cat $S/probe.path)" in "$REAL/tmp"/*) check ok ok "control: a bootstrap that calls mktemp before replacing TMPDIR allocates in the caller's";; *) check "$(cat $S/probe.path)" "under $REAL/tmp" "control: a bootstrap that calls mktemp before replacing TMPDIR allocates in the caller's";; esac
 exit $fail

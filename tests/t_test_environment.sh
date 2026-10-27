@@ -3,7 +3,7 @@
 set -eu
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEST_BINS="$(cd "$TEST_DIR/../bin" && pwd)"
-. "$TEST_DIR/isolate.sh"
+. "$(dirname "$0")/isolate.sh"
 unset AGENT_ROLE
 export CODEX_INTERNAL_ORIGINATOR_OVERRIDE='Codex Desktop'
 export CODEX_APP_TOOLS_PIPE_PATH='/tmp/delamain-test-app-pipe'

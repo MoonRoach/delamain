@@ -83,6 +83,7 @@ class Entity {
 
 final class Tower: Entity, Placeable {
     var stage = "", lot: Lot? = nil, district = "", title = "", open = true
+    var ctx = 0, sc: Double?   // the hub session's context in tokens; the drawn size scale, eased towards its target
     var layers: TowerLayers?
 }
 
@@ -555,6 +556,7 @@ final class DelamainSaverView: ScreenSaverView {
             st.open = sv.open ?? true; seen.insert(sv.name)
             st.hub.title = (sv.hub?.title).flatMap { $0.isEmpty ? nil : $0 } ?? sv.goal ?? ""
             st.hub.open = st.open
+            st.hub.ctx = sv.hub?.ctx ?? 0
             var roles = Set<String>()
             for w in sv.workers ?? [] where w.role != "hub" { ensureWorker(sv.name, w); roles.insert(w.role) }
             st.gone = false
@@ -583,7 +585,12 @@ final class DelamainSaverView: ScreenSaverView {
         return (CX, CY)
     }
     private let TOWER_STEP = 4.2   // hub towers keep one size in every district
-    private func towerLift(_ n: Entity) -> Double { n.kind == .owner ? 7.5 : 6.4 * TOWER_STEP / 5.5 }
+    /// A hub tower grows with its session's context: 0.75x fresh, 1.5x at the handoff threshold (350k tokens). The
+    /// drawn scale eases towards it, so a /state poll does not make a tower jump.
+    private let CTX_FULL = 350000.0
+    private func ctxScale(_ t: Tower) -> Double { 0.75 + 0.75 * min(1, Double(t.ctx) / CTX_FULL) }
+    private func towerScale(_ n: Entity) -> Double { guard let t = n as? Tower, n.kind != .owner else { return 1 }; return t.sc ?? ctxScale(t) }
+    private func towerLift(_ n: Entity) -> Double { n.kind == .owner ? 7.5 : 6.4 * TOWER_STEP / 5.5 * towerScale(n) }
     private func anchor(_ n: Entity) -> CGPoint {
         if let c = n as? Cab { return P(c.x, c.y, c.z) }
         let (x, y) = worldOf(n)
@@ -982,7 +989,8 @@ final class DelamainSaverView: ScreenSaverView {
                 tw.layers = l
                 return l
             }()
-            let p = P(lot.x, lot.y), stepW = isOwner ? 6.5 : TOWER_STEP
+            if !isOwner { let g = ctxScale(tw), cur = tw.sc ?? g; tw.sc = cur + (g - cur) * 0.04 }
+            let p = P(lot.x, lot.y), stepW = isOwner ? 6.5 : TOWER_STEP * towerScale(tw)
             let w = stepW * 2 * u * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86
             L.group.zPosition = CGFloat(lot.x + lot.y)
             placeGlow(L.glow, p, u * stepW * (0.9 + tw.pulse * 0.8), 0.25 + tw.pulse * 0.5)

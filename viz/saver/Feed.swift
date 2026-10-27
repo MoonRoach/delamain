@@ -3,7 +3,7 @@
 // Everything is delivered on the main thread.
 import Foundation
 
-struct HubInfo: Decodable { var tag: String?; var kind: String?; var host: String?; var title: String? }
+struct HubInfo: Decodable { var tag: String?; var kind: String?; var host: String?; var title: String?; var ctx: Int? }
 struct Worker: Decodable {
     var role: String; var tag: String?; var engine: String?; var model: String?
     var working: Bool?; var title: String?

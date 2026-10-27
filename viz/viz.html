@@ -329,6 +329,7 @@ function applyState(src, s) {
     const st = ensureStage(src, sv.name, sv.repo);
     st.open = sv.open; seen.add(sv.name);
     st.hub.title = (sv.hub && sv.hub.title) || sv.goal || ""; st.hub.open = sv.open;
+    st.hub.ctx = (sv.hub && sv.hub.ctx) || 0;
     const roles = new Set();
     for (const w of sv.workers) if (w.role !== "hub") { ensureCab(src, sv.name, w); roles.add(w.role); }
     st.gone = false;
@@ -426,7 +427,13 @@ function onLine(src, ev, replayed) {
 
 const worldOf = n => n.kind === "cab" ? [n.x, n.y] : n.kind === "owner" ? [G.owner.x, G.owner.y] : [n.lot.x, n.lot.y];
 const TOWER_STEP = 4.2;   // hub towers keep one size in every district
-const towerLift = n => n.kind === "owner" ? 7.5 : 6.4 * TOWER_STEP / 5.5;
+// A hub tower grows with its session's context: 0.75x fresh, 1.5x at the handoff threshold (350k tokens). The drawn
+// scale eases towards it (a /state poll must not make a tower jump).
+const CTX_FULL = 350000;
+const ctxScale = n => 0.75 + 0.75 * Math.min(1, (n.ctx || 0) / CTX_FULL);
+const towerScale = n => n.kind === "owner" ? 1 : n.sc ?? ctxScale(n);
+const towerLift = n => n.kind === "owner" ? 7.5 : 6.4 * TOWER_STEP / 5.5 * towerScale(n);
+const fmtK = n => Math.round(n / 1000) + "k";
 
 function send(from, to) {   // every line is a beam: from a spire down to a cab, or from a cab up to a spire
   beams.push({ a: from, b: to, t0: performance.now(), dur: 1400, color: from.color });
@@ -651,7 +658,8 @@ function drawLandmark(l) {
 function drawTower(tw, now) {
   const isOwner = tw.kind === "owner", lot = isOwner ? G.owner : tw.lot;
   const s = isOwner ? sprites["owner-tower"] : sprites[TOWERS[(machines.get(tw.machine)?.idx || 0) % TOWERS.length]] || sprites["hub-tower"];
-  const [x, y] = P(lot.x, lot.y), step = isOwner ? 6.5 : TOWER_STEP;
+  if (!isOwner) tw.sc = (tw.sc ?? ctxScale(tw)) + (ctxScale(tw) - (tw.sc ?? ctxScale(tw))) * 0.04;
+  const [x, y] = P(lot.x, lot.y), step = isOwner ? 6.5 : TOWER_STEP * towerScale(tw);
   const w = step * 2 * unit() * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86;
   glow(x, y, unit() * step * (0.9 + tw.pulse * 0.8), tw.color, 0.25 + tw.pulse * 0.5);
   if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
@@ -841,7 +849,7 @@ addEventListener("mousemove", e => {
   if (!hover) { tip.style.display = "none"; return; }
   const m = hover.machine && machines.get(hover.machine);
   const lines = hover.kind === "owner" ? ["owner"] : hover.kind === "hub"
-    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.open === false ? T.closed : ""]
+    ? [`${T.hub} · ${hover.stage}`, hover.title, `${DIST[hover.district]?.name || ""} · ${m ? m.name : ""}`, hover.ctx ? `ctx ${fmtK(hover.ctx)}` : "", hover.open === false ? T.closed : ""]
     : [`${hover.role} · ${hover.stage}`, hover.title, [hover.engine, hover.model].filter(Boolean).join(" · "), hover.working ? T.busy : T.idle];
   tip.textContent = lines.filter(Boolean).join("\n");
   tip.style.display = "block";

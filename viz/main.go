@@ -105,6 +105,7 @@ type HubInfo struct {
 	Kind  string `json:"kind"`
 	Host  string `json:"host"`
 	Title string `json:"title"`
+	Ctx   int    `json:"ctx"` // tokens in the hub session's context; 0 if unknown
 }
 
 type StageView struct {
@@ -524,7 +525,7 @@ func (h *Hub) snapshot() State {
 		}
 		v := StageView{Name: name, Repo: st.repo, Open: st.open, Goal: st.goal, Workers: workers}
 		if hub, ok := st.active["hub"]; ok {
-			v.Hub = &HubInfo{Tag: hub.Tag, Kind: hub.Kind, Host: hub.Host, Title: hub.Title}
+			v.Hub = &HubInfo{Tag: hub.Tag, Kind: hub.Kind, Host: hub.Host, Title: hub.Title, Ctx: hubContext(h.root, hub.CLISessionID)}
 		}
 		views = append(views, v)
 	}

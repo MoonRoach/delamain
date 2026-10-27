@@ -111,7 +111,9 @@ when a merged request holds HEAD) and no open pull request of its branch (`gh` f
 host); it is not touched, with the reason named, when any of that holds or cannot be
 told, when it is the calling session, a role registered in a hub home, marked exempt by Desktop, or its directory is used by a
 session that stays. --ids prints the ids to archive, one per line; --json everything; --no-gh skips the pull-request lookup (every
-session is then "unknown", so none is listed to archive). Archiving is the Desktop tool `archive_session` (skills/status/SKILL.md).
+session is then "unknown", so none is listed to archive). A gh / glab call that does not answer in a few seconds makes the session "unknown". Files git ignores (a local .env, a database)
+are not looked at and go with the worktree; two sessions in one linked worktree both stay (archiving one cleans it up under the other).
+Archiving is the Desktop tool `archive_session` (skills/hub/references/stage-lifecycle.md, *Idle Desktop sessions*).
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to

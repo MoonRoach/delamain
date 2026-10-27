@@ -14,12 +14,13 @@ PIDS=()
 trap 'for p in "${PIDS[@]}"; do kill $p 2>/dev/null; done; test_cleanup' EXIT
 G(){ git -c user.email=t@t -c user.name=t -c commit.gpgsign=false "$@"; }
 # a stub gh / glab: open requests of a branch come from $GH_STUB_DIR/<branch, / as _>.json (else []); every call is logged;
-# GH_STUB_FAIL=1 makes both fail
+# GH_STUB_FAIL=1 makes both fail, GH_STUB_HANG=1 makes them hang
 for tool in gh glab; do
   cat > $STUB/$tool <<'EOF'
 #!/bin/bash
 echo "$(basename "$0") $*" >> "$GH_STUB_DIR/calls.log"
 [ -n "${GH_STUB_FAIL:-}" ] && { echo "not logged in" >&2; exit 4; }
+[ -n "${GH_STUB_HANG:-}" ] && exec sleep 600
 state=open
 while [ $# -gt 0 ]; do case "$1" in --head|--source-branch) head=$2;; --state) state=$2;; --merged) state=merged;; esac; shift; done
 f="$GH_STUB_DIR/$(echo "$head" | tr / _).json"; [ $state = merged ] && f="$GH_STUB_DIR/$(echo "$head" | tr / _).merged.json"
@@ -107,7 +108,7 @@ check "$(jf $P/l1.json gone reasons)" gone "a working directory that is gone"
 check "$(jf $P/l1.json exempt reasons)" exempt "marked exempt by Desktop"
 check "$(jf $P/l1.json caller reasons)" self "the session running the command"
 check "$(jf $P/l1.json clean reasons)" - "the clean session has no reason against it"
-check "$(jf $P/l1.json clean procs)" 2 "memory: the CLI and its child are counted (2 processes)"
+check "$(jf $P/l1.json clean procs)" 3 "memory: the CLI and its two children are counted (3 processes)"
 python3 -c "import json,sys; d=json.load(open('$P/l1.json')); s=[x for x in d['sessions'] if x['id']=='local_clean'][0]; sys.exit(0 if s['rss_kb']>0 and d['candidate_rss_kb']>0 and 'sleep' in s['other_processes'] else 1)"
 check $? 0 "…with their resident memory, and the child that is not an MCP server is named"
 check "$(python3 -c "import json; print(' '.join(sorted(json.load(open('$P/l1.json'))['candidate_ids'])))")" "local_clean local_glclean" "--json: candidate_ids"
@@ -127,7 +128,8 @@ assert d.remote_host("https://user:pw@gitlab.example.com/acme/gl.git") == "gitla
 assert d.remote_host("ssh://git@host.example:2222/x/y.git") == "host.example"
 PY
 check $? 0 "a command line (with a key in it) is never reduced to more than the executable's name; remote hosts parse"
-grep -q 'SECRET\|api-key' $P/l1.json $P/l1.txt; check $? 1 "no command line reaches the output"
+ps -axo comm= | grep -q 'S3CR3T'; check $? 0 "control: a retitled stand-in process shows the key in ps's own output"
+grep -q 'S3CR3T\|api-key' $P/l1.json $P/l1.txt; check $? 1 "…and none of it reaches the output"
 
 # ---- 2. controls: each rule can be broken and fixed
 touch $REPO/.wt/clean/new.txt
@@ -196,4 +198,63 @@ echo n > $REPO/.wt/merged/n.txt; G -C $REPO/.wt/merged add n.txt; G -C $REPO/.wt
 LIST --json > $P/l5b.json 2>/dev/null
 check "$(jf $P/l5b.json merged reasons)" unpushed "control: a commit made after the merged request's head is unpushed work"
 grep -q 'was merged, but the branch has commits it does not contain' $P/l5b.json; check $? 0 "…and the reason says why the merged request does not cover it"
+
+# ---- 6. two clean idle sessions in one linked worktree: both stay, each names the other (archiving one cleans it up under the other)
+wt $REPO twin
+session twin1 idle 1500 $REPO/.wt/twin feat/twin
+session twin2 idle 1500 $REPO/.wt/twin feat/twin
+sleep 1
+LIST --json > $P/l6.json 2>/dev/null
+check "$(jf $P/l6.json twin1 reasons)" shared "twin: the first of two clean sessions in one worktree is not offered"
+check "$(jf $P/l6.json twin2 reasons)" shared "…nor the second"
+python3 -c "import json; d=json.load(open('$P/l6.json')); s=[x for x in d['sessions'] if x['id']=='local_twin1'][0]; r=s['reasons'][0]['text']; import sys; sys.exit(0 if 'title of twin2' in r and 'cleans the worktree up for both' in r else 1)"
+check $? 0 "…each names the other session and says why"
+case "$(ids)" in *twin*) check 1 0 "…neither is in --ids";; *) check 0 0 "…neither is in --ids";; esac
+LIST > $P/l6.txt 2>&1; grep -q 'title of twin1' $P/l6.txt && grep -q 'Not touched' $P/l6.txt; check $? 0 "…the listing names them under 'Not touched'"
+$FX desk $CLAUDE_SESSIONS_DIR local_twin2 cli-twin2 "title of twin2" $REPO/.wt/twin feat/twin 90000 archived
+check "$(LIST --json 2>/dev/null > $P/l6b.json; jf $P/l6b.json twin1 reasons)" - "control: once the other session is gone from the worktree, the remaining clean one is offered"
+$FX desk $CLAUDE_SESSIONS_DIR local_twin2 cli-twin2 "title of twin2" $REPO/.wt/twin feat/twin 90000
+# a session that is not idle for long also keeps a clean one in place (and the reason differs)
+python3 -c "import json; d=json.load(open('$P/l1.json')); s=[x for x in d['sessions'] if x['id']=='local_sharea'][0]; import sys; sys.exit(0 if 'active or idle for less than the limit' in s['reasons'][0]['text'] else 1)"
+check $? 0 "a worktree also used by an active session: the reason says the other is active"
+# the main checkout is not cleaned up by an archive: two clean sessions there are still offered
+PLAIN=$P/plain; mkrepo $PLAIN https://github.com/acme/plain.git
+for n in main1 main2; do session $n idle 1500 $PLAIN main; done
+sleep 1
+LIST --json > $P/l6c.json 2>/dev/null
+check "$(jf $P/l6c.json main1 reasons)" - "two clean sessions in the main checkout (nothing to clean up) are both offered"
+
+# ---- 7. a hung gh or glab: 'unknown' within the time limit, never the 30 s a call used to take
+export AGENT_HUB_FORGE_TIMEOUT_S=1
+s0=$SECONDS; GH_STUB_HANG=1 LIST --json > $P/l7.json 2>/dev/null; took=$((SECONDS - s0))
+[ $took -lt 25 ]; check $? 0 "desktop-idle with every gh / glab call hanging returns in $took s (calls limited to 1 s here)"
+check "$(python3 -c "import json; print(len(json.load(open('$P/l7.json'))['candidate_ids']))")" 0 "…and nothing is offered"
+check "$(jf $P/l7.json clean reasons)" unknown "…the clean session is 'unknown'"
+grep -q 'gave no answer in 1 s' $P/l7.json; check $? 0 "…and the reason names the time limit"
+s0=$SECONDS; GH_STUB_HANG=1 AGENT_TOP_CACHE=0 PATH=$STUB:$PATH $B/agent-top --json > $P/top7.json 2>/dev/null; took=$((SECONDS - s0))
+[ $took -lt 40 ]; check $? 0 "one-shot agent-top --json with a hung gh returns in $took s, not after the call timeouts add up"
+check "$(python3 -c "import json; d=json.load(open('$P/top7.json'))['desktop_idle']; print(len(d['candidate_ids']), len(d['sessions']) > 0)")" "0 True" "…with the sessions listed and none of them a candidate"
+unset AGENT_HUB_FORGE_TIMEOUT_S
+before=$(calls)
+python3 -I - "$B" "$REPO/.wt/clean" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import desktop_idle as d
+out, why = d.Forge(True, budget=0.0).open_requests(Path(sys.argv[2]), "feat/clean")
+assert out is None and "too slow" in why, (out, why)
+PY
+PATH=$STUB:$PATH python3 -I - "$B" "$REPO/.wt/clean" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+import desktop_idle as d
+f = d.Forge(True, budget=0.0)
+out, why = f.open_requests(Path(sys.argv[2]), "feat/clean")
+assert out is None and "too slow" in why, (out, why)
+out, why = d.Forge(True, budget=60.0).open_requests(Path(sys.argv[2]), "feat/clean")
+assert out == [], (out, why)
+PY
+check $? 0 "the run's budget: once spent, a lookup answers 'unknown' without calling the forge; with budget left it asks"
+check "$(( $(calls) - before ))" 1 "…(one call, the second one)"
 exit $fail

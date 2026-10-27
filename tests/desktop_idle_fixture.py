@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Fixture writer for tests/t_desktop_idle.sh: the files Claude Desktop and the CLI keep, and a stand-in process tree.
 
-  desktop_idle_fixture.py proc            a process with one child (a `claude` and its MCP server), until SIGTERM
+  desktop_idle_fixture.py proc            a process with two children (a `claude`, an MCP server retitled with a key in its name
+                                          and a plain `sleep`), until SIGTERM
   desktop_idle_fixture.py cli CONFIG PID HOST STATUS STARTED_AGO_S STATUS_AGO_S
                                           <CONFIG>/sessions/<PID>.json, as the CLI writes it for a Desktop-hosted session
   desktop_idle_fixture.py desk DIR HOST CLI TITLE CWD BRANCH ACTIVITY_AGO_S [archived] [exempt]
@@ -18,12 +19,13 @@ import time
 def main(argv):
     cmd = argv[0]
     if cmd == "proc":
-        child = subprocess.Popen(["sleep", "600"])
+        kids = [subprocess.Popen(["bash", "-c", 'exec -a "npm S3CR3T-key" sleep 600']), subprocess.Popen(["sleep", "600"])]
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         try:
             time.sleep(600)
         finally:
-            child.kill()
+            for k in kids:
+                k.kill()
         return
     now = time.time()
     if cmd == "cli":

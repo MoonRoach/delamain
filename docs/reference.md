@@ -293,7 +293,14 @@ branch (the rule of `agent worktrees`). It is **left alone**,
 with the reason, when any of that holds or cannot be told (`unknown`: git or the forge gave no answer, the directory is not a
 git repository or is gone, `--no-gh`), and also when it is the calling session (`$CLAUDE_CODE_HOST_SESSION_ID`), a role
 registered in a known hub home (a hub waiting for events looks idle), marked `autoArchiveExempt` by Desktop, or its directory
-is also used by a session that is not idle for long. A process that is not the CLI, `node`, `npm` or an MCP server is named
+is also used by another session. In a linked worktree (`git worktree add`, what Desktop makes) that holds for any other session,
+a clean idle one included: archiving one cleans the worktree up under the other, so both are left alone, each naming the other
+(archive the pair together by hand, or neither). In the main checkout, which an archive does not clean up, only a session
+that stays keeps its neighbour in place. Files git ignores (a local `.env`, a database, build output) are not looked at and go
+with the worktree, as with `agent worktrees --prune`. A `gh` or `glab` call that does not answer in 8 s (`$AGENT_HUB_FORGE_TIMEOUT_S`)
+makes that session `unknown`, and agent-top and `hub close` spend at most 15 s on all such calls together, so a hung forge (no
+network, a captive portal) cannot hold a one-shot `agent-top --json` until its caller times out; `agent desktop-idle` itself has
+no total limit. A process that is not the CLI, `node`, `npm` or an MCP server is named
 (`ends with it: …`): it dies with the session.
 
 Archiving is Desktop's tool `archive_session`, which only a Desktop-hosted session can call, after the owner agrees; the

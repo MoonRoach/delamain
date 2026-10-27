@@ -2270,7 +2270,7 @@ def close_stage(a, say) -> str:
     try:
         import desktop_idle
         desk = desktop_idle.close_lines(stage, data)
-    except BaseException:  # noqa: BLE001 — a note about memory must not stop a close
+    except Exception:  # noqa: BLE001 — a note about memory must not stop a close
         desk = []
     for line in desk:
         say(line)

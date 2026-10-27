@@ -165,7 +165,9 @@ desktop-idle` (`--idle-for 12h` by default) lists the sessions idle that long wi
 *clean* one has no changed or untracked file, no git operation under way, no commit on no remote and no open pull/merge
 request (`gh`; `glab` for other hosts), so archiving loses nothing; the rest are named with the reason and never touched,
 and so is anything that cannot be checked (`unknown`). Not listed to archive either: the calling session, a role registered
-in a hub home, a session Desktop marks exempt, a directory another session still uses. The same list is in agent-top's
+in a hub home, a session Desktop marks exempt, a directory another session still uses (two clean sessions in one worktree
+both stay, each naming the other: archiving one cleans the worktree up under the other; archive the pair together or neither).
+Files git ignores (a local `.env`, a database) are not checked and go with the worktree. The same list is in agent-top's
 summary and in `desktop_idle` of its `--json`; `hub close` names the stage's own sessions.
 
 Archiving is Desktop's own tool; no command line or file does it (Desktop's records are its own state, not an interface).

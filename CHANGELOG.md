@@ -20,6 +20,9 @@
   names the stage's own idle Desktop sessions. Archiving stays Desktop's: from a Desktop-hosted session, after the owner's
   yes, `mcp__ccd_session_mgmt__archive_session` per id (procedure: hub skill, *Idle Desktop sessions*); no command line or
   file archives a Desktop session.
+  Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
+  `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
+  a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
 - **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
   stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
   agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its

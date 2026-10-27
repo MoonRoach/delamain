@@ -16,11 +16,15 @@ Sources:
 A session is a candidate when it has been idle for the limit or longer, is not the caller's own session, is not a role
 registered in a hub home (a hub waiting for events looks idle too), and its working directory holds nothing that archiving
 could lose: no changed or untracked file, no git operation under way, no commit on no remote ref, no open pull request
-(`gh`; `glab` for a GitLab remote). What git or the forge cannot answer is "unknown" and keeps the session off the list.
+(`gh`; `glab` for a GitLab remote). What git or the forge cannot answer is "unknown" and keeps the session off the list; so
+does a forge that is too slow (FORGE_TIMEOUT_S a call, FORGE_BUDGET_S for a run that must not wait: agent-top). Files git
+ignores (a local .env, a database, build output) are not looked at and go with the worktree. Two sessions in one linked
+worktree are both left alone: archiving one cleans the worktree up under the other. Only the CLI status `idle` counts as
+idle; any other (busy, or one this code does not know) is treated as active.
 
 Archiving is Desktop's: the `archive_session` tool of a Desktop-hosted session stops the session's process and, by default,
 cleans up its worktree (the session stays in the Archived list). No command line or file does it; the procedure that
-calls the tool after the owner's yes is in skills/status/SKILL.md.
+calls the tool after the owner's yes is in skills/hub/references/stage-lifecycle.md (*Idle Desktop sessions*).
 """
 from __future__ import annotations
 
@@ -42,7 +46,8 @@ import worktrees
 
 DEFAULT_IDLE = "12h"
 PS_TIMEOUT_S = 10
-FORGE_TIMEOUT_S = 30
+FORGE_TIMEOUT_S = 8      # one gh / glab call; $AGENT_HUB_FORGE_TIMEOUT_S overrides it (tests)
+FORGE_BUDGET_S = 15      # all the calls of one run that must not wait for a hung forge (agent-top, hub close)
 WORKERS = 8
 START_TOLERANCE_S = 120  # a pid record's startedAt is the CLI's own clock reading, a second or so after the process began
 IDLE_STATUSES = {"idle"}
@@ -162,12 +167,13 @@ def remote_host(url: str) -> str:
 
 
 class Forge:
-    """Pull / merge requests of a branch: `gh` for a github.com remote, `glab` for any other host. A missing tool answers
-    "unknown" for every session that needs it."""
+    """Pull / merge requests of a branch: `gh` for a github.com remote, `glab` for any other host. A missing tool, a slow
+    one and an exhausted `budget` (seconds for all calls of the run, None: unlimited) answer "unknown" for the session."""
 
-    def __init__(self, enabled: bool = True):
+    def __init__(self, enabled: bool = True, budget: Optional[float] = None):
         self.enabled = enabled
         self.exe = {"gh": shutil.which("gh") if enabled else None, "glab": shutil.which("glab") if enabled else None}
+        self.deadline = None if budget is None else time.monotonic() + budget
 
     @staticmethod
     def remote(cwd: Path) -> Optional[str]:
@@ -186,6 +192,15 @@ class Forge:
             return None, "pull requests not checked (--no-gh)"
         if not self.exe[tool]:
             return None, f"`{tool}` is not installed, so the requests of {host or 'this remote'} cannot be checked"
+        try:
+            timeout = float(os.environ.get("AGENT_HUB_FORGE_TIMEOUT_S") or FORGE_TIMEOUT_S)
+        except ValueError:
+            timeout = float(FORGE_TIMEOUT_S)
+        if self.deadline is not None:
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                return None, f"`{tool}` is too slow: the {FORGE_BUDGET_S} s for pull request lookups ran out"
+            timeout = min(timeout, left)
         if tool == "gh":
             argv = [self.exe[tool], "pr", "list", "--state", state, "--head", branch, "--limit", "20", "--json",
                     "number,url,headRefOid,baseRefName,mergedAt"]
@@ -195,14 +210,14 @@ class Forge:
         env.pop("GIT_DIR", None)
         env.pop("GIT_WORK_TREE", None)
         try:
-            res = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=FORGE_TIMEOUT_S, env=env,
+            res = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env,
                                  stdin=subprocess.DEVNULL)
             if res.returncode != 0:
                 first = (res.stderr.strip().splitlines() or [f"exit {res.returncode}"])[0]
                 return None, f"`{tool}` failed on {host or 'this remote'}: {first[:140]}"
             data = json.loads(res.stdout or "[]")
         except subprocess.TimeoutExpired:
-            return None, f"`{tool}` gave no answer in {FORGE_TIMEOUT_S} s"
+            return None, f"`{tool}` gave no answer in {timeout:g} s"
         except (OSError, subprocess.SubprocessError, ValueError):
             return None, f"`{tool}` gave an unreadable answer"
         if not isinstance(data, list):
@@ -230,6 +245,7 @@ class DirState:
     dirty: Optional[int] = None
     unpushed: Optional[int] = None
     requests: Optional[list] = None  # open pull / merge requests; None: not told
+    linked: bool = False  # a linked worktree (`git worktree add`), not the main checkout: Desktop cleans it up on archive
 
 
 def inspect_dir(cwd: str, forge: Forge) -> DirState:
@@ -251,6 +267,8 @@ def inspect_dir(cwd: str, forge: Forge) -> DirState:
         if prs:
             worktrees._apply_pr(main, w, prs, default_branch)
     st = DirState([], branch=branch, dirty=w.dirty, unpushed=w.unpushed)
+    gd = (worktrees._out(worktrees._git(path, "rev-parse", "--git-dir", "--git-common-dir")) or "").splitlines()
+    st.linked = len(gd) == 2 and worktrees._real(path / gd[0]) != worktrees._real(path / gd[1])
     if w.dirty is None:
         st.reasons.append(("unknown", "git status gave no answer"))
     elif w.dirty:
@@ -313,10 +331,11 @@ class Report:
 
 
 def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = None, caller: Optional[str] = None,
-            only: Optional[set] = None, skip_stage: Optional[str] = None) -> Report:
+            only: Optional[set] = None, skip_stage: Optional[str] = None, forge_budget: Optional[float] = None) -> Report:
     """The idle Desktop sessions that hold processes. `caller`: the caller's own Desktop id (default
     $CLAUDE_CODE_HOST_SESSION_ID), which is never a candidate. `only`: just the sessions with these Desktop or CLI ids;
-    `skip_stage`: the roles of this stage do not protect a session."""
+    `skip_stage`: the roles of this stage do not protect a session. `forge_budget`: seconds for all gh / glab calls
+    together (a hung forge makes the rest "unknown" instead of holding the run); None: no limit."""
     now = time.time() if now is None else now
     caller = caller if caller is not None else os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
     notes: list = []
@@ -331,9 +350,9 @@ def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = N
         if alive(rec, table):
             by_host.setdefault(rec["hostSessionId"], []).append(rec)
     roles = registered_sessions(skip_stage)
-    forge = Forge(use_forge)
+    forge = Forge(use_forge, forge_budget)
     sessions, holding, holding_kb = [], 0, 0
-    users: dict = {}  # working directory -> [(Desktop id, title)] of every session with processes, idle or not
+    users: dict = {}  # real working directory -> [(Desktop id, title)] of every session with processes, idle or not
     for host, recs in by_host.items():
         meta = hc.desktop_session(host)
         if not isinstance(meta, dict) or meta.get("isArchived"):
@@ -342,7 +361,7 @@ def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = N
         rss = sum(table[p].rss_kb for p in pids)
         holding, holding_kb = holding + 1, holding_kb + rss
         title = str(meta.get("title") or "")
-        users.setdefault(str(meta.get("cwd") or ""), []).append((host, title))
+        users.setdefault(worktrees._real(meta["cwd"]) if meta.get("cwd") else "", []).append((host, title))
         if only is not None and not {host, str(meta.get("cliSessionId") or "")} & only:
             continue
         if not all(r.get("status") in IDLE_STATUSES for r in recs):
@@ -355,7 +374,8 @@ def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = N
             id=host, cli_id=str(meta.get("cliSessionId") or ""), title=title, cwd=str(meta.get("cwd") or ""),
             branch=meta.get("branch") if isinstance(meta.get("branch"), str) else None,
             pids=sorted(r["pid"] for r in recs), idle_s=now - since / 1000, rss_kb=rss, procs=len(pids),
-            others=sorted({table[p].name for p in pids if table[p].name not in USUAL_PROCESSES and "mcp" not in table[p].name})[:5],
+            others=sorted({table[p].name for p in pids
+                           if table[p].name.lower() not in USUAL_PROCESSES and "mcp" not in table[p].name.lower()})[:5],
             exempt=bool(meta.get("autoArchiveExempt"))))
     for s in sessions:
         if s.id == caller:
@@ -365,15 +385,6 @@ def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = N
             s.reasons.append(("role", f"registered as {who}"))
         if s.exempt:
             s.reasons.append(("exempt", "Desktop marks it exempt from auto-archiving"))
-    # a directory some other session still uses stays: archiving cleans up the session's worktree
-    listed = {s.id: s for s in sessions}
-    for s in sessions:
-        for oid, otitle in users.get(s.cwd, []):
-            other = listed.get(oid)
-            if oid != s.id and (other is None or other.reasons):
-                s.reasons.append(("shared", "its directory is also used by " + (" ".join(otitle.split())[:40] or oid)
-                                  + (" (active or idle for less than the limit)" if other is None else " (which stays)")))
-                break
     # one working directory is checked once, however many sessions share it
     cwds = sorted({s.cwd for s in sessions})
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -382,8 +393,24 @@ def collect(idle: dt.timedelta, use_forge: bool = True, now: Optional[float] = N
         st = checked[s.cwd]
         s.state = st
         s.reasons += st.reasons
-        if st.branch and not s.branch:
+        if st.branch:  # the branch the directory is on, which the checks used, not Desktop's record of it
             s.branch = st.branch
+    # A directory another session uses stays. In a linked worktree even a session that is itself clean and idle makes both
+    # stay: archiving cleans the worktree up, under the other one (name both, archive both by hand or neither).
+    stays = {s.id: bool(s.reasons) for s in sessions}
+    for s in sessions:
+        key = worktrees._real(s.cwd) if s.cwd else ""
+        for oid, otitle in users.get(key, []):
+            if oid == s.id or not (s.state.linked or oid not in stays or stays[oid]):
+                continue
+            who = " ".join(otitle.split())[:40] or oid
+            if s.state.linked:
+                why = (f"shares its worktree with {who}, which is active or idle for less than the limit" if oid not in stays else
+                       f"shares its worktree with {who}") + "; archiving one cleans the worktree up for both — archive them together by hand, or neither"
+            else:
+                why = f"its directory is also used by {who} (" + ("active or idle for less than the limit" if oid not in stays else "which stays") + ")"
+            s.reasons.append(("shared", why))
+            break
     for s in sessions:
         s.reasons.sort(key=lambda r: REASON_ORDER.index(r[0]))
     unknown = sorted({t for s in sessions for c, t in s.reasons if c == "unknown"})
@@ -425,7 +452,7 @@ def render(rep: Report) -> str:
     lines = ["Desktop sessions idle for " + fmt_idle(rep.idle.total_seconds()) + " or more, longest first — " + summary_line(rep), ""]
     cand = rep.candidates
     if cand:
-        lines.append(f"Clean, to archive ({len(cand)}; archive_session id, after the owner's yes — skills/status/SKILL.md):")
+        lines.append(f"Clean, to archive ({len(cand)}; archive_session id, after the owner's yes — skills/hub/references/stage-lifecycle.md):")
         for s in cand:
             lines.append(f"  {s.id}  idle {fmt_idle(s.idle_s):>6}  {fmt_mem(s.rss_kb):>7} in {s.procs} procs  {_title(s)}"
                          + (f"  [{s.branch}]" if s.branch else "")
@@ -466,7 +493,7 @@ def close_lines(stage: str, data: dict) -> list:
     ids = stage_session_ids(data)
     if not ids:
         return []
-    rep = collect(dt.timedelta(0), only=ids, skip_stage=stage)
+    rep = collect(dt.timedelta(0), only=ids, skip_stage=stage, forge_budget=FORGE_BUDGET_S)
     shown = [s for s in rep.sessions if not any(c == "self" for c, _ in s.reasons)]
     if not shown:
         return []

@@ -957,7 +957,7 @@ class DesktopIdle:
     that finds the cached answer older than TTL claims the refresh by writing the time into the cache first, so the next
     `--json` does not start the same check again while it runs."""
     TTL = 300.0
-    WAIT_S = 60.0
+    WAIT_S = 20.0
     KIND, KEY = "desktop-idle", "report"
 
     def __init__(self, store):
@@ -994,7 +994,7 @@ class DesktopIdle:
 
     def _fetch(self) -> None:
         try:
-            self.result = desktop_idle.as_dict(desktop_idle.collect(hc.parse_duration(desktop_idle.DEFAULT_IDLE)))
+            self.result = desktop_idle.as_dict(desktop_idle.collect(hc.parse_duration(desktop_idle.DEFAULT_IDLE), forge_budget=desktop_idle.FORGE_BUDGET_S))
         except BaseException:  # noqa: BLE001 — a failed check is "no answer yet", never a crash of the screen
             self.result = None
         finally:
@@ -1076,6 +1076,7 @@ class Collector:
         self.where = {r.sid: r for r in refs}
         stages = [r.sid for r in refs]
         self.ext.poll(refs)
+        self.desktop.poll()                       # the check of the Desktop sessions runs while the logs are read
         agents, roles_by_stage, rate = [], {}, None
         for r in refs:
             try:
@@ -1840,7 +1841,7 @@ def desktop_rows(snap: dict, width: int) -> list:
         rows.append(R((f"  …and {len(kept) - 8} more left alone (agent desktop-idle lists them)", "dim")))
     if d["candidate_ids"]:
         rows += wrap_rows("archive the clean ones from a Desktop session, after the owner's yes: `agent desktop-idle --ids`, then "
-                          "archive_session for each (skills/status)", width, "dim", "  ", "    ", 2)
+                          "archive_session for each (skills/hub/references/stage-lifecycle.md)", width, "dim", "  ", "    ", 2)
     return rows
 
 

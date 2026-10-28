@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.24 — 2026-10-28
+
 - **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the
   Sonnet analogue, joins the table of equivalents: Sonnet-class work moved to Codex for limits is now proposed as
   "Codex Terra medium (or Sol medium)", and Terra's routine effort is medium like Sol's. `docs/codex.md` and the

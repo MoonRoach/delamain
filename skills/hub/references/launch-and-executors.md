@@ -112,6 +112,10 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
 - **Worktrees.** Two agents writing in one checkout overwrite each other's files. Give every agent that writes code
   `--worktree [BRANCH]` (default branch `agent/<role>`): it runs in an existing worktree of that branch, or in
   `<repo>/.worktrees/<branch>` of the main repository — one place per repository, excluded in `.git/info/exclude`.
+  An existing worktree under `<repo>/.worktrees/` is reused even with uncommitted changes so a re-spawn continues
+  the work. One elsewhere is reused only when `git status --porcelain` is empty, with a note. Uncommitted changes
+  or a failed status check there mean refusal: commit there, or choose another branch
+  (`--worktree <new-branch> --base <branch>`).
   A new branch starts from origin's default branch (fetched first), not from the commit `--cwd` has checked out — which
   may be someone's feature branch; `--base REF` chooses another start (`--base HEAD` for the checked-out commit).
   `agent spawn --worktree` refuses a repository with no commits: in a new, empty one the hub makes the first commit

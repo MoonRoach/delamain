@@ -48,6 +48,7 @@ let SPRITE_NAMES = TOWERS + CABS + ["owner-tower", "holo", "block", "corpo-block
                                     "market-block", "port-block", "luxury-block", "badlands-block", "megamall", "data-center",
                                     "landing-pad", "power-plant", "container-ship", "oil-rig", "billboard-tower", "park",
                                     "slum-block", "temple", "stadium", "water-tower", "monorail-station"]
+let OWNER_SPAN = (0.06, 0.96)   // the owner tower's crown and foot in its sprite, as shares of the height
 let SOLID: Set<String> = Set(TOWERS + CABS + ["owner-tower"])
 let AFLOAT: Set<String> = ["container-ship", "oil-rig"]   // standing in the bay off their lot
 
@@ -61,6 +62,32 @@ final class Sprites {
             images[name] = Sprites.key(img, solid: SOLID.contains(name))
         }
         if let url = bundle.url(forResource: "skyline", withExtension: "jpg") { sky = Sprites.load(url) }
+        if let o = images["owner-tower"] {   // the owner tower's gauge: dark, amber (Claude) and cyan (Codex) copies
+            images["owner-dark"] = Sprites.tint(o, Pal.dim, gain: 0.5, wash: 0)
+            images["owner-claude"] = Sprites.tint(o, Pal.amber, gain: 1.8, wash: 0.22)
+            images["owner-codex"] = Sprites.tint(o, Pal.cyan, gain: 1.8, wash: 0.22)
+        }
+    }
+
+    /// A keyed sprite recoloured by brightness into one colour, with a wash of it over the whole hull (as the page does).
+    static func tint(_ img: CGImage, _ c: RGB, gain: Double, wash: Double) -> CGImage {
+        let w = img.width, h = img.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        let out: CGImage? = px.withUnsafeMutableBytes { buf -> CGImage? in
+            guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: cs,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+            let p = buf.bindMemory(to: UInt8.self), rgb = [Double(c.r), Double(c.g), Double(c.b)]
+            for i in 0..<(w * h) {
+                let k = i * 4, a = Double(p[k + 3]) / 255
+                guard a > 0 else { continue }
+                let l = min(1, Double(max(p[k], p[k + 1], p[k + 2])) / 255 / a * gain) * (1 - wash) + wash
+                for j in 0..<3 { p[k + j] = UInt8(max(0, min(255, rgb[j] * l * a * 255))) }
+            }
+            return ctx.makeImage()
+        }
+        return out ?? img
     }
 
     static func load(_ url: URL) -> CGImage? {

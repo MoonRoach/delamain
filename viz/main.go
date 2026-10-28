@@ -120,9 +120,10 @@ type StageView struct {
 }
 
 type State struct {
-	Machine string      `json:"machine"`
-	At      string      `json:"at"`
-	Stages  []StageView `json:"stages"`
+	Machine string            `json:"machine"`
+	At      string            `json:"at"`
+	Stages  []StageView       `json:"stages"`
+	Limits  map[string]*Limit `json:"limits"` // what each engine's plan has left, for the owner tower
 }
 
 type Hub struct {
@@ -531,7 +532,7 @@ func (h *Hub) snapshot() State {
 		}
 		views = append(views, v)
 	}
-	return State{Machine: h.machine, At: now.Format(time.RFC3339), Stages: views}
+	return State{Machine: h.machine, At: now.Format(time.RFC3339), Stages: views, Limits: planLimits(h.root)}
 }
 
 func (h *Hub) publish(kind string, v any) {

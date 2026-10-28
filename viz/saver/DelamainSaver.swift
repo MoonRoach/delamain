@@ -126,6 +126,7 @@ struct FloatLabel { let who: Entity; let text: String; let t0: Double; let group
 final class TowerLayers {
     let group: CALayer, glow: CAGradientLayer, sprite: CALayer, beacon: CAGradientLayer
     var sign: TextL?
+    var gauge: [(clip: CALayer, lit: CALayer)] = []   // the owner tower: Claude's face, then Codex's
     init(_ parent: CALayer) {
         group = mk(CALayer(), parent)
         glow = radial(group)
@@ -194,6 +195,7 @@ final class DelamainSaverView: ScreenSaverView {
     private var towerOrder: [String] = [], towers: [String: Tower] = [:]   // insertion order matters for placement
     private var cabs: [String: Cab] = [:]
     private let owner = Tower(key: "owner", kind: .owner, label: "owner", color: Pal.gold)
+    private var ownerLimits: [String: Double] = [:], ownerFill: [String: Double] = [:]   // percent left; the drawn share
     private let repos = RepoDistricts()
     private var beams: [Beam] = [], ripples: [Ripple] = [], labels: [FloatLabel] = []
     private var npcs: [Npc] = [], flyers: [Flyer] = []
@@ -560,6 +562,7 @@ final class DelamainSaverView: ScreenSaverView {
 
     private func applyState(_ s: State) {
         machineName = s.machine
+        for (e, l) in s.limits ?? [:] { ownerLimits[e] = l.left }
         showStatus("")
         var seen = Set<String>()
         for sv in s.stages ?? [] {
@@ -994,8 +997,16 @@ final class DelamainSaverView: ScreenSaverView {
                 let l = TowerLayers(towerGroup)
                 l.glow.contentsScale = backing; l.beacon.contentsScale = backing
                 setGlow(l.glow, tw.color)
-                setGlow(l.beacon, isOwner ? Pal.gold : Pal.magenta)
-                l.sprite.contents = isOwner ? sprites.images["owner-tower"] : (sprites.images[TOWERS[Int(jsHash(tw.stage) % UInt32(TOWERS.count))]] ?? sprites.images["hub-tower"])
+                setGlow(l.beacon, isOwner ? Pal.ink : Pal.magenta)
+                if isOwner, let dark = sprites.images["owner-dark"] {
+                    l.sprite.contents = dark
+                    for e in ["claude", "codex"] {
+                        let clip = mk(CALayer()), lit = mk(CALayer(), clip)
+                        l.group.insertSublayer(clip, below: l.beacon)
+                        clip.masksToBounds = true; lit.contents = sprites.images["owner-\(e)"]
+                        l.gauge.append((clip, lit))
+                    }
+                } else { l.sprite.contents = isOwner ? sprites.images["owner-tower"] : (sprites.images[TOWERS[Int(jsHash(tw.stage) % UInt32(TOWERS.count))]] ?? sprites.images["hub-tower"]) }
                 if !isOwner { l.sign = text(signGroup, scale: backing, color: RGB(0xffd6f6).cg(0.92)) ; l.sign?.shadowColor = Pal.magenta.cg(); l.sign?.shadowOpacity = 1; l.sign?.shadowOffset = .zero }
                 tw.layers = l
                 return l
@@ -1006,6 +1017,20 @@ final class DelamainSaverView: ScreenSaverView {
             L.group.zPosition = CGFloat(lot.x + lot.y)
             placeGlow(L.glow, p, u * stepW * (0.9 + tw.pulse * 0.8), 0.25 + tw.pulse * 0.5)
             L.sprite.frame = CGRect(x: Double(p.x) - w / 2, y: Double(p.y) - h * base, width: w, height: h)
+            // the owner tower is the plan-limits gauge: each face lit from the crown down by its engine's remaining share,
+            // so spending darkens it from the foot up
+            for (half, e) in ["claude", "codex"].enumerated() where half < L.gauge.count {
+                let was: Double = ownerFill[e] ?? 0
+                var f: Double = 0
+                if let left = ownerLimits[e] { f = was + (left / 100 - was) * 0.05 }
+                ownerFill[e] = f
+                let x0 = Double(p.x) - w / 2, y0 = Double(p.y) - h * base
+                let edge = y0 + h * (OWNER_SPAN.0 + (OWNER_SPAN.1 - OWNER_SPAN.0) * f)
+                let clip = CGRect(x: x0 + Double(half) * w / 2, y: y0, width: w / 2, height: edge - y0)
+                L.gauge[half].clip.frame = clip
+                L.gauge[half].lit.frame = CGRect(x: x0 - clip.minX, y: y0 - clip.minY, width: w, height: h)
+                L.gauge[half].clip.isHidden = f < 0.005
+            }
             let top = P(lot.x, lot.y, towerLift(tw)).y, beat = 0.5 + 0.5 * sin(now / 700 + Double(jsHash(tw.key) % 10))
             // owner questions open: the beacon and the sign flash gold on and off once a second
             let bl = !isOwner && tw.questions > 0 ? max(0, min(1, 0.5 + 1.4 * sin(now * 2 * Double.pi / 1000))) : -1
@@ -1013,8 +1038,8 @@ final class DelamainSaverView: ScreenSaverView {
                 setGlow(L.beacon, Pal.gold)
                 placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (2 + bl * 2.2 + tw.pulse * 2), 0.1 + bl * 0.85)
             } else {
-                setGlow(L.beacon, isOwner ? Pal.gold : Pal.magenta)
-                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), 0.55 + tw.pulse * 0.4)
+                setGlow(L.beacon, isOwner ? Pal.ink : Pal.magenta)
+                placeGlow(L.beacon, CGPoint(x: p.x, y: top), u * (1.6 + beat * 0.6 + tw.pulse * 2), (isOwner ? 0.3 : 0.55) + tw.pulse * 0.4)
             }
             if let sign = L.sign {   // the stage's name as a neon sign over the street
                 let dim = tw.open ? 1.0 : 0.45

@@ -1,6 +1,6 @@
 {
   "name": "delamain",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "Run a hub session that spawns and steers detached Claude Code and Codex agents: briefs, a shared journal, inboxes, an owner-question register, a lock board, handoffs, and the agent-top console.",
   "author": {
     "name": "Ilya Kozyrev",

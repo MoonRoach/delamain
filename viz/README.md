@@ -16,7 +16,13 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
 - **A stage hub is a tower** on a lot of its district, one of seven designs by the hash of the stage's name, with its
   name as a neon sign.
   An open stage has one while it has live workers, its hub wrote to the journal within 30 min, or some process names
-  the hub's session. **The owner** is the gold megatower in the core.
+  the hub's session. **The owner** is the megatower in the core, and it is the plan-limits gauge: its left face is lit
+  amber by what Claude's plan has left, its right face cyan by Codex's, each from the crown down, so spending darkens it
+  from the foot up; an engine with no sample stays dark, and hovering the tower gives the numbers. The share is the
+  smallest remaining over the engine's windows (5h, 7d), read like `bin/limit_pace.py` from the last `rate_limit_event`
+  of recent headless Claude agent logs in the hub home and the `token_count` rate limits of recent Codex rollouts, once
+  a minute; a window past its reset counts as full. `/state` carries it as `limits` (`{"claude": {"left": 17, "window":
+  "7d"}, …}`).
   A tower grows with its hub session's context: 0.75x when fresh, 1.5x at 350k tokens (the handoff threshold); `/state`
   carries it as `hub.ctx` (the last usage of the session's Claude transcript, else the context-budget hook's last
   recorded count, else 0) and the page's tooltip shows it as `ctx 212k`.
@@ -78,7 +84,8 @@ pinned object, end a manual view). Hover a tower or a cab for its title.
 the screen saver host neither composites nor ticks faster than about 1 Hz). `saver/CityModel.swift` ports the page's
 city generator value for value, so both draw the same city; `saver/Feed.swift` reads `/state` and `/events`, so the
 server must be running. The static city is a bitmap at the screen's backing resolution for the camera's resting view;
-everything that moves is a layer. While it runs, the saver keeps the display awake.
+everything that moves is a layer. The roster is drawn as on the page, without pinning or hover: the saver is not
+interactive. While it runs, the saver keeps the display awake.
 
 Settings, all in the `dev.delamain.saver` defaults suite (`defaults write dev.delamain.saver <key> …`):
 

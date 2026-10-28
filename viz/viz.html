@@ -119,13 +119,13 @@ const STRINGS = {
   en: { connecting: "connecting…", hub: "hub", live: "LIVE", replay: "REPLAY", noRepo: "no repository",
     count: (s, w, b) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"} · ${b} in flight`,
     lastHours: h => `last ${h} h`, questions: n => `${n} owner ${n === 1 ? "question" : "questions"}`, closed: "stage closed", busy: "in flight: log growing", idle: "alive, waiting",
-    owner: "owner", roster: "hubs and cabs", rosterHint: "click: follow · Esc: release", rosterHintTouch: "tap: follow · again: release",
+    owner: "owner", left: "left", roster: "hubs and cabs", rosterHint: "click: follow · Esc: release", rosterHintTouch: "tap: follow · again: release",
     toggle: (s, w) => `${s} ${s === 1 ? "hub" : "hubs"} · ${w} ${w === 1 ? "cab" : "cabs"}`,
     follow: "follow", followTip: "the camera flies to each journal line · f", overview: "overview", overviewTip: "back to the overview · c, Esc" },
   ru: { connecting: "подключаюсь…", hub: "хаб", live: "LIVE", replay: "REPLAY", noRepo: "без репозитория",
     count: (s, w, b) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси · ${b} в рейсе`,
     lastHours: h => `последние ${h} ч`, questions: n => `${n} ${ruPlural(n, "вопрос", "вопроса", "вопросов")} владельцу`, closed: "стадия закрыта", busy: "в рейсе: лог растёт", idle: "жив, ждёт",
-    owner: "владелец", roster: "хабы и такси", rosterHint: "клик — следить · Esc — отпустить", rosterHintTouch: "тап — следить · ещё раз — отпустить",
+    owner: "владелец", left: "осталось", roster: "хабы и такси", rosterHint: "клик — следить · Esc — отпустить", rosterHintTouch: "тап — следить · ещё раз — отпустить",
     toggle: (s, w) => `${s} ${ruPlural(s, "хаб", "хаба", "хабов")} · ${w} такси`,
     follow: "следить", followTip: "камера летит к каждой строке журнала · f", overview: "обзор", overviewTip: "назад к обзору · c, Esc" },
 };
@@ -170,12 +170,34 @@ function loadSprite(name, file, key, solid = false) {
         }
         g.putImageData(d, 0, 0);
       } catch (e) {}
-      sprites[name] = c; res();
+      sprites[name] = c; if (name === "owner-tower") ownerLights(c); res();
     };
     img.onerror = () => res();
     img.src = `${ASSET}/assets/${file}`;
   });
 }
+// The owner tower is the plan-limits gauge: its left face lit amber for what Claude has left, its right face cyan for
+// Codex, each from the crown down by that share; the spent part below it is dark. Three copies of the sprite: dark, amber,
+// cyan, recoloured by brightness so the facade's own lines carry the gauge.
+function ownerLights(src) {
+  const tint = (hex, a, wash) => {
+    const c = document.createElement("canvas"); c.width = src.width; c.height = src.height;
+    const g = c.getContext("2d"); g.drawImage(src, 0, 0);
+    try {
+      const d = g.getImageData(0, 0, c.width, c.height), p = d.data, n = parseInt(hex.slice(1), 16);
+      const rgb = [n >> 16, (n >> 8) & 255, n & 255];
+      for (let i = 0; i < p.length; i += 4) {
+        const l = Math.min(1, Math.max(p[i], p[i + 1], p[i + 2]) / 255 * a);
+        p[i] = rgb[0] * l; p[i + 1] = rgb[1] * l; p[i + 2] = rgb[2] * l;
+      }
+      g.putImageData(d, 0, 0);
+    } catch (e) {}
+    g.globalCompositeOperation = "source-atop"; g.fillStyle = rgba(hex, wash); g.fillRect(0, 0, c.width, c.height);   // the hull too
+    return c;
+  };
+  sprites["owner-dark"] = tint("#8a96a6", 0.5, 0); sprites["owner-claude"] = tint(C.amber, 1.8, 0.22); sprites["owner-codex"] = tint(C.cyan, 1.8, 0.22);
+}
+const OWNER_SPAN = [0.06, 0.96];   // the owner tower's crown and foot in its sprite, as shares of the height
 const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green", "hub-tower-gold", "hub-tower-blue",
   "hub-tower-white"];   // one per stage, by its name's hash
 const CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"];
@@ -356,7 +378,7 @@ const machines = new Map();      // src -> {name, online, idx, stages}
 const towers = new Map();        // key -> hub tower
 const cabs = new Map();
 const beams = [], ripples = [], labels = [], npcs = [], flyers = [];   // npcs: ambient ground cars
-const owner = { key: "owner", kind: "owner", label: "owner", pulse: 0, color: C.gold };
+const owner = { key: "owner", kind: "owner", label: "owner", pulse: 0, color: C.gold, limits: {}, fill: {} };
 const repoDistrict = new Map();   // repo -> district id
 let lastLive = 0, replay = null;
 
@@ -436,6 +458,7 @@ function sweepLanded(m) {
 function applyState(src, s) {
   const m = machines.get(src);
   m.name = s.machine;
+  for (const [e, l] of Object.entries(s.limits || {})) owner.limits[e] = l;   // the plan is the account's: any machine
   const seen = new Set();
   for (const sv of s.stages) {
     const st = ensureStage(src, sv.name, sv.repo);
@@ -856,12 +879,26 @@ function drawTower(tw, now) {
   const w = step * 2 * unit() * (isOwner ? 1.35 : 1.05), h = w * 4 / 3, base = isOwner ? 0.9 : 0.86;
   glow(x, y, unit() * step * (0.9 + tw.pulse * 0.8), tw.color, 0.25 + tw.pulse * 0.5);
   selRing(tw, x, y, unit() * step * 1.15, now);
-  if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
+  if (isOwner && sprites["owner-dark"]) drawOwnerGauge(x - w / 2, y - h * base, w, h);
+  else if (s) ctx.drawImage(s, x - w / 2, y - h * base, w, h);   // solid: a closed stage shows only in its dimmed sign
   const top = P(lot.x, lot.y, towerLift(tw))[1], beat = 0.5 + 0.5 * Math.sin(now / 700 + hash(tw.key) % 10);
   const bl = isOwner ? -1 : blink(tw, now);
   if (bl >= 0) glow(x, top, unit() * (2 + bl * 2.2 + tw.pulse * 2), C.gold, 0.1 + bl * 0.85);
-  else glow(x, top, unit() * (1.6 + beat * 0.6 + tw.pulse * 2), isOwner ? C.gold : C.magenta, 0.55 + tw.pulse * 0.4);
+  else glow(x, top, unit() * (1.6 + beat * 0.6 + tw.pulse * 2), isOwner ? C.ink : C.magenta, (isOwner ? 0.3 : 0.55) + tw.pulse * 0.4);
   tw.pulse *= 0.965;
+}
+
+// The dark tower, then each face lit from the crown down by its engine's remaining share: spending darkens it from the
+// foot up (eased; unknown stays dark).
+function drawOwnerGauge(x0, y0, w, h) {
+  ctx.drawImage(sprites["owner-dark"], x0, y0, w, h);
+  [["claude", 0], ["codex", 1]].forEach(([e, half]) => {
+    const l = owner.limits[e], f = owner.fill[e] = l ? (owner.fill[e] ?? 0) + (l.left / 100 - (owner.fill[e] ?? 0)) * 0.05 : 0;
+    if (f < 0.005) return;
+    const edge = y0 + h * (OWNER_SPAN[0] + (OWNER_SPAN[1] - OWNER_SPAN[0]) * f);   // lit from the crown down to here
+    ctx.save(); ctx.beginPath(); ctx.rect(x0 + half * w / 2, y0, w / 2, edge - y0); ctx.clip();
+    ctx.drawImage(sprites[`owner-${e}`], x0, y0, w, h); ctx.restore();
+  });
 }
 
 // A selection ring on the ground under the hovered object, brighter and breathing under the pinned one.
@@ -1062,7 +1099,8 @@ function hitTest(px, py) {
 }
 function tipLines(n) {
   const m = n.machine && machines.get(n.machine);
-  const lines = n.kind === "owner" ? [T.owner] : n.kind === "hub"
+  const lim = e => { const l = owner.limits[e]; return `${e} ${l ? `${Math.round(l.left)}% ${T.left} (${l.window})` : "—"}`; };
+  const lines = n.kind === "owner" ? [T.owner, lim("claude"), lim("codex")] : n.kind === "hub"
     ? [`${T.hub} · ${n.stage}`, n.title, `${DIST[n.district]?.name || ""} · ${m ? m.name : ""}`, n.ctx ? `ctx ${fmtK(n.ctx)}` : "", n.questions ? T.questions(n.questions) : "", n.open === false ? T.closed : ""]
     : [`${n.role} · ${n.stage}`, n.title, [n.engine, n.model].filter(Boolean).join(" · "), n.working ? T.busy : T.idle];
   return lines.filter(Boolean);

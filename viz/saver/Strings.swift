@@ -9,6 +9,7 @@ struct Strings {
     let notAnswering: (String) -> String        // error
     let noState: String, streamClosed: String   // when the system gives no error text
     let hub: String, noRepo: String
+    let owner: String, roster: String           // the roster on the left: its owner row and its header
     let count: (Int, Int, Int) -> String        // stages, workers, busy
     let lastHours: (Int) -> String
     let dayMonth: String                        // date format of the replay line
@@ -19,6 +20,7 @@ struct Strings {
         notAnswering: { "DELAMAIN · hub-viz is not answering (\($0)); retrying" },
         noState: "no answer from /state", streamClosed: "the /events stream closed",
         hub: "hub", noRepo: "no repository",
+        owner: "owner", roster: "hubs and cabs",
         count: { s, w, b in "\(s) \(s == 1 ? "hub" : "hubs") · \(w) \(w == 1 ? "cab" : "cabs") · \(b) in flight" },
         lastHours: { "last \($0) h" },
         dayMonth: "MM/dd")
@@ -29,6 +31,7 @@ struct Strings {
         notAnswering: { "DELAMAIN · hub-viz не отвечает (\($0)); повторяю" },
         noState: "нет ответа /state", streamClosed: "поток /events закрыт",
         hub: "хаб", noRepo: "без репозитория",
+        owner: "владелец", roster: "хабы и такси",
         count: { s, w, b in "\(s) \(ruPlural(s, "хаб", "хаба", "хабов")) · \(w) такси · \(b) в рейсе" },
         lastHours: { "последние \($0) ч" },
         dayMonth: "dd.MM")

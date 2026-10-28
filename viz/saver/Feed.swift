@@ -12,7 +12,8 @@ struct StageView: Decodable {
     var name: String; var repo: String?; var open: Bool?; var goal: String?; var hub: HubInfo?; var workers: [Worker]?
     var questions: Int?   // owner questions the stage has open
 }
-struct State: Decodable { var machine: String; var at: String?; var stages: [StageView]? }
+struct Limit: Decodable { var left: Double; var window: String? }   // what an engine's plan has left, percent
+struct State: Decodable { var machine: String; var at: String?; var stages: [StageView]?; var limits: [String: Limit]? }
 struct Event: Decodable {
     var stage: String; var repo: String?; var tag: String?; var text: String; var at: String
     var from: [String]; var engine: String?; var to: [[String]]?

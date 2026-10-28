@@ -226,6 +226,8 @@ with tempfile.TemporaryDirectory() as tmp:
         command = next(line for line in digest.splitlines() if line.startswith('jwait --journal '))
         argv = shlex.split(command)
         assert '--hub-events' in argv and '--match' not in argv, argv
+        assert '--stream' in argv and '--for' not in argv, argv  # a Claude host streams under a Monitor (section 10)
+        i = argv.index('--stream'); argv[i:i + 1] = ['--for', '1s']  # run to the first batch here
         argv[0] = str(root / 'jwait')
         return argv + ['--settle', '0', '--caller', 'digest-control']
     def run(argv, rc, present=(), absent=()):
@@ -268,4 +270,94 @@ with tempfile.TemporaryDirectory() as tmp:
 print('PASS digest --hub-events transport, exclusions, cursor/replay, extra words and legacy filters')
 PYCONTROL
 check $? 0 "canonical digest terminal transport controls"
+# 10. held lines: another stage's hub and the pacer addressing @hub do not wake; they come with the next waking batch.
+# --stream keeps printing batches until the deadline; tell --urgent wakes.
+mkdir -p $O/stage-b
+( armed $O/o10.out; $B/jlog --tag stage-b-hub-3 "@hub FYI merged my side" >/dev/null
+  $B/jlog --tag pace "@hub LIMIT Codex 7d ahead — context" >/dev/null; sleep 3
+  $B/jlog --tag builder "DONE builder r10" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 30s --caller s10 > $O/o10.out 2>&1; rc=$?
+check $rc 0 "held: the DONE line wakes"
+grep -q '^HELD (did not wake you): 2 lines' $O/o10.out; check $? 0 "…the held lines come with it, under HELD"
+grep -q 'FYI merged my side' $O/o10.out && grep -q 'LIMIT Codex 7d ahead' $O/o10.out; check $? 0 "…both of them"
+# held alone: no wake until the deadline, where they are printed with the ALARM
+( armed $O/o11.out; $B/jlog --tag stage-b-hub-3 "@hub FYI only chatter" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 4s --note r11 --caller s10 > $O/o11.out 2>&1; rc=$?
+check $rc 3 "negative: a held line alone does not wake (deadline)"
+grep -q 'FYI only chatter' $O/o11.out && grep -q '^ALARM r11' $O/o11.out; check $? 0 "…it is printed with the ALARM"
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --for 2s --caller s10 > $O/o11b.out 2>&1
+! grep -q 'only chatter' $O/o11b.out; check $? 0 "…and is not delivered again"
+# a held line killed before delivery is not lost
+( armed $O/o12.out; $B/jlog --tag stage-b-hub-3 "@hub FYI survives a kill" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 60s --caller s10 > $O/o12.out 2>&1 & jp=$!
+armed $O/o12.out; sleep 3; kill $jp; wait $jp 2>/dev/null
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --for 2s --caller s10 > $O/o12b.out 2>&1
+grep -q 'FYI survives a kill' $O/o12b.out; check $? 0 "held line of a killed waiter is delivered by the next one"
+# wake words in a foreign hub's line, and a foreign hub addressing the hub by its own tag, wake
+( armed $O/o13.out; $B/jlog --tag stage-b-hub-3 "@hub URGENT stop merging" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 20s --caller s10 > $O/o13.out 2>&1; rc=$?
+check $rc 0 "URGENT from another hub wakes"
+( armed $O/o14.out; $B/jlog --tag stage-b-hub-3 "@hub-16 please look" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 20s --caller s10 > $O/o14.out 2>&1; rc=$?
+check $rc 0 "another hub addressing @hub-16 wakes"
+# an unknown stage prefix is not another hub: it wakes as before
+( armed $O/o15.out; $B/jlog --tag nostage-hub-3 "@hub hello" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 1 --for 20s --caller s10 > $O/o15.out 2>&1; rc=$?
+check $rc 0 "a tag that names no stage wakes as before"
+# --stream: two batches in one run, then the ALARM
+( armed $O/o16.out; $B/jlog --tag builder "DONE first-batch" >/dev/null; sleep 4
+  $B/jlog --tag builder "DONE second-batch" >/dev/null ) &
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --stream --settle 1 --for 9s --note r16 --caller s10 > $O/o16.out 2>&1; rc=$?
+check $rc 3 "--stream ends at the deadline"
+check "$(grep -c '^NEW: 1 lines' $O/o16.out)" 2 "--stream printed two batches"
+grep -q 'first-batch' $O/o16.out && grep -q 'second-batch' $O/o16.out && grep -q '^ALARM r16' $O/o16.out; check $? 0 "…with both lines and the ALARM"
+# a stream past its deadline ends with the ALARM even while lines keep coming
+( armed $O/o17.out; for i in $(seq 1 24); do $B/jlog --tag builder "DONE busy-$i" >/dev/null; sleep 0.5; done ) & bp=$!
+t0=$(date +%s)
+HUB_TAG=hub-16 bounded 30 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --stream --settle 1 --for 4s --note r17 --caller s17 > $O/o17.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 )); wait $bp
+check "$rc:$(grep -c '^ALARM r17' $O/o17.out)" "3:1" "--stream ends at the deadline under a steady stream of lines"
+[ $el -le 9 ]; check $? 0 "…within a settle of it (${el}s)"
+# a repeated `hub` tag (a hub registered with the tag `hub` itself) still holds
+( armed $O/o18.out; $B/jlog --tag stage-b-hub-3 "@hub FYI repeated tag" >/dev/null ) &
+$B/jwait --journal --stage stage-a --tag hub --tag hub --hub-events --settle 1 --for 4s --note r18 --caller s18 > $O/o18.out 2>&1; rc=$?
+check $rc 3 "a repeated --tag hub: another hub's plain line is still held"
+# held max beats an active settle: a held line, then a waking line with a long settle, come out at HELD_MAX
+( armed $O/o24.out; $B/jlog --tag stage-b-hub-3 "@hub FYI before settle" >/dev/null; sleep 2; $B/jlog --tag builder "DONE settle-long" >/dev/null ) &
+t0=$(date +%s)
+JWAIT_HELD_MAX_S=4 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 60 --for 90s --caller s24 > $O/o24.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check "$rc:$(grep -c 'settle-long' $O/o24.out)" "0:1" "held max during a settle: both lines delivered"
+[ $el -le 20 ]; check $? 0 "…at HELD_MAX, not after the 60 s settle (${el}s)"
+# 11. NEXT WAIT: an idle stage gets one long background wait (inside the Bash cap), a busy one a Monitor stream;
+# a held line wakes a long wait after HELD_MAX at the latest; a Codex host gets no hint
+env -u BASH_MAX_TIMEOUT_MS HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --stream --settle 0 --for 2s --note r19 --caller s19 > $O/o19.out 2>&1
+grep -q "^NEXT WAIT: nothing runs in stage-a — no Monitor; ONE Bash run_in_background: true, timeout 7200000: jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --note r19 --caller s19 --for 115m$" $O/o19.out
+check $? 0 "idle: NEXT WAIT is one background wait inside the 2h Bash cap, without --stream"
+BASH_MAX_TIMEOUT_MS=43200000 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --stream --settle 0 --for 2s --caller s19 > $O/o20.out 2>&1
+grep -q "timeout 29100000: jwait .* --for 480m$" $O/o20.out; check $? 0 "idle: a raised BASH_MAX_TIMEOUT_MS gives the full 8h"
+BASH_MAX_TIMEOUT_MS=60000 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --stream --settle 0 --for 2s --caller s19 > $O/o20b.out 2>&1
+grep -q "timeout 60000: jwait .* --for 54s$" $O/o20b.out; check $? 0 "idle: a small Bash cap is respected, with a margin"
+$B/jwait --journal --stage stage-a --unt 23:59 --settle 0 --caller s19 > $O/o20c.out 2>&1; check $? 2 "negative: an abbreviated option is refused (NEXT WAIT rebuilds argv)"
+AGENT_HUB_ENGINE=codex HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o21.out 2>&1
+! grep -q "NEXT WAIT" $O/o21.out; check $? 0 "a Codex host gets no NEXT WAIT"
+TOK=busy-token-$$; mkdir -p $O/stage-a/agents/busy1; bash -c "exec -a sleeper-$TOK sleep 60" & sp=$!
+printf '{"pid": %s, "session_id": "%s"}\n' $sp $TOK > $O/stage-a/agents/busy1/meta.json
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o22.out 2>&1
+kill $sp 2>/dev/null; wait $sp 2>/dev/null; rm -rf $O/stage-a/agents/busy1
+grep -q "^NEXT WAIT: running in stage-a: agent busy1 — one Monitor, timeout_ms 1800000: jwait .* --stream$" $O/o22.out
+check $? 0 "busy: a live agent of the stage gets a Monitor stream"
+bash -c "exec -a 'python3 /x/await --stage stage-a --label ci-mr-7 --log $O/stage-a/coordinator/work/await/x.log --wait --' sleep 60" & ap=$!
+bash -c "exec -a 'python3 /x/await --stage stage-a --label other --log /elsewhere/stage-a/coordinator/work/await/x.log --wait --' sleep 60" & ap2=$!
+HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --settle 0 --for 2s --caller s19 > $O/o22b.out 2>&1
+kill $ap $ap2 2>/dev/null; wait $ap $ap2 2>/dev/null
+grep -q "^NEXT WAIT: running in stage-a: await ci-mr-7 — one Monitor" $O/o22b.out && ! grep -q "other" $O/o22b.out
+check $? 0 "busy: an await supervisor of this home's stage (not one of another home) gets a Monitor stream"
+( armed $O/o23.out; $B/jlog --tag stage-b-hub-3 "@hub FYI held max" >/dev/null ) &
+t0=$(date +%s)
+JWAIT_HELD_MAX_S=3 HUB_TAG=hub-16 $B/jwait --journal --stage stage-a --tag hub-16 --tag hub --hub-events --settle 0 --for 60s --caller s19 > $O/o23.out 2>&1; rc=$?
+el=$(( $(date +%s) - t0 ))
+check "$rc:$(grep -c 'FYI held max' $O/o23.out)" "0:1" "a held line wakes a long wait after HELD_MAX"
+[ $el -le 20 ]; check $? 0 "…long before the deadline (${el}s)"
+check "$(waited 29 AGENT_HUB_JWAIT_FOR=50m -- --journal --caller d1 --stage stage-a --stream)" ok "--stream without --for waits 29 minutes, not the setting"
 exit $fail

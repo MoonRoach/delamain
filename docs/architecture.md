@@ -124,6 +124,7 @@ PreToolUse hook imports it on every Bash call.
 | `handoff_size` | PreToolUse, Write or Edit of `HANDOFF-*.md` | Only in the hub home, in a repository with `.agent-hub/`, or under a directory of `AGENT_HUB_SCOPE_DIRS`. |
 | `questions` | SessionStart | The same places, and in hub agents (`HUB_TAG` set by `agent spawn`). |
 | `session_cards` | PreToolUse of Desktop's `start_session` / `hand_off_to_session`; SessionStart | Only in a session registered as the `hub` role of a stage; a non-hub, or a registry that cannot be read, is never blocked. |
+| `subagent_journal` | SubagentStart, SubagentStop (async) | Only for a session registered in a stage's role registry: one `SUB start` / `SUB end` line in that stage's journal ([launch modes](launch-modes.md#journal-lines-from-sub-agents)); it never blocks a sub-agent. |
 
 `AGENT_HUB_SCOPE_DIRS` is a hub-wide setting (directories separated by `:`; the hub home's `config.json` or the
 environment, never a repository's). A session in an unrelated project hears nothing from the last two.
@@ -136,8 +137,12 @@ existing worktree of that branch, wherever it is, is reused (a re-spawn continue
 `--base HEAD` is the commit checked out in `--cwd`), and `/.worktrees/` is added
 to `.git/info/exclude`, so the main checkout shows nothing untracked. Spawning from inside a worktree still lands in the
 main repository's `.worktrees/`. A branch checked out in the main checkout, a bad branch name and a foreign directory at
-the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it: the
-hub lists worktrees in the handoff and runs `git worktree remove <path>` once the branch is merged.
+the path are refused. `meta.json` records the worktree; `agent status` and `agent stop` name it. Nothing removes it by
+itself: at handoff the hub runs `agent worktrees --prune --dry-run` and then `--prune`, which removes the finished ones.
+
+A new worktree is also prepared (`.agents/linked`, `.agents/prepare`) and numbered (a slot, `AGENT_HUB_SLOT`); the
+slot is kept in `<git common dir>/delamain-worktrees.json` and in `meta.json`. See *Preparing worktrees* in
+[the reference](reference.md#preparing-worktrees).
 
 ## Formats
 
@@ -145,6 +150,19 @@ hub lists worktrees in the handoff and runs `git worktree remove <path>` once th
 Status words the hub waits for: `MERGED`, `STOP`, `DONE`, `BLOCKED`, `QUESTION`, and the three `agent` itself writes when a run ends: `EXIT` (abnormally), `ENDED` and `REVIEWED` (normally, without a status word of the agent's own); a script waiting for input
 prints `AWAITING ANSWER`. `@tag` addresses a line to a role. A tag `T/sub` is a sub-tag of `T`: the caller's own tag
 and its sub-tags never wake its own `jwait`.
+
+**Lesson entry** (`<stage>/lessons.md`, written by hand by the hub when `AGENT_HUB_HANDOFF_LESSONS` is on; kept across
+handoffs; procedure and rules in `skills/handoff/references/lessons.md`):
+
+```markdown
+## L-001 — when the successor reviews a change that touches migrations
+- status: proposed        (proposed | confirmed: DATE hub-N | promoted: <file> DATE (ask id) | retired: DATE hub-N — reason)
+- by: hub-3, 2026-10-22
+- lesson: one or two sentences, an instruction the next hub can follow
+- evidence: the moment it rests on — a journal line (time + tag), an MR/PR, an ask id, a session id
+- confidence: low | medium | high
+- verdict: hub-4 2026-10-23 helped — evidence     (appended by later shifts; repeatable)
+```
 
 **Question register entry** (`questions.md`, kept by `ask`):
 

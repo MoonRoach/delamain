@@ -185,9 +185,12 @@ grep -q "Hub notes of this project — read before planning: $(cd $REPO && pwd -
 printf '{"AGENT_HUB_JWAIT_MATCH": "PENDING OWNER"}\n' > $R/config.json
 (cd $REPO && $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --dry-run) > $P/t6.out 2>&1
 grep -q -- "--hub-events" $P/t6.out && ! grep -q -- "--match" $P/t6.out; check $? 0 "the digest's jwait resolves AGENT_HUB_JWAIT_MATCH through --hub-events"
-grep -q -- "--for 50m --note" $P/t6.out; check $? 0 "the digest's jwait waits 50m by default (the prompt cache lives 1 h)"
-(cd $REPO && AGENT_HUB_JWAIT_FOR=40m $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --dry-run) > $P/t6b.out 2>&1
-grep -q -- "--for 40m --note" $P/t6b.out && ! grep -q -- "--for 50m" $P/t6b.out; check $? 0 "the digest's jwait carries AGENT_HUB_JWAIT_FOR"
+grep -q -- "--stream --note" $P/t6.out && ! grep -q -- "jwait .*--for " $P/t6.out; check $? 0 "a Claude hub's digest jwait streams under a Monitor (no --for)"
+grep -q "the command of one Monitor, timeout_ms 1800000" $P/t6.out; check $? 0 "…and the digest says so"
+(cd $REPO && AGENT_HUB_ENGINE=codex $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --dry-run) > $P/t6c.out 2>&1
+grep -q -- "--for 50m --note" $P/t6c.out && ! grep -q -- "--stream" $P/t6c.out; check $? 0 "a Codex hub's digest jwait waits 50m by default (the prompt cache lives 1 h)"
+(cd $REPO && AGENT_HUB_ENGINE=codex AGENT_HUB_JWAIT_FOR=40m $B/hub takeover --stage stage-a --n 5 --session $NEW_CLI --dry-run) > $P/t6b.out 2>&1
+grep -q -- "--for 40m --note" $P/t6b.out && ! grep -q -- "--for 50m" $P/t6b.out; check $? 0 "a Codex hub's digest jwait carries AGENT_HUB_JWAIT_FOR"
 
 # ---- delta review: N1 (another repo's main-merge of the predecessor does not hide the hub repo's free one),
 #      N2 (JSON boolean settings), N3 (release with two own locks of the kind names them)

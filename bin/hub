@@ -22,9 +22,16 @@
   hub grill    bind --stage stage-a --launch ID --session FULL_ID
   hub grill    join --stage stage-a --launch ID --session self  |  hub grill done --stage stage-a --summary "…" [--why …]
   hub home     [--cwd DIR] [--json]
+  hub why      <sha | file:line> [--cwd DIR] [--json]
   hub home migrate [--from DIR] [--to DIR] [--apply]
 Every subcommand takes --stage (default $HUB_STAGE); start, takeover, handoff, succeed, rename, close and grill need a stage, `reviewer`
-puts it into the `agent spawn` line it prints, `home` and `effort` ignore it, `grilling` finds it from the session.
+puts it into the `agent spawn` line it prints, `home`, `effort` and `why` ignore it, `grilling` finds it from the session.
+
+why (read-only) names the agent run that made a commit, or the last commit of a line (git blame): its Delamain-Stage/-Role/-Run
+trailers are looked up in the run records of every known hub home, and it prints the stage, role, run, engine and model, the
+brief, the report, the session and its transcript, and the agent's journal lines within 30 minutes of the commit
+(bin/provenance.py). Without trailers it guesses from the reflogs of the agents' worktrees and branches and says so (GUESS,
+WEAK GUESS), or answers "not an agent commit".
 
 start registers the first hub of a new stage: it creates <hub home>/<stage>/ and then runs the takeover steps
 below with no predecessor (hub #1, tag hub-1). It refuses a stage that already has a hub or a handoff — that is a
@@ -60,6 +67,10 @@ closed stage. A closed stage is left out of agent-top (`--all` shows it),
 the watchdog, the night queue and the owner-question summaries (`ask list --stage S` still reads it); its files stay.
 `hub takeover` (or `hub start`) on a closed stage reopens it and says so in its start line. A re-run after a failed step
 finishes the close; on a closed stage it prints when and why and exits 0. --dry-run lists the steps and writes nothing.
+The stage's other Claude Desktop sessions (its roles and the earlier hubs retired in its registry) that sit idle and still hold
+their `claude` and MCP processes are named after the hub's session: the clean ones (no changed file, no commit on no remote, no open
+pull request: `agent desktop-idle`) to archive with the Desktop tool `archive_session` once the owner agrees, the others with why they
+stay. Nothing is archived or stopped by the close.
 
 The shift number is derived: takeover = the registered hub's number (roles `hub`, tag hub-N) + 1, or the
 successor named in the latest handoff ("… → \"Hub <stage> #N\""); handoff = the registered hub's number.
@@ -137,6 +148,10 @@ handoff --finish is the last step of writing one: it checks the draft (--handoff
 (exit 2, the lines listed) while § 0–2 — the successor's first steps, the state, the queue — still hold TODO;
 --allow-todo lets it through and says what stays open. `hub succeed --handoff` makes the same check before it starts
 a successor, and `hub takeover` warns (ATTENTION) when the handoff it reads still has TODO in § 0–2.
+With AGENT_HUB_HANDOFF_LESSONS on (hub home), the draft also has a § 7, "Lessons of this shift" (entries of
+<stage>/lessons.md, verdicts on earlier ones); a § 7 that is missing, still holds TODO or names neither a lesson id
+nor "none: <reason>" is an ATTENTION line on --finish, `succeed --handoff` and takeover, never a refusal, and the
+takeover digest points at lessons.md whenever the file exists.
 succeed starts the successor of an automatic handoff (autopilot, AGENT_HUB_AUTO_HANDOFF; bin/autopilot.py): it checks the
 chain (AGENT_HUB_AUTO_HANDOFF_CHAIN automatic handoffs in a row without the owner; at the limit it journals that and
 exits 3), then starts `claude --bg --remote-control <stage>-hub-<n+1>` from the main checkout of --cwd (default: the
@@ -236,6 +251,7 @@ import engines
 import hubcore as hc  # noqa: E402
 import grill_session  # noqa: E402
 import hubhome  # noqa: E402
+import provenance  # noqa: E402
 import reviewers  # noqa: E402
 import session_effort  # noqa: E402
 import subagents  # noqa: E402
@@ -387,20 +403,173 @@ def todo_report(todos: list, width: int = 110) -> str:
         f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
 
 
-def check_handoff_todos(handoff, allow: bool) -> None:
-    """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open."""
+# The one format of a lesson id for every parser below: L-007, or with a stage prefix as ask ids have it, L-MC-005. A longer
+# number is not an id: it would flood § 7.
+LESSON_ID_PAT = r"L-(?:[A-Z]+-)?\d{1,6}"
+LESSON_HEAD_RE = re.compile(rf"^## ({LESSON_ID_PAT})\b\s*(?:[—–-]+\s*)?(.*)$")
+LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
+FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def lessons_enabled() -> bool:
+    """AGENT_HUB_HANDOFF_LESSONS (hub home only): the optional § 7 of a handoff, "lessons of this shift"."""
+    return hc.truthy(hc.setting("AGENT_HUB_HANDOFF_LESSONS"))
+
+
+def lessons_path(stage: str) -> Path:
+    return hc.root() / stage / "lessons.md"
+
+
+def outside_markup(text: str) -> list:
+    """[(line number, visible text)] of the lines outside fenced code blocks, with HTML comments blanked out (an example
+    of a heading or an entry there is not one); line numbers are those of `text`. One pass over the lines: a fence
+    closes only on the same character, at least as long; a comment may span lines."""
+    out, fence, in_comment = [], None, False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if fence:
+            m = FENCE_RE.match(line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+                fence = None
+            continue
+        if not in_comment and (m := FENCE_RE.match(line)):
+            fence = m.group(1)
+            continue
+        visible, pos = [], 0
+        while pos <= len(line):
+            if in_comment:
+                end = line.find("-->", pos)
+                if end < 0:
+                    break
+                in_comment, pos = False, end + 3
+            else:
+                start = line.find("<!--", pos)
+                visible.append(line[pos:] if start < 0 else line[pos:start])
+                if start < 0:
+                    break
+                in_comment, pos = True, start + 4
+        out.append((lineno, "".join(visible)))
+    return out
+
+
+def lessons_entries(stage: str):
+    """[(id, cue, status word)] of <stage>/lessons.md, in file order; None when the file is absent or unreadable. The
+    status word is the first word of the entry's first `- status:` line (proposed | confirmed | promoted | retired), ""
+    when it has none. Bytes that are not UTF-8 are replaced: a damaged file must not stop a handoff or a takeover."""
     try:
-        todos = open_todos(Path(handoff).read_text(encoding="utf-8"))
+        text = lessons_path(stage).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    out = []
+    for _, line in outside_markup(text):
+        if m := LESSON_HEAD_RE.match(line):
+            out.append([m.group(1), m.group(2).strip(), ""])
+        elif out and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
+            out[-1][2] = m.group(1).lower()
+    return [tuple(e) for e in out]
+
+
+def lessons_digest_line(stage: str) -> str:
+    """The takeover digest's pointer to <stage>/lessons.md (whether or not the setting is on); "" when there is no file."""
+    entries = lessons_entries(stage)
+    if entries is None:
+        return ""
+    words = [e[2] for e in entries]
+    return ("Lessons of earlier shifts — read before planning; at your handoff give a verdict on each that acts in your "
+            f"shift: {lessons_path(stage)} (proposed {words.count('proposed')}, confirmed {words.count('confirmed')})")
+
+
+def lessons_section(stage: str) -> str:
+    """§ 7 of a handoff draft, written only when the setting is on."""
+    open_ones = [e for e in lessons_entries(stage) or [] if e[2] in ("proposed", "confirmed")]
+    listed = "; ".join(f"{i} {cue[:70]}" for i, cue, _ in open_ones[:8])
+    if len(open_ones) > 8:
+        listed += f"; … {len(open_ones) - 8} more"
+    return f"""## 7. Lessons of this shift
+<!-- AGENT_HUB_HANDOFF_LESSONS is on in this hub home: § 7 is required here, not an unused module. -->
+The lessons module is ON in this hub home: look back at your shift before handing over (procedure: the handoff
+skill, references/lessons.md). For each open lesson below that acted in your shift, append a `- verdict:` line to it in
+lessons.md; then write 0–3 new entries there, each with evidence. "No lesson" is a valid answer, a skipped look is not.
+New entries in `{lessons_path(stage)}`: TODO ids (L-…), or "none: <reason>".
+Verdicts on lessons that acted this shift: TODO "L-… helped|hurt|no effect|confounded — evidence", or "none".
+Open lessons to judge: {listed or 'none yet'}
+
+"""
+
+
+def open_lessons_todos(text: str) -> list:
+    """TODO lines of § 7 of a handoff outside HTML comments and code blocks ([] without a § 7). The "Open lessons to
+    judge" line quotes the lessons file, not the hub's own writing, so it is not one."""
+    found, current = [], None
+    for lineno, line in outside_markup(text):
+        if m := re.match(r"## (\d+)\.", line):
+            current = int(m.group(1))
+        if current == 7 and re.search(r"\bTODO\b", line) and not line.startswith("Open lessons to judge"):
+            found.append((lineno, line.strip()))
+    return found
+
+
+LESSON_ID_RE = re.compile(rf"\b{LESSON_ID_PAT}\b")
+LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
+NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
+MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")
+
+
+def lesson_answer(line: str) -> bool:
+    """Whether one line of § 7 answers it: a lesson id, or `none:` with a reason on the same line that is not a
+    placeholder (`none: n/a`, `none: TBD`, a bare `none:`)."""
+    if LESSON_ID_RE.search(line):
+        return True
+    m = LESSON_NONE_RE.search(line)
+    return bool(m) and m.group(1).strip().strip(".").strip().lower() not in NONE_PLACEHOLDERS
+
+
+def lessons_problem(text: str) -> str:
+    """What is wrong with § 7 of a handoff while the setting is on, "" when nothing: no § 7 at all (the handoff was not
+    written from this version's draft), TODO still in it, or no answer in it — neither a lesson id nor "none: <reason>"
+    (a line such as "module not used" copied from an older handoff is not one). The "Open lessons to judge" line
+    quotes the lessons file, so it answers nothing."""
+    lines, current, seen = [], None, False
+    for _, line in outside_markup(text):
+        if m := re.match(r"## (\d+)\.", line):
+            current = int(m.group(1))
+            seen = seen or current == 7
+            continue
+        if current == 7 and not MD_PREFIX_RE.sub("", line).startswith("Open lessons to judge"):  # quoted or indented too
+            lines.append(line)
+    if not seen:
+        return "the handoff has no § 7 (lessons) — it was not written from `hub handoff`'s draft"
+    if open_lessons_todos(text):
+        return "§ 7 (lessons) still holds TODO"
+    if not any(lesson_answer(line) for line in lines):
+        return "§ 7 (lessons) names no lesson id (L-…) and no \"none: <reason>\" — the module is on, so a look back is due"
+    return ""
+
+
+def lessons_attention(text: str) -> str:
+    """The ATTENTION line of `--finish` / `succeed --handoff` for § 7, "" when the setting is off or § 7 is answered."""
+    if not lessons_enabled():
+        return ""
+    problem = lessons_problem(text)
+    return f'ATTENTION: {problem} — write 0–3 lessons with evidence or "none: <reason>"' if problem else ""
+
+
+def check_handoff_todos(handoff, allow: bool) -> None:
+    """Refuse (a usage error, exit 2) a handoff whose § 0–2 still hold TODO, unless `allow`, which says what stays open.
+    Whatever the verdict, a § 7 (lessons) that is missing, still holds TODO or answers nothing is only a warning, and
+    only while the setting is on."""
+    try:
+        text = Path(handoff).read_text(encoding="utf-8")
     except OSError as e:
         raise hc.Failure(f"cannot read the handoff {handoff}: {e}") from None
-    if not todos:
-        return
-    if allow:
+    todos = open_todos(text)
+    if todos:
+        if not allow:
+            raise hc.UsageError(f"{handoff}: § 0–2 still hold {len(todos)} TODO line(s) — the successor starts from them, so "
+                                f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
         print(f"ATTENTION: --allow-todo: {len(todos)} TODO line(s) in § 0–2 of {handoff} stay open — the successor "
               f"will rebuild that state from the journal:\n{todo_report(todos)}", file=sys.stderr)
-        return
-    raise hc.UsageError(f"{handoff}: § 0–2 still hold {len(todos)} TODO line(s) — the successor starts from them, so "
-                        f"fill them in (or pass --allow-todo):\n{todo_report(todos)}")
+    if attention := lessons_attention(text):
+        print(attention, file=sys.stderr)
 
 
 def find_local_by_cli(cli_sid: str):
@@ -622,9 +791,12 @@ def roles_digest(stage: str) -> str:
 
 
 def jwait_command(stage: str, tag: str, since=None) -> str:
+    """The hub's digest waiter. A Claude hub streams it under one Monitor (a wake is one call that already carries the
+    lines, no re-arm); a Codex hub runs it to its first batch."""
     since_opt = f"--since {since:%Y-%m-%dT%H:%M} " if since else ""
+    wait = "--stream" if hc.host_engine() != "codex" else f"--for {hc.jwait_for()}"
     return (f"jwait --journal --stage {stage} --tag {tag} --tag hub --hub-events "
-            f"{since_opt}--for {hc.jwait_for()} --note \"scheduled round\"")
+            f"{since_opt}{wait} --note \"scheduled round\"")
 
 
 def hub_notes_line(stage: str) -> str:
@@ -645,7 +817,7 @@ def wait_procedure() -> str:
     """Wait advice for the host writing this digest or handoff."""
     if hc.host_engine() == "codex":
         return "Codex: use a yielded shell session and its continuation tool; keep each wait at most 60 s"
-    return "Claude: Bash `run_in_background: true`"
+    return "Claude: the command of one Monitor, timeout_ms 1800000; re-arm it when its ALARM ends the stream"
 
 
 def watchdog_digest(stage: str) -> str:
@@ -710,6 +882,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
         (hub_notes_line(stage), 300, ""),
+        (lessons_digest_line(stage), 260 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 260 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
         (pace_digest(stage), 480, "agent-top --once"),
         (f"First jwait ({wait_procedure()}; --since = handoff time):\n"
@@ -1225,6 +1398,9 @@ def _cmd_takeover(a) -> int:
         warns.append(f"the handoff {handoff.name} still has {len(todos)} TODO line(s) in § 0–2 (its author did not finish "
                      f"it): rebuild that state from the journal, `ask list` and `lock list` before trusting it — first "
                      f"at line {todos[0][0]}: {todos[0][1][:90]}")
+    if handoff and lessons_enabled() and (problem := lessons_problem(handoff.read_text(encoding="utf-8"))):
+        warns.append(f"the handoff {handoff.name}: {problem}. If its author still runs, ask it to fill § 7 before it "
+                     "ends: the lessons of its shift are lost with its context")
     if engines.selected() != "codex":
         idle = hc.idle_compaction_warning(Path.cwd())
         if idle:
@@ -1509,7 +1685,7 @@ def cmd_handoff(a) -> int:
     try:
         for line in hc.journal_path(stage).read_text(encoding="utf-8").splitlines():
             p = hc.parse_journal_line(line)
-            if p and hc.tag_is(p[1], tag):
+            if p and hc.tag_is(p[1], tag) and not hc.sub_agent_line(p[1], p[2]):  # SUB start/end: history, not a statement
                 own_lines.append(line[:220])
     except FileNotFoundError:
         pass
@@ -1570,19 +1746,28 @@ Codex successor: apply the hub skill's Terminal follow-through; reconcile this s
 TODO: questions asked in chat without a record — `ask add` first, then their ids here.
 
 ## 5. Risks and loose ends
-- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`git worktree list`;
-  finished ones: `git worktree remove <path>`).{live_note}
+- TODO: what breaks when nobody watches and how it shows; windows; worktrees to clean up (`agent worktrees` lists them;
+  `agent worktrees --prune --dry-run` shows the finished ones).{live_note}
 
 ## 6. Skills for the successor
 `hub`; TODO: which other skills the queue in § 2 needs — the successor loads them first.
 
-<!-- Last [{tag}] journal lines (for reference, delete when filling in):
+"""
+    tail = f"""<!-- Last [{tag}] journal lines (for reference, delete when filling in):
 {chr(10).join(own_lines[-6:]) or '—'}
 -->
 """
-    size = len(body.encode("utf-8"))
-    if size > 12 * 1024:
-        body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
+    lessons = lessons_section(stage) if lessons_enabled() else ""
+    body += lessons + tail
+    if len(body.encode("utf-8")) > 12 * 1024:
+        if lessons:  # the cut falls on the front of the draft: § 7 and the journal comment after it are kept whole
+            room = 12 * 1024 - 200 - len((lessons + tail).encode("utf-8"))
+            front = cut(body[:-len(lessons + tail)], room, "journal and lock/roles/agent status")
+            if front.rfind("<!--") > front.rfind("-->"):  # the cut fell inside a comment: close it before § 7
+                front += "\n-->"
+            body = front + "\n\n" + lessons + tail
+        else:
+            body = cut(body, 12 * 1024 - 200, "journal and lock/roles/agent status")
     hc.atomic_write(out, body)
     print(f"draft: {out} ({len(body.encode('utf-8'))} bytes); TODO to fill: "
           f"{body.count('TODO')}. Nothing released: the successor takes the locks with `hub takeover`.")
@@ -2080,6 +2265,18 @@ def close_stage(a, say) -> str:
             attention.append(running)
             notes.append(running)
 
+    # 2b. the stage's other Desktop sessions (an earlier hub shift is one) that sit idle holding their processes: named, with
+    # the clean ones to archive; never archived from here (archiving is a Desktop tool, and the owner's yes comes first)
+    try:
+        import desktop_idle
+        desk = desktop_idle.close_lines(stage, data)
+    except Exception:  # noqa: BLE001 — a note about memory must not stop a close
+        desk = []
+    for line in desk:
+        say(line)
+    if desk:
+        notes.append(desk[0])
+
     # 3. locks held by the stage's sessions, except a session another open stage still holds (see held_elsewhere)
     board = board_module()
     released, kept = [], []
@@ -2278,6 +2475,11 @@ def main(argv: list) -> int:
     hm.add_argument("--to", dest="dst", metavar="DIR", help="default: the resolved hub home (~/agent-hub when that is "
                                                             "the source)")
     hm.add_argument("--apply", action="store_true", help="do it (default: a dry run)")
+    wy = sub.add_parser("why", parents=[stage_opt], help="which agent run made a commit or a line: stage, role, brief, "
+                        "report, journal lines, model, session and transcript (read-only; --stage is ignored)")
+    wy.add_argument("target", metavar="SHA|FILE:LINE", help="a commit, or a line whose last commit git blame names")
+    wy.add_argument("--cwd", help="the repository to look in (default: here)")
+    wy.add_argument("--json", action="store_true")
     grill_session.add_parser(sub, stage_opt)
     a = p.parse_args(argv)
     a.argv = list(argv)  # a MOVE message repeats the command line
@@ -2291,7 +2493,7 @@ def main(argv: list) -> int:
         a.stage = None  # a stray HUB_STAGE does not break `reviewer` and `home`, which never needed it
     return {"start": cmd_start, "takeover": cmd_takeover, "handoff": cmd_handoff, "succeed": cmd_succeed,
             "reviewer": cmd_reviewer, "home": cmd_home, "effort": cmd_effort, "rename": cmd_rename,
-            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling,
+            "close": cmd_close, "grill": grill_session.main, "grilling": cmd_grilling, "why": provenance.cmd_why,
             "desktop-recover": lambda a: autopilot.desktop_recover(hc.check_stage(a.stage), a.request),
             "desktop-status": lambda a: autopilot.desktop_status(hc.check_stage(a.stage), a.request, a.verified),
             "desktop-request": lambda a: autopilot.desktop_request(hc.check_stage(a.stage), a.request, a.project_id, a.project_path),

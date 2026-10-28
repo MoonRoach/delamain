@@ -59,10 +59,14 @@ flowchart LR
 | Tool | What it does |
 |---|---|
 | `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
+| `agent worktrees` | List every worktree of a repository — who made it, in use or not, dirty, on a remote, merged (squash merges through `gh`), age — and, with `--prune`, remove the finished ones. Read-only by default; never removes unpushed or uncommitted work. [Details](#agent-worktrees-the-ledger-of-a-repositorys-worktrees). |
+| `agent desktop-idle` | List the Claude Desktop sessions idle for `--idle-for` (default 12 h) that still hold their `claude` and MCP processes, with the memory each holds, and which are safe to archive (clean worktree, nothing unpushed, no open PR/MR). Read-only; `--ids` prints the ids to archive. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
 | `tell` | Write to another stage's hub: one journal line `@hub …` (`--question`, `--role`) in that stage's journal, signed with your stage-qualified tag, and the registered direct address (session id, kind, title, the name for a cross-session message). `--address` prints the address only. A headless holder gets the text through `agent send` (it reads its inbox, not a journal). The answer comes back in your own journal (`tell <your stage>`). The journal is the preferred channel; a direct message goes only to this address. |
+| `broadcast` | One line to the hub of every open stage at once: `tell` to each stage of every known hub home (`--this-home`: only the resolved one) whose registry has a live hub, leaving out your own hub (`--include-self`), closed stages and `--exclude S`. `--urgent` / `--question` as in `tell`; `--dry-run` lists the recipients; `--json` for scripts. Names the recipients that have not written for over `--silent-hours` (default 12, 0 = off) — their own journal line or the last turn of their session, not the lines addressed to them nor the transcript file's mtime — before the summary, also in `--dry-run`. Signed with your stage-qualified tag, or `owner` from an unregistered terminal or the Desktop `/broadcast`. Exit 1 when any recipient did not take the line (each failure is printed with tell's output). Not `roles broadcast`, which addresses roles within one stage. |
 | `jwait` | The only waiter: block (in the background) until new journal or log lines match, or until an alarm time. With `--journal` it marks itself in `<hub home>/.jwait-state/<stage>/<caller>.armed.json` while it waits (pid, stage, tags, deadline), so the watchdog can tell a hub that waits from one that sleeps; it removes the file when it ends, also on SIGTERM and SIGHUP. |
-| `await` | Run a wait command (the repo's CI wait script, a merge, a lock) detached from the caller and journal **one** line `@hub WORD LABEL — LINK (exit N, 12m, log PATH)` when it ends; nothing while it runs. Starts a supervisor in its own session and returns at once, so the hub makes it an ordinary foreground call and keeps its single `jwait`. WORD: exit 0 → `--ok` (default `DONE`, `MERGED` for a merge), 124 or the end of `--timeout` (default 2h) → `TIMEOUT`, anything else, a command that cannot start or a stopped supervisor → `FAILED`; `--on RC=WORD` maps more (`--on 3=CONFLICT`). LINK is `--link` or the last URL the command printed. Signed `<tag>-await`, which the hub's own `jwait` does not drop. [Waiting for CI](launch-modes.md#waiting-for-ci-a-merge-or-a-lock). |
+| `await` | Run a wait command (the repo's CI wait script, a merge, a lock) detached from the caller and journal **one** line `@hub WORD LABEL — LINK (exit N, 12m, log PATH)` when it ends; nothing while it runs. Starts a supervisor in its own session and returns at once, so the hub makes it an ordinary foreground call and keeps its single `jwait`. WORD: exit 0 → `--ok` (default `DONE`, `MERGED` for a merge), 124 or the end of `--timeout` (default 2h) → `TIMEOUT`, anything else, a command that cannot start or a stopped supervisor → `FAILED`; `--on RC=WORD` maps more (`--on 3=CONFLICT`). With `--wait` (attached) it also prints that line and exits 0 only when the command itself exited 0, 3 otherwise, 1 when the journal write failed; `--ok FAILED|TIMEOUT`, `--on 0=WORD`, `--on RC=<the --ok word>` and abbreviated options are usage errors (exit 2). LINK is `--link` or the last URL the command printed. Signed `<tag>-await`, which the hub's own `jwait` does not drop. [Waiting for CI](launch-modes.md#waiting-for-ci-a-merge-or-a-lock). |
+| `gh-ci-wait` | `gh-ci-wait [PR] [--repo O/R] [--require NAME …] [--allow-neutral] [--timeout 45m] [--interval 10s] [--grace 3m]`: wait for a GitHub PR's checks, as a command for `await` (`await --ok PASSED --label "PR #N" -- gh-ci-wait N --require 'tests (ubuntu-latest)' --require 'tests (macos-latest)'`). Decides by every check's bucket, not by `gh`'s exit code, which is 0 for a cancelled check. Exit 0 all passed (with `--require`: the named checks reported and passed; without it also every workflow run of the head completed); 1 failed or cancelled; 124 deadline (checked after every `gh` call, before any success); 3 no checks or a required one within `--grace`; 4 a needed check skipped (or neutral without `--allow-neutral`); 2 usage or `gh` unusable. The last line it prints is the deciding check's URL. [Waiting for CI](launch-modes.md#waiting-for-ci-a-merge-or-a-lock). |
 | `roles` | Who plays which role, by full session id; cross-session send budget; broadcast. |
 | `ask` | The owner-question register: questions with a default action and a due time, answers, decisions taken by agents. `ask inbox [--since T] [--stage S] [--json] [--if-quiet]` is the owner's digest across all stages: per stage what finished since the owner's last answer, which questions wait (overdue first), which decisions the hubs took, live and blocked agents; under 2 000 characters, read-only. |
 | `lock` | The lock board for shared resources: `main-merge` is built in, every other resource is named by your project in `lock-rules.json`. `lock rules` shows, writes and tests those rules. |
@@ -73,10 +77,11 @@ flowchart LR
 | `hub succeed` | Autopilot: start the successor of an automatic handoff — a background Remote Control session, else a headless hub, at the hub's own effort; `--replace` swaps the successor that already took over. |
 | `hub grilling` | `hub grilling start / end / status`: mark that the hub is grilling the owner, so nothing hands it over automatically until the grilling ends ([No automatic handoff in the middle of a grilling](#no-automatic-handoff-in-the-middle-of-a-grilling)). |
 | `hub effort` | The effort a Claude Code session runs at now and the source it was read from (hook input, `$CLAUDE_EFFORT`, transcript, a `--bg` session's `state.json`, the Desktop record, the process argv — most current first); `--session ID`, `--json`. Exit 1 when no source answers. |
+| `hub why` | `hub why <sha \| file:line> [--cwd DIR] [--json]`: which agent run made a commit (or the line's last commit, through `git blame`) — stage, role, run, engine and model, brief, report, session and transcript, the agent's journal lines within ±30 min. Read-only. A commit without Delamain trailers gets a guess, marked as one, or "not an agent commit" ([Commit provenance](#commit-provenance)). |
 | `agy-review` | The bundled Argon reviewer: `run --cwd <checkout> --brief <file>` starts a read-only review by Gemini 4 Argon through Antigravity CLI (`agy`), detached, in a run directory under `<hub home>/agy-runs/` that ends with an `rc` file (`0` = `final.md` is the review); `limits` reads agy's quota from its `/usage` panel; `check` is the availability test of a reviewer entry (agy installed, Argon's weekly quota not known to be below 20 %). The skill is `delamain:agy-review`. macOS only so far. [docs/reviewers.md](reviewers.md#the-bundled-argon-reviewer-agy-review). |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
-| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. It shows the stages of every known hub home, not only the resolved one ([the registry of homes](#where-the-hubs-files-live)). Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
+| `agent-top` | Live console of all agents (curses), `--once` text, `--json`. Without a terminal (a Bash tool, a pipe), `--agent`, `--feed` or `--lines` act as `--once`; a bare `agent-top` exits 2. It shows the stages of every known hub home, not only the resolved one ([the registry of homes](#where-the-hubs-files-live)). Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
 
 More diagrams and the file formats: [docs/architecture.md](architecture.md).
 
@@ -118,8 +123,8 @@ agent-top                                     # live console; agent-top --once f
 # 4. message it — alive: into its inbox; finished: the session resumes with the message
 agent send builder "after the tests pass, open the PR"
 
-# 5. wait for its status line without polling (run in the background from Claude)
-jwait --journal --tag hub-1 --tag hub --hub-events --for 50m
+# 5. wait for its status line without polling (from Claude: the command of one Monitor; Codex: --for 50m)
+jwait --journal --tag hub-1 --tag hub --hub-events --stream
 
 # 6. stop it
 agent stop builder
@@ -134,8 +139,48 @@ continues the work: one under `<repo>/.worktrees/` as it is, one elsewhere (a Cl
 when `git status` there is clean, with a note. With uncommitted changes there, or when `git status` fails,
 `agent spawn` refuses before it creates or starts anything: commit there, or take another branch
 (`--worktree <new-branch> --base <branch>`). Two agents writing
-in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree: once the
-branch is merged, `git worktree remove <path>`.
+in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree by itself;
+`agent worktrees` shows what is left and `agent worktrees --prune` removes the finished ones
+([below](#agent-worktrees-the-ledger-of-a-repositorys-worktrees)).
+A repository can prepare its worktrees, and every worktree has a slot: see *Preparing worktrees* below.
+
+### Preparing worktrees
+
+`agent spawn --worktree` works out two committed files of the repository (the names are Delta's, so a repository
+prepared for Delta works unchanged) and a slot, before the agent starts, for both engines. A repository without the
+files behaves as before, except for the slot.
+
+- **`.agents/linked`** — git-ignored paths shared by all worktrees of the machine: one path relative to the repository
+  root per line, `#` comments and blank lines ignored. Each is symlinked in the worktree to the same path of the
+  repository's primary checkout (where `.env` lives), so every worktree sees the same values. An absolute path, a
+  path with `..` and a path into `.git` are refused with a message. A path missing in the primary checkout is a
+  note, not a failure. A path that already exists in the worktree as a real file or directory is reported and kept.
+  A path that git does not ignore is not linked (a note says to add it to `.gitignore`): a link git sees would make
+  `git worktree remove` refuse and `git add -A` commit it. A Codex agent in a `workspace-write` sandbox reads the
+  shared files through the links but cannot write them (the main checkout is outside its sandbox).
+  A repository whose git dir is not `<checkout>/.git` (`--separate-git-dir`, bare) has no primary checkout git can name:
+  nothing is linked, with a note.
+  Linking runs for a created and for a reused worktree (an existing link is left alone, a missing one is made), so a
+  `.env` added to the primary checkout later reaches a worktree on its next spawn.
+- **`.agents/prepare`** — an executable at the repository root, run once in a new worktree before the agent starts, with
+  the worktree as cwd, stdin closed and the environment `AGENT_HUB_SLOT`, `AGENT_HUB_WORKTREE`, `AGENT_HUB_BRANCH`,
+  `AGENT_HUB_MAIN_CHECKOUT`, `AGENT_ROLE`, `AGENT_HUB_ENGINE`, `HUB_STAGE`, `HUB_TAG`. Keep it fast: no dependency
+  installs. **It is run by the hub's own process with the hub user's rights and environment, outside the agent's
+  Codex sandbox, from the branch's checkout** (a new branch comes from origin's default branch): whoever can push
+  there runs code on the hub's machine at the next spawn, so trust the branch the way you trust its tests.
+  Its output goes to `prepare.log` in the agent's directory, not to the hub; only when it fails do the last 15 lines
+  come back in the spawn output (so a `set -x` or an `echo` of secrets in it reaches the hub's context). It runs when the worktree is
+  created by this spawn, and again on a later spawn into the same worktree until it has succeeded once; a worktree
+  that was already there (made by hand, or before this feature) is not prepared. A non-zero exit or running past
+  `AGENT_HUB_PREPARE_TIMEOUT` seconds (default 300, killed) fails the spawn (exit 1) with the exit code and the last
+  lines of the log, keeps the agent's directory as `<role>.failed-…` and journals one line; the worktree stays, and
+  fixing the script there and spawning again retries. `--no-prepare` starts the agent without running it (the next
+  spawn runs it). A file that is not executable is reported, not run.
+- **Slot** — a number (1, 2, …) per worktree, unique among the repository's live worktrees (the main checkout is
+  not one), stable for the worktree's life, so a re-spawn keeps it; the number of a removed worktree is free again.
+  The agent gets it as `AGENT_HUB_SLOT` (every run, resumes included), its prompt says so in one line, and
+  `agent status` shows it. Derive ports and database names from it (`PORT=$((3000 + 10 * AGENT_HUB_SLOT))`). It is
+  recorded in `<git common dir>/delamain-worktrees.json` under a lock.
 
 **Names.** A stage called `hub-09` shows as "Hub hub-09 #1", signs `hub-09-hub-1` in other stages' journals and puts
 "(hub-09)" on every agent title, and nothing says what it does. `hub start` therefore exits 2 for a stage name made only
@@ -182,6 +227,91 @@ The longer `templates/brief-executor-advanced.md` adds production permissions, s
 `templates/brief-review.md` is the brief for a reviewer.
 
 A full working day, step by step: [docs/a-day-with-delamain.md](a-day-with-delamain.md).
+
+### `agent worktrees`: the ledger of a repository's worktrees
+
+```bash
+agent worktrees                                   # every worktree of the repository of the working directory
+agent worktrees --repo ~/code/webapp --json       # another repository; the same table as data
+agent worktrees --prune --dry-run                 # what --prune would remove, and what it keeps and why
+agent worktrees --prune                           # remove the finished ones
+```
+
+One line per worktree of the repository (`git worktree list`, the main checkout first):
+
+| Column | Meaning |
+|---|---|
+| PATH, BRANCH | Relative to the main checkout, else the absolute path; `(detached)` without a branch. A registered worktree whose directory is missing shows `missing` in DIRTY and is kept. |
+| WHO | `agent <role> (stage S)` when an agent run's `meta.json` in any known hub home names the worktree as its worktree or working directory; `hub of S #n` for a hub's `<stage>-hub-<n>` directory under `.claude/worktrees/` or `.worktrees/`, or a registered hub whose recorded worktree it is; another registered role by its name; otherwise `other` (Desktop, Codex app, manual). |
+| LIVE | `yes` — a live agent run (the same liveness check as `agent status`), the stage's registered hub (a registered role of kind desktop or cli stays "in use" until it is replaced or retired), or any process whose working directory is inside the worktree (the deepest worktree gets it; the command itself is left out; directories compare by identity — device and inode — so a symlink or another case of the same path on macOS is the same directory). `no` — a worktree of an agent run that has ended, or of a hub that a later hub of its stage replaced, with nothing inside. `unknown` — a worktree Delamain cannot tell about, or any when the host can list no processes' directories (no `/proc`, no `lsof`). |
+| DIRTY | `git status --porcelain`: untracked files count, ignored ones do not (build output or a local `.env` goes with the worktree). Files marked `skip-worktree` or `assume-unchanged` that exist on disk count too: git does not show an edit to them. |
+| ON REMOTE | Commits of HEAD on no remote-tracking ref (`git rev-list HEAD --not --remotes`), as last fetched (`--fetch` runs `git fetch --prune origin` first, so a branch deleted on the server no longer counts). A branch whose merged pull request holds all its commits shows `PR #n`. |
+| MERGED | `yes` — HEAD is an ancestor of the remote default branch (`origin/HEAD`, else `origin/main`, else `origin/master`); `PR #n` — a pull request from this branch was merged into the default branch and HEAD is inside its head commit (`gh pr list --state merged --head BRANCH`; a squash or rebase merge leaves no ancestry). `no` — neither; a commit made after the pull request was merged keeps the branch "not merged". `?` — the merge state of a squash-merged branch cannot be told without `gh` (not installed, not logged in, or `--no-gh`); said once, as a note under the table. |
+| AGE | Since the last change, whichever is latest: the last commit, the worktree's newest reflog entry, one of its uncommitted files (the first 200 are looked at), its top directory. |
+| PRUNE | `removable`, or `kept:` with every reason. |
+
+`--prune` removes a worktree only when **all** of this holds: merged, clean (nothing changed, nothing untracked), no
+commit on no remote, no git operation under way (rebase, merge, cherry-pick, revert, bisect, a running git command),
+not locked, not the working directory of the caller (nor one inside it), not in use, holding no other registered
+worktree at any depth (removing a directory removes everything inside it; run `--prune` again once the inner one is
+gone) — and where use is `unknown`, no change for `--idle-for` (default `24h`). Unpushed or uncommitted work is never
+removed, with any flag. It runs `git worktree remove` (never `--force`; git's own refusal keeps the worktree and is
+reported). A registered worktree whose directory is missing is kept as `missing` with its registration: a worktree
+moved by hand or on an unmounted disk looks the same, and the registration holds its index and HEAD, so
+`git worktree prune` is never run (`git worktree repair <new path>` brings a moved one back). Before it decides,
+`--prune` runs `git fetch --prune origin`; when the fetch fails, or with `--no-fetch`, it removes nothing and shows the
+candidates as kept with `refs not fresh` (a merge the remote has since lost must not count); a listing fetches only with
+`--fetch` (`--fetch` with `--no-fetch` is a usage error). Merged and pushed are judged at the HEAD the listing saw, and
+just before removing it looks again: at the processes, at the HEAD (moved — kept) and at the registered worktrees (one
+registered inside since — kept). The main checkout is listed and never a candidate.
+The branch goes with the worktree only when it is merged by ancestry; a squash-merged branch stays unless
+`--delete-branches` (only for a branch whose merged pull request holds all its commits). Either is deleted with
+`git update-ref -d` at the commit that was verified, so a branch that moved meanwhile stays, and only when no worktree
+has it checked out; the default branch is never deleted. The summary says `removed N, kept M` with the kept ones grouped by
+their first reason. `--dry-run` prints the same and removes nothing. The listing is read-only; `--json` adds
+`removable` and `keep` per worktree (and a `prune` object with `--prune`). Exit 0 whenever the command ran, 2 for a usage
+error (not a repository, `--dry-run` without `--prune`).
+
+### `agent desktop-idle`: idle Claude Desktop sessions and what they hold
+
+```bash
+agent desktop-idle                  # idle for 12 h or more: the clean ones to archive, the others with why they stay
+agent desktop-idle --idle-for 6h    # another limit (90s, 30m, 6h, 1h30m, 2d)
+agent desktop-idle --ids            # only the Desktop ids that are safe to archive, one per line
+agent desktop-idle --json           # everything as data (the same object is `desktop_idle` in `agent-top --json`)
+```
+
+A Desktop Code session keeps its `claude` CLI and the MCP servers it started alive until it is archived. The command reads
+three things and changes none: the CLI's pid records (`<claude config>/sessions/<pid>.json`: the Desktop id in
+`hostSessionId`, `status`, `statusUpdatedAt`; a record of a dead or recycled pid is ignored), Desktop's own record of the
+session (`claude-code-sessions`: title, working directory, branch, `lastActivityAt`, archived or not) and `ps` (resident
+memory of the CLI and everything below it; command lines are never printed, an MCP server's carries its API key). A session is
+listed when its status is `idle` and nothing happened for the limit (the later of Desktop's last activity and the CLI's last
+status change).
+
+A listed session is **to archive** when archiving loses nothing: no changed or untracked file, no git operation under way,
+no commit on no remote ref (`git rev-list HEAD --not --remotes`) and no open pull request of its branch (`gh pr list --state
+open --head BRANCH` for a github.com remote, `glab mr list --source-branch BRANCH` for any other host). A branch whose commits sit on no remote ref only because
+a squash or rebase merge rewrote them counts as pushed when HEAD is inside the head commit of a request merged into the default
+branch (the rule of `agent worktrees`). It is **left alone**,
+with the reason, when any of that holds or cannot be told (`unknown`: git or the forge gave no answer, the directory is not a
+git repository or is gone, `--no-gh`), and also when it is the calling session (`$CLAUDE_CODE_HOST_SESSION_ID`), a role
+registered in a known hub home (a hub waiting for events looks idle), marked `autoArchiveExempt` by Desktop, or its directory
+is also used by another session. In a linked worktree (`git worktree add`, what Desktop makes) that holds for any other session,
+a clean idle one included: archiving one cleans the worktree up under the other, so both are left alone, each naming the other
+(archive the pair together by hand, or neither). In the main checkout, which an archive does not clean up, only a session
+that stays keeps its neighbour in place. Files git ignores (a local `.env`, a database, build output) are not looked at and go
+with the worktree, as with `agent worktrees --prune`. A `gh` or `glab` call that does not answer in 8 s (`$AGENT_HUB_FORGE_TIMEOUT_S`)
+makes that session `unknown`, and agent-top and `hub close` spend at most 15 s on all such calls together, so a hung forge (no
+network, a captive portal) cannot hold a one-shot `agent-top --json` until its caller times out; `agent desktop-idle` itself has
+no total limit. A process that is not the CLI, `node`, `npm` or an MCP server is named
+(`ends with it: …`): it dies with the session.
+
+Archiving is Desktop's tool `archive_session`, which only a Desktop-hosted session can call, after the owner agrees; the
+procedure is in `skills/hub/references/stage-lifecycle.md` (*Idle Desktop sessions*). The command never stops a process. In
+agent-top the summary has a block with the same split and `desktop_idle` is in `--json`; the answer is cached for 5 minutes
+because it runs git and `gh`/`glab` (`agent desktop-idle` always checks afresh). `hub close` names the stage's own idle
+Desktop sessions (its roles and the hubs it retired). Exit 0 whenever the command ran, 2 for a usage error.
 
 ## Cost and turn limits
 
@@ -350,6 +480,60 @@ Reviews are configurable: by default a reviewer is an ordinary `agent spawn`, an
 among the reviewers you listed — your own reviewer skills included — and prints how to start it; `--second` adds an
 optional second opinion from another vendor, at the hub's discretion: [docs/reviewers.md](reviewers.md).
 
+### Commit provenance
+
+Every commit an agent makes in the repository it was started in carries three git trailers:
+
+```
+Delamain-Stage: delta-ideas
+Delamain-Role: provenance
+Delamain-Run: 3f9a1c0b7e21
+```
+
+The run is one run of the agent — its spawn or one resume — recorded as `runs[].id` in the agent's `meta.json` (its
+prompt is `prompt-<run>.txt`). Commits get pushed, to public repositories too, so the trailers name no path, session id
+or anything else of the machine; `hub why` finds the rest in the run records of this machine's hub homes:
+
+```bash
+hub why HEAD~2              # a commit
+hub why bin/agent:512       # the last commit of a line (git blame)
+hub why 1a2b3c4 --json      # the same as JSON
+```
+
+It prints the stage, role, tag and run; the engine, model and effort; the brief (the copy in the agent's directory when
+the original is gone), the report, the session id and its transcript (Claude: `~/.claude/projects/*/<session>.jsonl`;
+Codex: its rollout under `$CODEX_HOME/sessions`); and the agent's journal lines within ±30 minutes of the commit. What
+is missing is said, not filled in; it writes nothing of its own (resolving a project hub home still adds that home to
+`.git/info/exclude` once, as every tool does). A commit without trailers — made before this release, or with provenance off — gets
+a `GUESS` when the reflog of the worktree or branch `agent spawn --worktree` made for an agent records creating it during
+one of its runs, a `WEAK GUESS` when only a shared checkout's reflog or a branch that contains it points at a run, and
+otherwise "not an agent commit as far as this machine knows". Reflogs are local and expire (90 days by default).
+
+How the trailers get there, without relying on the agent to add them: every run's environment gets
+`GIT_CONFIG_PARAMETERS` with `core.hooksPath=<plugin>/bin/git-hooks` (the form `git -c` uses, which Codex's shell
+passes through, unlike `GIT_CONFIG_KEY_<n>`), `AGENT_HUB_RUN` and `AGENT_HUB_PROVENANCE_REPO` (the common git
+directory of its `--cwd`). Each hook there runs the project's own hook of that name — the last `core.hooksPath` that is
+not the shim (husky's `.husky/_`, a global one), else `<common git dir>/hooks` — with its arguments, stdin and exit
+code, so a project hook that refuses still refuses. `prepare-commit-msg` then appends the trailers, which is why
+`git commit --no-verify` keeps them, and `commit-msg` adds them to a message first written in the editor. Another
+installation's shim inherited from an agent of an older version is dropped from the variable, and a shim never chains to
+a shim. Nothing is added:
+
+- in another repository (a throw-away repository of a test, a clone): the shim only chains there;
+- to a commit replayed by `cherry-pick` or `rebase`: it keeps the trailers it had, or none — a person's commit stays a
+  person's, the agent's own commits keep theirs (an amend by the agent adds them only when missing:
+  `--if-exists doNothing`);
+- to an empty message, which git then aborts as usual;
+- by `git commit-tree` and other plumbing that runs no hooks, or when a command sets `core.hooksPath` itself
+  (`git -c core.hooksPath=…`).
+
+A person's commits are never touched: nothing changes outside an agent's environment. The shim covers the client-side
+hooks husky does plus `reference-transaction`, `post-index-change`, `sendemail-validate` and the `p4-*` hooks; not
+`push-to-checkout` or `proc-receive`, whose mere presence changes what git does (a local push clears
+`GIT_CONFIG_PARAMETERS`, so a receiving repository runs its own hooks anyway). Inside the agent `git config
+core.hooksPath` answers with the shim's directory. `AGENT_HUB_PROVENANCE=off` (environment, the repository's or the
+hub home's `config.json`) leaves an agent's git alone.
+
 ## Owner questions
 
 ```mermaid
@@ -442,6 +626,7 @@ defect covers nothing and is shown as `INVALID` by
     ├── roles.json                    role → full session id, kind, tag; send counts; `host:` of the hub (takeover)
     ├── do-not-wake.json              optional: watchdog quiet — who, when, until, reason
     ├── questions.md                  owner-question register (ask)
+    ├── lessons.md                    optional: lessons of earlier shifts, kept by hand and kept across handoffs
     ├── auto-handoff.json             autopilot: automatic handoffs in a row, the successor last started
     ├── grill.json                    `hub grill`: a grilling session launched that has not joined yet
     ├── night-queue.md, night-log.md  optional night queue (nightq)
@@ -529,6 +714,7 @@ name can be created in this one. The refusal above for `~/agent-hub` and the leg
 
 ```bash
 hub effort [--session ID] [--json]   # the effort this (or that) Claude Code session runs at now, and where it was read
+hub why <sha|file:line> [--json] # which agent run made a commit: stage, role, brief, report, journal, transcript
 hub home [--cwd DIR] [--json]   # the home, the layer that chose it, protected or not, the grant lines with your path
 hub home migrate                # dry run: what would move from the legacy home to the resolved one
 hub home migrate --apply        # do it; --from DIR / --to DIR name other homes
@@ -570,11 +756,13 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_TAKE_MAIN_MERGE` | `false` | `true` (string or JSON boolean): `hub start` and `hub takeover` take the hub repository's main-merge when it is free (absent or expired), and `hub takeover` also when an earlier hub of the same stage holds it, as if `--take-main-merge` were given. A lock held by anyone else (another stage's hub, a steward) is left alone with the hint to use `--take-main-merge`, whatever this says; so is any held lock on `hub start`. The explicit flag takes it from anyone and prints an `ATTENTION` line with the holder's stage and the age of its latest journal line. Without the setting, a free main-merge of a configured hub repository is reported in the digest. |
 | `CLAUDE_BIN` | the newer of `claude` on PATH and the CLI bundled with Claude Desktop | The CLI to run agents with: a path, a name on PATH, or `desktop` — the newest CLI bundled with Claude Desktop (macOS), which follows Desktop updates. |
 | `AGENT_INIT_TIMEOUT` | `120` | Seconds to wait for a new run's init event before calling the spawn failed. |
+| `AGENT_HUB_PREPARE_TIMEOUT` | `300` | Seconds the repository's `.agents/prepare` may run in a new worktree before it is killed and the spawn fails. |
 | `AGENT_HUB_REVIEWERS` | one `agent` entry | Ordered JSON list of reviewers, first available wins (`hub reviewer`); entries are agents or reviewer skills, with an optional `check` command, `until` date, change classes and `second` flag (an entry only for `hub reviewer --second`). A `check` is never run from a repository's config. [docs/reviewers.md](reviewers.md). |
 | `AGENT_HUB_REVIEW_MODEL`, `AGENT_HUB_REVIEW_EFFORT` | `opus`, `high` | Model and effort of an `agent` reviewer that names none. Pick a model other than your executors' (the reviewer is not the author). |
 | `AGENT_HUB_AGY_BIN` | `agy` on PATH | The Antigravity CLI that `agy-review` runs. Hub-wide: the environment or the hub home's `config.json`, never a repository's. |
 | `AGENT_HUB_AGY_REVIEW_MODEL` | `gemini-4-argon-high` | Model id of an `agy-review run` without `--model`. Hub-wide. |
 | `AGENT_HUB_AGY_REVIEW_MIN_LEFT` | `20` | Percent of Argon's weekly quota below which `agy-review run` refuses (exit 3) and `agy-review check` fails; an unreadable quota never does. Hub-wide. |
+| `AGENT_HUB_PROVENANCE` | on | `off` (or `false`) starts agents without the git hooks shim, so their commits carry no `Delamain-*` trailers ([Commit provenance](#commit-provenance)). Project or home. |
 | `AGENT_HUB_BG_WAIT_CEILING_MS` | `0` | How long an agent's run, after its turn ends, waits for its background sub-agents before the CLI kills them (passed as `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`; `0` = until they finish, the CLI's own default is 10 min). |
 | `AGENT_HUB_SEND_CAP` | `10` | Cross-session sends per sender before `roles` falls back to the journal (Claude Desktop only). Hub-wide. |
 | `AGENT_HUB_NIGHT` | `23:00-08:00` | Night window for the optional `nightq`; the watchdog wakes a silent hub for open night-queue items inside it. Hub-wide. |
@@ -584,7 +772,7 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_WATCHDOG_BACKOFF_MAX` | `4h` | Cap of the wake and notification backoff (15, 30, 60, 120, 240 min). Hub-wide. |
 | `AGENT_HUB_WATCHDOG_NIGHT_QUEUE` | `on` | Open night-queue items inside `AGENT_HUB_NIGHT` count as waiting work. Hub-wide. |
 | `AGENT_HUB_WATCHDOG_API_ERROR` | `on` | R4: wake on a Claude API error or a confirmed idle Codex app's final matching `server_overloaded` turn. [Evidence boundary](monitoring.md#which-host-is-woken-how). Hub-wide. |
-| `AGENT_HUB_WATCHDOG_REAP` | `on` | R7: stop (never remove) the idle background session of a hub that is retired in this home's open stages and live nowhere on the machine (no live role or pending successor in any known home), after it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min); a busy, blocked or child-holding one is reported once a day, not stopped. Per home: `off` also protects the hubs retired in that home from the watchdog of another. [Details](monitoring.md#retired-hubs-are-stopped-r7). Hub-wide. |
+| `AGENT_HUB_WATCHDOG_REAP` | `on` | R7: stop (never remove) the idle background session of a hub that is retired in this home's open stages and live nowhere on the machine (no live role or pending successor in any known home), after it has been quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min); a busy, blocked or shell-holding one is reported once a day, not stopped. Per home: `off` also protects the hubs retired in that home from the watchdog of another. [Details](monitoring.md#retired-hubs-are-stopped-r7). Hub-wide. |
 | `AGENT_HUB_NOTIFY_LOCAL` | `on` | Local notification of the watchdog (`osascript` on macOS, `notify-send` elsewhere when present). Hub-wide. |
 | `AGENT_HUB_NOTIFY_CMD` | none | Remote notification: a JSON list of strings, run without a shell, `{message}` replaced by the text (stage name, minutes, counts, event word only), e.g. `["curl","-fsS","-d","{message}","https://ntfy.sh/<topic>"]`. Empty = no remote channel. Hub-wide. |
 | `AGENT_HUB_SPAWN_HOLD_LOAD` | none (off) | R5: the 1-minute load average per core above which the watchdog holds spawns (`1.5`, `0.75`); the hold ends below 80 % of it. Empty or invalid (warned) = off. Hub-wide. |
@@ -592,11 +780,12 @@ Settings are environment variables; each can also be set in a `config.json` (bel
 | `AGENT_HUB_LIMIT_PACE` | `on` | [Limit pace](#limit-pace): `on` (advice, and the one hard stop of `agent spawn`), `warn` (advice only), `off` (neither, and no watchdog R6). Hub-wide. |
 | `AGENT_HUB_STAGE_ENGINES` | none | The owner's engine decision per stage, a JSON object: `{"<stage>": "codex"}` or `{"<stage>": {"engine": "codex", "decision": "Q-…"}}`. Limit-pace proposes an `ask add` for permission to use the other engine for this launch; the default runs the locked engine. Hub-wide: a repository cannot unlock a stage. |
 | `AGENT_HUB_HANDOFF_MAX_BYTES` | `15360` | Size cap of `HANDOFF-*.md` enforced by the hook. Hub-wide. |
+| `AGENT_HUB_HANDOFF_LESSONS` | `off` | `hub handoff` adds § 7, "Lessons of this shift"; `--finish`, `succeed --handoff` and the successor's `takeover` warn (never refuse) while § 7 is missing, holds `TODO` or names neither a lesson id nor `none: <reason>`; procedure in the [handoff skill](../skills/handoff/references/lessons.md), format in [Architecture](architecture.md#formats). A yes/no setting. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_SCOPE_DIRS` | none | Directories, separated by `:`, where the `handoff_size` and `questions` hooks act in addition to the hub home and repositories with `.agent-hub/`. Hub-wide: a repository's `config.json` cannot set it. |
 | `AGENT_HUB_JWAIT_MATCH` | none | Extra wake words, a regex added to the built-in `MERGED\|STOP\|DONE\|BLOCKED\|EXIT\|QUESTION\|ENDED\|REVIEWED\|GRILLED\|AWAITING ANSWER`: used by the digest's `jwait` command and counted as an agent's status word. Hub-wide. |
 | `AGENT_HUB_GENERIC_STAGE_WORDS` | `hub, stage, wave, wp, task, work, test, tmp, new, default, stream, sprint` | Words that name no work: `hub start` and `hub rename` refuse a stage name made only of these, numbers and single letters. A comma- or space-separated list that replaces the default one. Hub-wide. |
 | `AGENT_HUB_GRILL_JOIN_MIN` | `30` | Minutes a `hub grill` launch that has not run `hub grill join` blocks another launch of the stage (a Desktop start or a Codex thread may still come up); after that, or with `--again`, a new launch replaces it. `AGENT_HUB_GRILL_LINK_WAIT_S` (90) bounds how long `hub grill` waits for a background session's Remote Control link. |
-| `AGENT_HUB_JWAIT_FOR` | `50m` | How long one `jwait` waits when it is given neither `--for` nor `--until`, and the `--for` of the digest's `jwait` command: a duration such as `50m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `50m`). The default stays inside the one-hour prompt cache and ends before the ~54 minutes after which Claude Code 2.1.299+ compacts an idle conversation, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
+| `AGENT_HUB_JWAIT_FOR` | `50m` | How long one `jwait` waits when it is given neither `--for`, `--until` nor `--stream` (a stream waits 29m, inside a Monitor's 30-minute cap), and the `--for` of a Codex hub's digest `jwait` command: a duration such as `50m` or `1h30m`, at most `24h` (anything longer, zero or unparsable warns and falls back to `50m`). The default stays inside the one-hour prompt cache and ends before the ~54 minutes after which Claude Code 2.1.299+ compacts an idle conversation, so a hub's wake does not re-write its whole context into it; the Bash `timeout` of a background wait stays at or above it. Hub-wide. |
 | `AGENT_HUB_OWNER_DIGEST_AFTER` | `3h` | Owner's silence after which the hub opens its reply with `ask inbox`: `ask inbox --if-quiet` prints nothing while the owner's latest recorded answer (an answered question, a standing permission, an approved plan, in any stage's register) is newer than this, and the digest otherwise. A duration such as `90m` or `6h`, at most `30d`; anything else warns and falls back to `3h`. Hub-wide. |
 | `AGENT_HUB_SENSITIVE_CLASSES` | money, migration, permissions | Classes of action a standing permission covers only when its own class names them: a JSON object `{"class": ["stem", …]}`; a stem in a question's text or class makes the class a requirement ([Standing permissions](standing-permissions.md)). Hub-wide. |
 | `AGENT_BOARD_FILE`, `AGENT_HUB_LOCK_RULES` | in the hub home | Override the board and the hub home's lock-rules file (environment only; a named lock-rules file must exist). |
@@ -729,7 +918,7 @@ worker subagents.
 | Hook | Default | Prevents |
 |---|---|---|
 | `context_budget.py` | on (warn 300k, step 50k, block 500k tokens) | A session that keeps working with a huge context, where every turn re-reads it. Past the warn threshold it tells the session to write a handoff (`delamain:handoff`); past the block threshold it denies new `Agent` / `Task` / `SendMessage` calls unless the call hands work over (names a `HANDOFF-*.md` file or carries `handoff-ok`). With [autopilot](#autopilot-the-hub-hands-over-by-itself) on, a stage hub is told to hand over to a successor itself, and its first warning retains a durable obligation to transfer at the next quiet point without closing tools; BLOCK is the hard barrier for ordinary recognized work. |
-| `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
+| `polling_guard.py` | on | Foreground waiting: `until …; do sleep N; done` (also inside `bash -c "…"` or text fed to a shell: `| bash`, `bash <<EOF`), a bare `sleep` over 30 s (`5m`, `1h` count), `pgrep -f` that matches the waiting shell itself, and one-off CI status reads (`gh run view/list/watch`, `gh pr checks`, `glab ci status`, `glab api …/pipelines`). Allowed: background commands, short bounded retries, logs and traces, write calls (`-X POST`, `-f`/`--field`), a pipeline lookup by commit sha, a detached `await … -- gh pr checks N --watch` (fail-closed: one command made of plain words, with at most a quoted `--label` value; no `--wait`, no redirection, `&` `;` `|`, expansion, glob, wrapper or comment, or the ordinary rules apply; it returns at once), quoted text no shell runs (`git commit -m "… sleep 5m …"`, `grep "sleep 5m"`: quoted text is data unless it is the argument of `bash -c`, `eval` or `ssh`, or is fed to a shell), and anything with `# poll-ok: <reason>`. The message points at `run_in_background`, `jwait` and your own wait command. |
 | `kill_guard.py` | on | Killing processes by name or pattern: `pkill`, `killall`, `killall5`, `kill $(pgrep …)`, `pgrep … \| xargs kill` (`pidof` and `ps … \| grep` count as `pgrep` at any stage of the pipeline), the loop and variable forms in one command (`for p in $(pgrep …); do kill $p`, `P=$(pgrep …); kill $P`), also behind `sudo`/`timeout`/`eval`/`if !` and inside `bash -c "…"`, foreground or background; a segment that starts with `ssh` is not read. A pattern matches every process of the user — other agents, the hub, the desktop app — and on macOS `pkill -f pat -P 1` reads `-P` and `1` as two more patterns. Allowed: `kill <pid>`, `kill -- -<pgid>`, `agent stop`, `pgrep` alone, quoted text no shell runs, and a deliberate pattern kill with `# kill-ok: <reason>` — except a `pkill` with an option or a second pattern after the first one, which the marker does not pass. |
 | `scan_guard.py` | on | A filesystem walk rooted at the home directory or `/`, which on macOS enters `~/Library` (Mail, Messages, Safari, Containers) and raises «"claude.app" would like to access data from other apps» again and again — the consent is not kept across agent processes. Refused: `find`, `bfs`, `fd`, `rg`, `grep -r`/`-R`/`--recursive`, `ag`, `ack`, `du`, `tree`, `ls -R` whose root is `~`, `$HOME`, `${HOME}`, the absolute home path, `/`, `/Users`, `~/Library`, `~/Library/Containers`, `~/Library/Group Containers` or a glob over them (`~/*`, `/*`); the same with no root or `.` while the working directory is the home (the session's, or after `cd ~` / `cd` / `cd $HOME`, not one in a pipeline or a background list; `env -C DIR` and `sudo -D DIR` move the command, and the body of a `bash -c` it runs, to DIR); the Grep and Glob tools with such a `path`, or none while the session sits in the home. Read through `sudo`/`env`/`timeout`/`nohup`/`xargs`/`eval`/`if !`, pipelines, `&&`, `;`, `$(…)` and `bash -c "…"`; what `ssh`, `docker exec` or `kubectl exec` runs elsewhere is not read. Allowed: a project, the hub home or any named subdirectory (`find ~/repos`, `rg foo ~/agent-hub`, `find ~/Library/LaunchAgents`), a walk that stays on the first level (`find ~ -maxdepth 1`, `fd -d 1`, `tree -L 1`), `ls ~`, a file (`grep foo ~/.zshrc`), quoted text no shell runs (`echo bash -c '…'` and `env printf '%s' bash -c '…'` print it; a heredoc body is text unless a shell reads it), and a walk the owner asked for with `# scan-ok` (Grep and Glob have no marker: run it through Bash). Roots are computed from `$HOME` and the account's home, never a fixed name. Not caught: scripts (`python3 -c "os.walk(…)"`, `node -e`), `cp -r`, `rsync`, `tar`, `chmod -R` and other tools that walk a tree on the side, paths built by a variable or a substitution, and `cd` as the last element of a pipeline under zsh (read as a subshell: `echo x | cd ~; find .` is refused). The refusal names the prompt, says to search the project, `$AGENT_HUB_HOME` or a named subdirectory (or `mdfind -name` for a file by name), and names the marker. Codex: the Bash rules apply to `exec_command` and its aliases; Codex has no Grep or Glob tool to match. Full Disk Access ends the prompt too, but gives every agent that runs without questions silent access to mail, messages and cookies — hence this guard. |
 | `delegation.py` | dial **off**; effort rules none | The dial (levels 0-5, `/delegation`) tells the session how much to hand to subagents and denies `Agent`/`Workflow` at level 0. Effort rules deny subagent launches whose model × effort you do not want — in the session and in `agent spawn`. Independent of the dial, its `prompt` hook helps a successor that an older hub started with the command used before the rename (`/agent-hub:hub take over stage …`): when a prompt starts with `/agent-hub:<skill>` and `<skill>` is one of this plugin's skills (read from `skills/`), it adds a note that this is the former name of `/delamain:<skill>`, to invoke that skill and take the rest of the prompt as its arguments; any other prompt gets nothing. |
@@ -795,7 +984,7 @@ hub:
    `worktree-<stage>-hub-<n+1>`, from `origin`'s default branch (Claude Code's `worktree.baseRef`, default `fresh`); a taken name gets `-2`, `-3`…), never in the hub's
    own directory — that may be a Desktop session's worktree, removed when the session is archived. Without `--cwd` the
    directory is the hub's registered worktree, else the shell's. A directory outside git, or in another repository than the
-   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree: `claude rm <id>` does once the session is done.
+   stage's project, is refused (exit 2, nothing started); only a stage with no project (`--no-project`) starts in place. Nothing removes the worktree by itself: `agent worktrees --prune` does once a later hub has taken the stage over and the branch is merged, clean and pushed (`claude rm <id>` too).
 3. When the line arrives the old hub tells you in one line the successor's name and link and where it is: a
    background Remote Control session named `<stage>-hub-<n+1>`; in Claude Desktop it is listed under the repository's
    address group (for a repository not hosted on github.com a separate group from your folder group), on the phone in the

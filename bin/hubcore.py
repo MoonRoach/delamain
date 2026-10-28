@@ -61,7 +61,7 @@ HUB_WIDE_KEYS = ("AGENT_HUB_TZ", "AGENT_HUB_SEND_CAP", "AGENT_HUB_NIGHT", "AGENT
 # Settings a repository's .agent-hub/config.json may set as well (the repository's value wins over the home's).
 PROJECT_KEYS = ("AGENT_HUB_MODEL_MAP", "AGENT_HUB_DEFAULT_EFFORT", "AGENT_HUB_PERMISSION_MODE",
                 "AGENT_HUB_DEFAULT_REPO", "AGENT_HUB_TAKE_MAIN_MERGE", "CLAUDE_BIN", "AGENT_INIT_TIMEOUT",
-                "AGENT_HUB_BG_WAIT_CEILING_MS")
+                "AGENT_HUB_BG_WAIT_CEILING_MS", "AGENT_HUB_PREPARE_TIMEOUT")
 PROJECT_KEYS += ("AGENT_HUB_ENGINE", "CODEX_BIN", "AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_CODEX_DEFAULT_MODEL",
                  "AGENT_HUB_CODEX_PERMISSION_MODE", "AGENT_HUB_CODEX_HOOK_TRUST")
 # Yes/no settings: a JSON boolean is accepted for them (read with truthy()).
@@ -106,6 +106,9 @@ PROJECT_KEYS += ("AGENT_HUB_EFFORT_DEFAULTS",)
 # MCP servers of a Claude agent (`agent spawn --mcp`): a repository may choose inherit or none, never a config file —
 # a file's servers are commands the CLI starts without the approval a project's .mcp.json needs (bin/agent mcp_choice).
 PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
+# Commit provenance (bin/provenance.py): a repository whose git must not see the hooks shim turns it off for its agents.
+PROJECT_KEYS += ("AGENT_HUB_PROVENANCE",)
+BOOL_KEYS += ("AGENT_HUB_PROVENANCE",)
 HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
 # The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
 # not switch it off, so it is the hub home's (and the environment's) to set.
@@ -145,6 +148,10 @@ JSON_KEYS += ("AGENT_HUB_STAGE_ENGINES",)
 # The bundled Antigravity reviewer (bin/agy-review): which agy to run, its model and the quota floor. Hub home only: a
 # repository must not choose the executable the hub starts.
 HUB_WIDE_KEYS += ("AGENT_HUB_AGY_BIN", "AGENT_HUB_AGY_REVIEW_MODEL", "AGENT_HUB_AGY_REVIEW_MIN_LEFT")
+# Lessons of the shift (`hub handoff` § 7, skills/handoff/references/lessons.md): the user's own discipline, so a cloned
+# repository must not switch it; hub home only.
+HUB_WIDE_KEYS += ("AGENT_HUB_HANDOFF_LESSONS",)
+BOOL_KEYS += ("AGENT_HUB_HANDOFF_LESSONS",)
 
 
 # ---------------------------------------------------------------- the hub home
@@ -1357,6 +1364,8 @@ def child_env(extra: Optional[dict] = None) -> dict:
     env["AGENT_HUB_HOME"] = str(root())
     env["PATH"] = str(BIN) + os.pathsep + env.get("PATH", "")
     env["HUB_BIN"] = str(BIN)  # for a brief written by an older run: rebuilt at every spawn and resume, so it follows updates
+    for k in ("AGENT_HUB_RUN", "AGENT_HUB_PROVENANCE_REPO"):  # an agent's run id is not its children's (provenance.py)
+        env.pop(k, None)
     if extra:
         env.update(extra)
     return env
@@ -1886,6 +1895,21 @@ def journal_append(stage: str, tag: str, text: str) -> str:
         finally:
             os.close(fd)
     return line
+
+
+SUB_LINE_PREFIXES = ("SUB start ", "SUB end ")
+
+
+def sub_agent_line(tag: str, text: str) -> bool:
+    """A sub-agent's start or end line (hooks/subagent_journal.py): `[<parent tag>/<agent id>] SUB start …` or
+    `… SUB end …`. It is for the record, so jwait never wakes on it, whatever its description says."""
+    return bool(tag) and "/" in tag and (text + " ").startswith(SUB_LINE_PREFIXES)
+
+
+def quiet(text: str) -> str:
+    """A text the journal will carry without waking anyone: status words lower-cased, no @."""
+    text = one_line(text).replace("@", "at ")
+    return re.sub(status_pattern(), lambda m: m.group(0).lower(), text)
 
 
 def parse_journal_line(line: str):

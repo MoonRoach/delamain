@@ -9,6 +9,185 @@
   refusal names the path and says to commit there or take another branch
   (`--worktree <new-branch> --base <branch>`).
 
+## 1.0.23 — 2026-10-28
+
+- **`hub takeover` / `hub handoff --finish` no longer warn falsely on prefixed lesson ids (#142).** The check of § 7
+  accepted only `L-<digits>`, so a stage that numbers lessons `L-MC-005` got "names no lesson id" on every handoff. It now
+  also accepts `L-<LETTERS>-<digits>`.
+- **`agent-top --agent R --feed N` works without a terminal (#144).** The `status` skill suggested it, but a Bash tool has
+  no TTY and the command died with "interactive mode needs a terminal". Without a terminal, `--agent`, `--feed` or
+  `--lines` alone now print the `--once` picture (`--feed` sets the number of feed lines); a bare `agent-top` still needs a
+  terminal. The skill now says `--json --agent <role> --feed 10`, which is what returns the feed as data.
+- **Idle Claude Desktop sessions are visible and can be archived in one step (issue #153).** A Desktop Code session keeps its
+  `claude` CLI and its MCP servers alive until someone archives it; sixteen idle ones held 3.5 GB and the laptop reached
+  load 224. New `agent desktop-idle [--idle-for 12h] [--json | --ids]` lists the sessions idle that long with the memory of
+  their whole process tree and sorts them: *to archive* (no changed or untracked file, no commit on no remote, no open
+  pull/merge request — `gh` for GitHub, `glab` for other hosts) and *left alone* with the reason (dirty, unpushed, open
+  PR/MR, unknown, the calling session, a registered hub or worker, exempt, a directory another session uses). It reads the
+  CLI's pid records, Desktop's session records and `ps` and changes nothing; no command line is printed. agent-top's summary
+  has the same block and `--json` has `desktop_idle` (cached for 5 minutes: it runs git and the forge's CLI). `hub close`
+  names the stage's own idle Desktop sessions. Archiving stays Desktop's: from a Desktop-hosted session, after the owner's
+  yes, `mcp__ccd_session_mgmt__archive_session` per id (procedure: hub skill, *Idle Desktop sessions*); no command line or
+  file archives a Desktop session.
+  Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
+  `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
+  a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
+- **Sub-agents may do more, and every sub-agent of a registered session is in the journal (#156).** On Claude a quick, bounded
+  code change with nothing to push or wait on may run as a background sub-agent with `isolation: "worktree"` that
+  commits on its branch; the hub or executor pushes, opens the PR and runs `await` (new row 5 of the decision table in
+  [launch modes](docs/launch-modes.md), the `hub` skill, the executor brief footer and template). Anything that pushes,
+  waits, touches production or must be reached by other sessions stays `agent spawn`. New `SubagentStart` /
+  `SubagentStop` hooks (`hooks/subagent_journal.py`, async, fail-open) write `[<parent tag>/<agent id>] SUB start <type>
+  <model>: <description>` and `… SUB end done|error` to the stage journal of a session in the role registry, so
+  `hub why`, the history and agent-top see sub-agents like headless agents; status words and `@` in the description
+  are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
+  journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
+  (row 1).
+- **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs (issue #143).** `agent-top` now
+  gives every role `last_written_age_s` (its own journal line, signed with its tag; for a hub also the time of its session's
+  last turn, when that is fresher: the newest `assistant`/`user` record of the Claude transcript or the newest event of the
+  Codex rollout, read from the end of the file, `last_written_via`; never the file's mtime, which Claude Code moves when its
+  process exits) and `last_addressed_age_s` (the newest
+  line of another author with `@role`, `@tag` or `@<stage>-<tag>`: broadcasts, `[pace] @hub …`, a worker's `@hub DONE`).
+  The pane's Roles block reads `wrote 95h ago (transcript), addressed 3m ago`; `journal_age_s` keeps meaning the role's
+  own journal line. A hub dead for days showed no age at all (`—`) because the journals looked at reach back two days;
+  now its transcript says how long. `broadcast` prints, before the summary and in `--dry-run` too, which recipients have
+  not written for over `--silent-hours N` (default 12, 0 turns it off); a bare `/broadcast` shows it. The `status` skill
+  reads the two apart.
+  The same for the stage: `stage_info.last_activity_at` / `idle_s` / `idle` (the pane's idle marker, the status skill's
+  "candidates to close") no longer take the journal file's mtime, which every line moves, `[pace] @hub`, `[watchdog]`, a
+  broadcast or `[owner] @hub` included. A stage's own activity is its newest journal line written by one of its own (a
+  registered role's tag, its `-await`, `-<role>` and `/sub` forms, any `hub-N` of the stage; the journals are read back
+  until one has such a line) or the time of its hub's last turn, besides the agent logs, `roles.json` and `questions.md`
+  as before. A stage that was only told things for two days is now idle. Issue #143.
+- **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
+  stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
+  agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its
+  process lives, every journal line a beam to its addressee. Live by default; `?quiet=N` replays the last day after N
+  quiet seconds. `DelamainLive.saver` draws the same city natively (Core Animation, no WebKit) from the same server, with
+  settings in the `dev.delamain.saver` defaults suite. The page and the saver speak English and Russian (`?lang=`,
+  `lang`). Built by `viz/build.sh`; nothing in the plugin starts it. See [viz/README.md](viz/README.md).
+
+## 1.0.22 — 2026-10-26
+
+- **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch
+  --fail-fast` exited 0 with an empty output after red checks (PR #138 attempt 1) and once with an empty output on green
+  checks (the 1.0.21 release PR): `await` exited 0 whenever its journal line was written, and the verdict, `FAILED` or
+  `PASSED`, was only in the journal, which an executor reading `echo "exit=$?"` never looked at. The journal lines were right every
+  time. Now `--wait` prints the line and exits 0 only when the command itself exited 0, 3 for `FAILED`,
+  `TIMEOUT` or an `--on` word; detached `await` is unchanged. A failure can no longer carry the success word: `--ok
+  FAILED|TIMEOUT`, `--on 0=WORD` and `--on RC=<the --ok word>` are usage errors, and options are exact (`--wai` is an error).
+  A second fault was in `gh` itself: `gh pr checks --watch` exits 0 when a check was **cancelled** (a runner that timed out
+  after 15 minutes), so a red macOS job read as a pass (PR #140). New `bin/gh-ci-wait N` waits for a PR's checks and decides by
+  every check's bucket: 0 all passed, 1 failed or cancelled, 124 deadline (checked after every `gh` call, before any
+  success), 3 no checks or a `--require`d one registered, 4 a needed check skipped (neutral only with `--allow-neutral`),
+  2 `gh` unusable. `--require 'NAME'` (repeatable) waits until the named checks are reported and passed; without it every
+  workflow run of the head commit must also be complete. It is now the GitHub wait command of the docs. The polling guard no longer denies a single detached `await … -- gh pr
+  checks N --watch` (or any such plain call), and only that: the exception holds for one command made of plain words (a quoted value of `--label` aside) and
+  is fail-closed, so `--wait` in any spelling, a redirection, `&` `;` `|`, a quote elsewhere, an expansion, a glob, a wrapper
+  or a comment bring back the ordinary rules. See *Waiting for CI* in
+  `docs/launch-modes.md`.
+
+- **`t_scan_guard` times the hook by CPU time, not by the wall clock.** Its "many words" timing check failed macOS CI about
+  half the time under load, because a loaded runner stretched the wall clock without the hook doing more work. The thresholds now
+  read the hook's CPU time, and the hang guard is no longer replaced by the hook's own timer (PR #141). A test-only change: the plugin's behaviour is the same.
+
+## 1.0.21 — 2026-10-26
+
+- **Every agent commit says where it came from, and `hub why` walks back from code to the conversation.** Commits an
+  agent makes in its repository carry `Delamain-Stage`, `Delamain-Role` and `Delamain-Run` trailers, added by a git
+  hooks shim the agent's environment points git at (`GIT_CONFIG_PARAMETERS` `core.hooksPath`), not by the agent
+  remembering to: every hook chains to the project's own (husky, `.git/hooks`, a global `core.hooksPath`) with its exit
+  code, a person's commits and commits replayed by cherry-pick or rebase are left as they are, and the trailers name no
+  path or session. `hub why <sha|file:line>` prints the run's stage and role, brief, report, model, session, transcript
+  and journal lines around the commit; a commit without trailers gets a guess marked as one, from the agent's worktree
+  and branch reflogs, or "not an agent commit". `AGENT_HUB_PROVENANCE=off` turns the shim off
+  ([Commit provenance](docs/reference.md#commit-provenance)).
+- **A new agent worktree prepares itself.** `agent spawn --worktree` now reads two committed files of the repository
+  (Delta's names, so a repository prepared for Delta works unchanged): `.agents/linked` lists git-ignored paths
+  (`.env`, local configs) that are symlinked to the primary checkout's copies, and `.agents/prepare` is an executable
+  run once in the new worktree before the agent starts, for Claude and Codex alike. A failing or timed-out prepare
+  (`AGENT_HUB_PREPARE_TIMEOUT`, 300 s) fails the spawn with the exit code and the last log lines, never silently;
+  `--no-prepare` defers it to the next spawn into that worktree. The script runs with the hub user's rights, outside the
+  agent's sandbox. A linked path that git does not ignore is not linked (a note says so). Every worktree also gets a
+  slot, a number unique among the repository's live worktrees and stable across re-spawns: `AGENT_HUB_SLOT` in the agent's and prepare's environment, one line in the agent's prompt,
+  shown by `agent status`, so two agents' dev servers can take different ports. A repository without the files
+  behaves as before. See *Preparing worktrees* in `docs/reference.md`.
+  Two spawns of one role within a second no longer collide on the name of the set-aside run directory.
+- **`agent worktrees` shows every worktree a repository has and removes the finished ones.** Nothing removed the worktrees
+  that `agent spawn --worktree`, `hub start` / `takeover` and Desktop leave behind: one repository of the owner had 72 of
+  them and nobody could tell which were finished. `agent worktrees [--repo PATH]` lists each with its path, branch, who
+  made it (agent role and stage, hub of a stage, other), whether a live agent, the stage's registered hub or any process
+  uses it, whether it is dirty, whether its commits are on a remote, whether its branch is merged (an ancestor of the
+  remote default branch, or inside a merged pull request found with `gh`, which covers squash merges) and how long it has
+  been unchanged; `--json` gives the same as data. `--prune` (with `--dry-run` to look first) removes exactly the
+  worktrees that are merged, clean, fully pushed, not in use and not under a git operation, with `git worktree remove`
+  and never `--force`; where use is unknown it also waits for `--idle-for` (24 h) without a change. Unpushed or
+  uncommitted work is never removed, with any flag (an edit hidden by `skip-worktree` counts); the main checkout and
+  the caller's own directory are never candidates, nor a worktree that holds another one inside it. `--prune` runs
+  `git fetch --prune origin` first and removes nothing when the fetch fails or with `--no-fetch` (it shows the candidates
+  as `refs not fresh`). A worktree whose directory is missing is listed as `missing` and keeps its registration (a
+  worktree moved by hand looks the same, and the registration holds its index): `git worktree prune` is never run. The
+  branch goes with a worktree merged by ancestry, a squash-merged one only with `--delete-branches`, either with
+  `git update-ref -d` at the verified commit and only when no worktree has it checked out. Paths compare by directory
+  identity, so another case of the same path on macOS is the same worktree. The hub handoff draft and the hub skill point to `agent worktrees --prune --dry-run` instead of
+  a manual `git worktree remove`; handoff does not prune by itself.
+
+## 1.0.20 — 2026-10-26
+
+- **Broadcast to every hub.** `broadcast "text"` writes one `@hub` line to the hub of every open stage of every known
+  hub home, through `tell` (so a headless or Codex hub is reached the way `tell` reaches it), leaving out your own hub
+  and closed stages; `--urgent` / `--question` wake them at once, `--dry-run` lists the recipients, `--this-home`,
+  `--exclude`, `--json`. In Claude Code and Desktop the mod adds `/broadcast "text"` (bare: who would get it). A caller
+  that is not a registered hub signs `owner`. `tell --no-address` writes without printing the direct address.
+
+## 1.0.19 — 2026-10-26
+
+- **An idle hub no longer wakes every half hour.** A Monitor lives at most 30 minutes, so in 1.0.18 an idle hub woke
+  twice an hour all night to say "nothing new" (dolya, 26.10). Every journal `jwait` of a Claude hub now ends with a
+  `NEXT WAIT:` line that names the one waiter to arm: a Monitor stream while a headless agent or an `await` supervisor
+  of the stage runs, else one background Bash wait of up to 8 hours (within `BASH_MAX_TIMEOUT_MS`, 2 h unset). A held
+  line ends such a wait after 30 minutes at the latest.
+
+## 1.0.18 — 2026-10-25
+
+- **A hub's wakes cost about half as much and come less often.** On 25.10 the santinel stage hubs spent more than
+  half of the owner's Claude week-to-date in one evening, almost all of it on waking: every wake was two model calls
+  over a 200–370K context, and a third of the wakes carried nothing to act on.
+  - A Claude hub waits with `jwait … --stream` under one `Monitor`: each batch is an event that already carries the
+    lines, so a wake is one call with no output file to read and no waiter to re-arm. The stream ends with `ALARM`
+    at 29 minutes (a Monitor lives at most 30). The takeover digest prints this form; a Codex hub keeps `--for`.
+  - A line that reaches the hub only as `@hub` and is signed by another stage's hub (`tell`) or by `[pace]` no
+    longer wakes it: `jwait` prints it with the next batch that does, or at the deadline, under `HELD`, and a
+    waiter killed before that leaves it for the next one. Status words, QUESTION, URGENT, FAILED, TIMEOUT and
+    CONFLICT still wake; `tell --urgent` writes URGENT, and a pace crossing to `exhaust` carries it too. The watchdog
+    wakes a hub that has no waiter for a held line only after 30 minutes.
+- **The watchdog stops retired hubs that keep MCP servers.** R7 counted every live descendant of a session's process as
+  work, and every Claude session keeps its MCP servers as children, so a retired hub with context7 or chrome-devtools was
+  only reported, never stopped (two such hubs of one stage held their servers for days). Now only a shell among the direct
+  children protects the session (Claude Code runs every Bash call and background task in one); a direct child that is
+  no shell (an MCP or LSP server) does not count, nor does anything below it. A background command that runs `exec`
+  itself replaces its shell and is no longer seen as work.
+
+## 1.0.17 — 2026-10-23
+
+- **Handoff lessons cannot be waved away.** With `AGENT_HUB_HANDOFF_LESSONS` on, a § 7 that names neither a lesson
+  id nor `none: <reason>` (a "lessons module not used" line copied from an earlier handoff, seen on a live stage on
+  23.10), or a handoff without § 7 at all, is an ATTENTION line on `hub handoff --finish`, `hub succeed --handoff` and,
+  new, the successor's `hub takeover`, which tells it to ask a still-running author to fill § 7. The draft's § 7 now
+  says the module is on and what to do, instead of calling itself an optional module, so a hub whose session still
+  carries an older handoff skill follows it too. Still a warning, never a refusal.
+
+## 1.0.16 — 2026-10-23
+
+- **Optional "lessons of the shift" at a hub handoff.** With `AGENT_HUB_HANDOFF_LESSONS` on in the hub home (off by
+  default, hub-wide), `hub handoff` adds a § 7 that asks the hub for 0-3 lessons with evidence in the stage's
+  `lessons.md` (kept across handoffs, edited by hand) and for verdicts (`helped | hurt | no effect | confounded`) on
+  earlier ones; a `hurt` retires a lesson, a confirmed one can be proposed to the owner for `hub-rules.md` with
+  `ask add`. A § 7 still holding `TODO` is an ATTENTION line on `hub handoff --finish` and `hub succeed --handoff`,
+  never a refusal. The takeover digest points at `lessons.md` whenever the file exists. The draft keeps § 7 inside its
+  12 KB when other sections are cut. Procedure: `skills/handoff/references/lessons.md`.
+
 ## 1.0.15 — 2026-10-22
 
 - **Handoff diagnostics through configured root aliases.** A hub root or its parent may use a symlink;

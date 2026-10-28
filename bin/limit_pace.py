@@ -663,7 +663,9 @@ def note_crossing(stage: str, p: Pace, write: bool = True, journal: bool = True)
         told = rec.get("level") if same and rec.get("level") in LEVELS else "ok"
         if p.rank <= LEVELS.index(told):
             return None
-        text = f"@hub LIMIT {describe(p)} — choose engine/model/effort for this launch: agent spawn --dry-run; forecast is context"
+        # jwait holds a [pace] line until the hub's next real wake; a window about to run out wakes it (URGENT)
+        urgent = "URGENT " if p.level == "exhaust" else ""
+        text = f"@hub LIMIT {urgent}{describe(p)} — choose engine/model/effort for this launch: agent spawn --dry-run; forecast is context"
         if write:
             data[key] = {"resets_at": p.resets_at, "level": p.level, "at": time.time()}
             hc.atomic_write(path, json.dumps(data, ensure_ascii=False, indent=1, sort_keys=True) + "\n")

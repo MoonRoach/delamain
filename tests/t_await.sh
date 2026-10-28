@@ -44,7 +44,7 @@ grep -q 'log .*/stage-a/coordinator/work/await/.*\.log)$' $J; check $? 0 "line n
 
 # 2. outcome words: default ok word, exit codes, --on, explicit --link beats the log
 run(){ : > $J; rm -f $G/*; touch $G/ack1 $G/ack2 $G/ack3; "$@" > /dev/null 2>&1; }
-run $B/await --wait -- $O/fake_wait.sh; check $? 0 "--wait stays attached and exits 0 when the line is written"
+run $B/await --wait -- $O/fake_wait.sh; check $? 0 "--wait stays attached and exits 0 when the word is the --ok word"
 check "$(grep -c '@hub DONE ' $J)" 1 "exit 0 without --ok -> DONE"
 EXIT=1 run $B/await --wait -- $O/fake_wait.sh
 check "$(grep -c '@hub FAILED .*(exit 1, ' $J)" 1 "exit 1 -> FAILED"
@@ -60,6 +60,53 @@ EXIT=1 run $B/await --wait --link https://git.example/mr/9 -- $O/fake_wait.sh
 check "$(grep -c '— https://git.example/mr/9 (' $J)" 1 "--link beats the URL in the output"
 check "$(grep -c '' $J)" 1 "…and still one line"
 
+# 2b. a CI wait that must never read as success: the caller reads await's own exit code and output (the 26.10 incidents:
+# `await --wait --ok PASSED -- gh pr checks N --watch` exited 0 with an empty output on red checks, the FAILED line being
+# only in the journal). A stub gh stands in for the real one; its rows are what `gh pr checks --watch` printed then.
+mkdir -p $O/ghbin
+cat > $O/ghbin/gh <<'SH'
+#!/bin/bash
+echo "Refreshing checks status every 10 seconds. Press Ctrl+C to quit."
+case "$GH_CHECKS" in
+  pass) printf 'tests (ubuntu-latest)\tpass\t5m49s\thttps://github.com/o/r/actions/runs/1/job/1\t\n'; exit 0 ;;
+  fail) printf 'tests (macos-latest)\tfail\t7m59s\thttps://github.com/o/r/actions/runs/1/job/2\t\n'; exit 1 ;;
+  none) echo "no checks reported on the 'x' branch"; exit 1 ;;
+  killed) kill -9 $$ ;;
+esac
+SH
+chmod +x $O/ghbin/gh
+ghwait(){ : > $J; GH_CHECKS=$1 PATH=$O/ghbin:$PATH $B/await --wait --ok PASSED --label "PR #1 merge" -- gh pr checks 1 --watch --fail-fast > $O/gh.out 2>&1; }
+ghwait pass; check $? 0 "checks pass: await --wait exits 0"
+grep -q '^@hub PASSED PR #1 merge — https://github.com/o/r/actions/runs/1/job/1 (exit 0, ' $O/gh.out; check $? 0 "…and prints the PASSED line"
+check "$(grep -c '@hub PASSED ' $J)" 1 "…which is the journal's line"
+ghwait fail; rc=$?
+check $rc 3 "checks fail: await --wait exits 3, not 0 (control: it used to exit 0 here)"
+grep -q '@hub FAILED PR #1 merge — https://github.com/o/r/actions/runs/1/job/2 (exit 1, ' $O/gh.out; check $? 0 "…and prints the FAILED line, the output is not empty"
+check "$(grep -c 'PASSED' $O/gh.out $J | tr -d '\n')" "$O/gh.out:0$J:0" "negative: no PASSED anywhere when the checks failed"
+ghwait none; check $? 3 "no checks registered: not ok"
+check "$(grep -c '@hub FAILED ' $O/gh.out)" 1 "…FAILED"
+ghwait killed; check $? 3 "gh killed by a signal: not ok"
+grep -q '@hub FAILED .*killed by signal 9' $O/gh.out; check $? 0 "…FAILED, saying so"
+: > $J; PATH=$O/ghbin:$PATH GH_CHECKS=fail $B/await --wait --on 1=CONFLICT -- gh pr checks 1 > $O/gh.out 2>&1; check $? 3 "an --on word is not the ok word either"
+# review of PR #140: success is the command's own outcome, never a word an option can paint over it
+ghwait_args(){ : > $J; GH_CHECKS=$1 PATH=$O/ghbin:$PATH $B/await --wait "${@:2}" -- gh pr checks 1 --watch > $O/gh.out 2>&1; }
+ghwait_args fail --ok PASSED --on 1=PASSED; check $? 2 "--on 1=<the --ok word> is refused as usage (exit 2)"
+check "$(grep -c '' $J)" 0 "…before anything runs or is journaled"
+grep -q -- '--on 1=PASSED' $O/gh.out; check $? 0 "…saying which option"
+ghwait_args fail --ok TIMEOUT; check $? 2 "--ok TIMEOUT is refused"
+ghwait_args fail --ok FAILED; check $? 2 "--ok FAILED is refused"
+ghwait_args pass --on 0=CONFLICT; check $? 2 "--on 0=WORD is refused (exit 0 is the --ok word)"
+ghwait_args pass --ok PASSED --on 1=CONFLICT; check $? 0 "control: the same options with a different word are fine on success"
+ghwait_args fail --ok PASSED --on 1=CONFLICT; check $? 3 "…and a failure with its own word still exits 3"
+# options are exact: --wai is not a spelling of --wait
+: > $J; PATH=$O/ghbin:$PATH GH_CHECKS=pass $B/await --wai --label abbrev -- gh pr checks 1 > $O/gh.out 2>&1; check $? 2 "an abbreviation of an option is a usage error"
+check "$(grep -c '' $J)" 0 "…nothing started, nothing journaled"
+# detached mode is unchanged: it returns at once with 0 whatever the wait later says, and the supervisor writes no
+# stdout of its own into the caller's output
+: > $J; GH_CHECKS=fail PATH=$O/ghbin:$PATH $B/await --ok PASSED --label detached-fail -- gh pr checks 1 --watch > $O/gh.out 2>&1; check $? 0 "detached: await returns 0 at once"
+waitline 'FAILED detached-fail'; check $? 0 "…and the verdict still lands in the journal"
+check "$(grep -c '^@hub' $O/gh.out)" 0 "…and not in the caller's output"
+
 # 3. the supervisor's own timeout: the command is stopped (its process group), one TIMEOUT line
 cat > $O/hang.sh <<'SH'
 #!/bin/bash
@@ -73,7 +120,8 @@ chmod +x $O/hang.sh
 t0=$(date +%s)
 $B/await --wait --timeout 2s --label hang -- $O/hang.sh > $O/a3.out 2>&1; rc=$?
 el=$(( $(date +%s) - t0 ))
-check $rc 0 "timeout: the line is written"
+check $rc 3 "timeout: the line is written and the exit says it is not the ok word"
+grep -q '^@hub TIMEOUT hang ' $O/a3.out; check $? 0 "…and the line is printed"
 check "$(grep -c '@hub TIMEOUT hang .*stopped after 2s' $J)" 1 "one TIMEOUT line"
 [ $el -le 20 ]; check $? 0 "the wait ended at the limit, not when the command would (${el}s)"
 ! kill -0 "$(cat $PIDFILE)" 2>/dev/null && ! kill -0 "$(cat $PIDFILE.child)" 2>/dev/null; check $? 0 "the command and its child were stopped"
@@ -81,7 +129,7 @@ check "$(grep -c '@hub TIMEOUT hang .*stopped after 2s' $J)" 1 "one TIMEOUT line
 # 4. a wait command that itself fails: non-zero exit with output, then one that cannot start, then one not found
 : > $J
 printf '#!/bin/bash\necho "glab: 401 Unauthorized" >&2\nexit 1\n' > $O/broken.sh; chmod +x $O/broken.sh
-$B/await --wait -- $O/broken.sh >/dev/null 2>&1; check $? 0 "failing command: await itself succeeds"
+$B/await --wait -- $O/broken.sh >/dev/null 2>&1; check $? 3 "failing command: await --wait does not exit 0"
 check "$(grep -c '@hub FAILED .*(exit 1, ' $J)" 1 "failing command -> FAILED"
 printf '#!/nonexistent/interpreter\n' > $O/nostart.sh; chmod +x $O/nostart.sh
 : > $J; $B/await --wait -- $O/nostart.sh >/dev/null 2>&1
@@ -110,7 +158,7 @@ for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 kill -0 $pid 2>/dev/null && kill -9 $pid   # the rule under test missing: do not hang the suite
 wait $pid; rc=$?
 check "$(grep -c '@hub FAILED ctrlc .*interrupted by signal 2' $J)" 1 "SIGINT journals one FAILED line"
-check $rc 0 "…and the supervisor exits 0, not 130"
+check $rc 3 "…and the supervisor exits 3 (not the ok word), not 130"
 sleep 0.5; ! kill -0 "$(cat $PIDFILE.child)" 2>/dev/null; check $? 0 "…the command's process group is gone"
 
 # 5c. a grandchild that ignores SIGTERM survives the leader's exit on SIGTERM: the group still gets SIGKILL
@@ -191,7 +239,7 @@ real(p.pid, signal.SIGKILL); p.wait()
 # c) ...and the line's detail says so instead of "stopped"
 seen.clear()
 args = argparse.Namespace(timeout="1s", ok="DONE")
-word, detail = mod.run_wait(args, ["/bin/sleep", "300"], __import__("pathlib").Path(work + "/c.log"), {})
+word, detail, ok = mod.run_wait(args, ["/bin/sleep", "300"], __import__("pathlib").Path(work + "/c.log"), {})
 print("detail:", word, detail)
 for pg in seen:
     try:
@@ -213,7 +261,7 @@ check "$(echo "$sg" | grep '^zombies:')" "zombies: ''" "EPERM from a group of zo
 check "$(echo "$sg" | grep '^live:')" "live: 'EPERM' bounded" "a live leader that EPERM keeps is reported, not waited on for ever"
 echo "$sg" | grep -q '^detail: TIMEOUT could not be stopped (EPERM) after 1s, no verdict yet$'; check $? 0 "…and the TIMEOUT line says it could not be stopped"
 check "$(grep -c '@hub FAILED crash .*await crashed: RuntimeError' $J)" 1 "a crash of run_wait still journals one FAILED line"
-check "$(echo "$sg" | grep '^crash rc:')" "crash rc: 0" "…and supervise exits 0"
+check "$(echo "$sg" | grep '^crash rc:')" "crash rc: 3" "…and supervise exits 3: FAILED is not the ok word"
 
 # 6. the hub's own jwait (digest filter) wakes once on the line, though the line is written under the hub's tag family
 : > $J; rm -f $G/*; export EXIT=0

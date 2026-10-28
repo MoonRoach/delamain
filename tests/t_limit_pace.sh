@@ -190,7 +190,10 @@ check("choose engine/model/effort for this launch" in first and "after the reset
 check(lp.note_crossing("stage-x", p) is None, "…the second time: nothing (no spam)")
 check(lp.note_crossing("stage-y", p) is not None, "…another stage is told on its own")
 calm = lp.Pace("codex", "7d", level="ahead", used=30, expected=20, resets_at=p.resets_at, seen_at=p.seen_at, age_s=1)
-check(lp.note_crossing("stage-z", calm) is not None and lp.note_crossing("stage-z", p) is not None, "ahead, then exhaust: two crossings")
+calm_line, hot_line = lp.note_crossing("stage-z", calm), lp.note_crossing("stage-z", p)
+check(calm_line is not None and hot_line is not None, "ahead, then exhaust: two crossings")
+check(p.level == "exhaust" and "URGENT" in hot_line and "URGENT" not in calm_line,
+      "…only the exhaust crossing carries URGENT (a held [pace] line wakes the hub only then)")
 moved = lp.Pace("codex", "7d", level="exhaust", used=75, expected=20, resets_at=p.resets_at + 7 * 86400, seen_at=p.seen_at, age_s=1)
 check(lp.note_crossing("stage-x", moved) is not None, "a new window instance is a new crossing")
 check(lp.note_crossing("stage-q", lp.Pace("codex", "7d", level="ok", used=1, expected=5, resets_at=p.resets_at)) is None, "on pace: no line")
@@ -225,7 +228,7 @@ grep -q 'dry run: p1 would start on codex' $R/p1.out; check $? 0 "--dry-run says
 FX clear; FX codex 75,85; FX claude 20,21
 dry p2 --engine codex --model gpt-6.1-sol --effort medium; check $? 0 "Codex over pace, Claude has headroom: no refusal"
 grep -q '2. move: .*run this as Claude Sonnet high' $R/p2.out; check $? 0 "…the advice moves the work to the equivalent class"
-grep -q 'would journal \[pace\] @hub LIMIT Codex 7d' $R/p2.out; check $? 0 "…a dry run names the crossing line"
+grep -Eq 'would journal \[pace\] @hub LIMIT (URGENT )?Codex 7d' $R/p2.out; check $? 0 "…a dry run names the crossing line"
 [ ! -s $J ] || ! grep -q 'LIMIT' $J; check $? 0 "…and does not write it"
 
 AGENT_HUB_STAGE_ENGINES='{"stage-a": {"engine": "codex", "decision": "Q-T-1"}}' dry p3 --engine codex --model gpt-6.1-sol --effort medium
@@ -242,10 +245,10 @@ dry p6 --engine codex --model gpt-6.1-sol --effort medium --reason "prod inciden
 $B/agent spawn --role p7 --cwd $W --brief $W/b.md --engine codex --model gpt-6.1-sol --effort medium \
   --reason "prod incident fix" > $R/p7.out 2>&1; check $? 0 "a real launch with --reason"; wait_dead p7
 grep -q 'started headless agent p7 .*reason: prod incident fix, over the limit-pace stop (Codex 7d 98% used' $J; check $? 0 "…journalled as over the stop, with the numbers"
-check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $J)" 1 "…one crossing line"
+check "$(grep -Ec '\[pace\] @hub LIMIT (URGENT )?Codex 7d' $J)" 1 "…one crossing line"
 $B/agent spawn --role p8 --cwd $W --brief $W/b.md --engine codex --model gpt-6.1-sol --effort medium \
   --reason "second fix" > $R/p8.out 2>&1; wait_dead p8
-check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $J)" 1 "a second launch: still one crossing line"
+check "$(grep -Ec '\[pace\] @hub LIMIT (URGENT )?Codex 7d' $J)" 1 "a second launch: still one crossing line"
 
 FX clear; FX codex 60,75 --age-m 240; FX claude 60,75
 dry p9 --engine codex --model gpt-6.1-sol --effort medium; check $? 0 "stale Codex data: not refused"
@@ -300,11 +303,11 @@ mkdir -p $R/stage-w/coordinator/work
 $B/roles set --stage stage-w hub 44444444-4444-4444-8444-444444444444 --kind cli --tag hub-1 > /dev/null
 JW=$R/stage-w/coordinator/work/journal-$(today).md
 $B/watchdog run --stage stage-w > $R/wd1.out 2>&1; check $? 0 "watchdog tick"
-check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $JW)" 1 "watchdog R6: one @hub LIMIT line in the stage with a hub"
+check "$(grep -Ec '\[pace\] @hub LIMIT (URGENT )?Codex 7d' $JW)" 1 "watchdog R6: one @hub LIMIT line in the stage with a hub"
 grep -q 'LIMIT Claude' $JW; check $? 1 "…none for the engine on pace"
 check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…the owner notified once"
 $B/watchdog run --stage stage-w > $R/wd2.out 2>&1
-check "$(grep -c '\[pace\] @hub LIMIT Codex 7d' $JW)" 1 "a second tick: no new line"
+check "$(grep -Ec '\[pace\] @hub LIMIT (URGENT )?Codex 7d' $JW)" 1 "a second tick: no new line"
 check "$(grep -c 'Codex plan week projected to run out' $R/notify.log)" 1 "…and no new notification"
 # The actual watchdog must neither journal nor notify on the first hour's extrapolation.
 FX clear; FX codex 4 --elapsed-h 1 --span-h 0; FX claude 20,21

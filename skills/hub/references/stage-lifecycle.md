@@ -92,16 +92,28 @@ are under *Choosing how to launch work* in `SKILL.md` and [launch-and-executors.
 ## Waiting, in full
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** run Bash with `run_in_background: true`, `timeout: 3600000` and the digest's `--for` (50m by
-  default, `AGENT_HUB_JWAIT_FOR`). The prompt cache lives one hour: a wake after a longer sleep re-writes the whole
-  context into it, so a longer wait costs more than it saves. The Bash `timeout` stays at or above `--for`. Its
-  completion notification wakes the coordinator.
+- **Claude Code:** the digest's `jwait … --stream` as the command of one `Monitor` with `timeout_ms: 1800000`. Every
+  batch is a Monitor event whose text carries the lines, so a wake is one model call over the context: no output file
+  to read, no waiter to re-arm. A background Bash `jwait` costs two (its notification carries only the command, the
+  lines sit in a file). The stream ends with `ALARM` at its deadline (29 minutes by default, inside the Monitor's
+  30-minute cap and the one-hour prompt cache). Every `jwait` that ends prints `NEXT WAIT: …`, the one waiter to arm
+  next: a Monitor stream while a headless agent or an `await` supervisor of the stage runs; when nothing runs, ONE Bash
+  `run_in_background` wait of up to 8 hours (inside `BASH_MAX_TIMEOUT_MS`; 2 h when it is unset). On 26.10 an idle
+  hub under a Monitor woke every 29 minutes all night to say "nothing new", two or three calls over its context
+  each; a long wait costs one cache re-write when the next line comes. A held line ends a long wait after 30 minutes.
+  The watchdog, not an alarm, wakes a hub whose process died or whose lines wait with no waiter.
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
-- `jwait --journal --tag hub-<N> --tag hub --hub-events --for 50m` —
+- `jwait --journal --tag hub-<N> --tag hub --hub-events --stream` —
   lines addressed to the hub, agents' status lines and script questions echoed into the journal. Your own lines (your
   tag and its sub-tags `hub-<N>/…`) do not wake you. The digest prints this command with the team's extra wake words
-  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. `--for` defaults to 50m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm). Called with
+  (`AGENT_HUB_JWAIT_MATCH`) resolved internally by `--hub-events`; copy it from there. Without `--stream`, `--for`
+  defaults to 50m (`AGENT_HUB_JWAIT_FOR`; wait again after the alarm).
+  Held lines: a line that reaches you only as `@hub` and is signed by another stage's hub (`tell`) or by `[pace]` does
+  not wake you; it comes with the next batch, or at the deadline, under `HELD (did not wake you)`. It wakes like any
+  line with a status word, QUESTION, URGENT (`tell --urgent`), FAILED, TIMEOUT or CONFLICT. On 25.10 such lines were
+  a third of the santinel hubs' wakes, each a model call over a 200–370K context. A `--match` on another hub's
+  signature (`\[dolya-hub-[0-9]+\] @hub`) undoes this: do not add one. Called with
   `--caller <session id>` instead of as the hub's tag (no `HUB_TAG`, no registry entry for the session), `jwait` does not know your tag: add `--exclude-tag hub-<N>`, or your own `@agent` messages
   wake you.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
@@ -126,6 +138,8 @@ nag or hold a lock any more. The owner decides that (in words, or in the stage p
 4. Tell the owner in one or two lines what the stage delivered and what stays open, and where. If you are the hub being
    closed, that is your last message: no more tool calls. A Desktop hub is archived by the owner, or by another session
    with `mcp__ccd_session_mgmt__archive_session`; a busy or terminal one is named in the command's ATTENTION line.
+   When `hub close` also named the stage's idle Desktop sessions (earlier hub shifts), offer the owner to archive the
+   clean ones as in *Idle Desktop sessions* below; a Desktop hub archives its own session last, after that.
 Asked from another session to close a stage whose hub is alive: `tell <S> "…"` first, so its hub reports and stops;
 a hub that is gone or silent is closed directly. The owner can close an idle stage from agent-top: Summary lists the
 stages and marks as idle an open one with no live agent and no activity for 48 h; `c` in the terminal console, the
@@ -142,3 +156,29 @@ HH:MM …`: run the digest `jwait` with `--since HH:MM`, handle what it shows, k
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
 "…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back.
+
+## Idle Desktop sessions
+
+A Claude Desktop Code session keeps its `claude` process and the MCP servers it started (about 150–370 MB plus a few node
+processes) until it is archived, and idle ones pile up (16 of them held 3.5 GB; the laptop reached load 224). `agent
+desktop-idle` (`--idle-for 12h` by default) lists the sessions idle that long with the memory each holds and sorts them. A
+*clean* one has no changed or untracked file, no git operation under way, no commit on no remote and no open pull/merge
+request (`gh`; `glab` for other hosts), so archiving loses nothing; the rest are named with the reason and never touched,
+and so is anything that cannot be checked (`unknown`). Not listed to archive either: the calling session, a role registered
+in a hub home, a session Desktop marks exempt, a directory another session still uses (two clean sessions in one worktree
+both stay, each naming the other: archiving one cleans the worktree up under the other; archive the pair together or neither).
+Files git ignores (a local `.env`, a database) are not checked and go with the worktree. The same list is in agent-top's
+summary and in `desktop_idle` of its `--json`; `hub close` names the stage's own sessions.
+
+Archiving is Desktop's own tool; no command line or file does it (Desktop's records are its own state, not an interface).
+From a Desktop-hosted session:
+1. Run `agent desktop-idle` and show the owner the clean sessions (title, idle time, memory) and the ones left alone with
+   why. Archive only after an explicit yes naming which; the tool itself says never to call it speculatively.
+2. For each agreed id (`agent desktop-idle --ids` prints the clean ones) call `mcp__ccd_session_mgmt__archive_session` with
+   `session_id` and a short `reason` ("idle 2 d, clean worktree"). Archiving stops the session's process and cleans up its
+   worktree; the session stays in the Archived list (`unarchive_session` restores it). A session that is working, pinned
+   or open on screen is refused: report it, do not retry.
+3. Report in the owner's terms: archived N (about X MB), refused M, left alone K with reasons.
+Never stop their processes by hand (`kill`, `pkill`): that bypasses the check and Desktop's own bookkeeping. A headless or
+terminal session has no such tool: give the owner the ids to archive in Desktop. Desktop can also archive a session when its
+PR closes (setting `auto_archive_on_pr_close`, changed through `ccd_settings`, with the owner's approval): offer it once.

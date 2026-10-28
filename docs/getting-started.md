@@ -177,7 +177,8 @@ Go.
   `agent spawn --engine claude --role api --tag hub-1-api --cwd <repo> --worktree --model sonnet --brief <brief file>`. Each agent is a
   detached `claude -p` session with its own process and session id. `--worktree` gives it its own git worktree (branch
   `agent/api`, directory `<repo>/.worktrees/agent/api`, kept out of git status), so two agents never edit the same
-  files. Nothing removes a worktree afterwards; once the branch is merged, `git worktree remove <path>`.
+  files. Nothing removes a worktree by itself; `agent worktrees` lists them, `agent worktrees --prune` removes the finished
+  ones (merged, clean, pushed, not in use).
 - **Files that appear:** `agents/<role>/{brief.md, inbox.md, log.jsonl, meta.json}` and the first lines in today's
   journal, `coordinator/work/journal-YYYY-MM-DD.md`.
 - **You see:** one "started" line per agent.

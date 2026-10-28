@@ -77,5 +77,5 @@ handoff and keep `agent`, `jlog` and `jwait` (see [Minimal mode](reference.md#mi
     ```bash
     hub handoff --stage payments              # fill the TODOs, then tell the owner the path
     ```
-    The agents keep running. Finished worktrees are removed by hand (`git worktree list`, `git worktree remove <path>`).
+    The agents keep running. Finished worktrees go with `agent worktrees --prune` (look first with `--dry-run`).
     Tomorrow's hub starts at step 1 and becomes `hub-4` without being told.

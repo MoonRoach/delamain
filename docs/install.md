@@ -91,6 +91,9 @@ journal line is lost, while the worker's exit code is still propagated.
     names `agent spawn`, `ask add` and `hub handoff` instead; a session the owner asked for (`user_asked`; a fork they
     asked for: `user_asked` with `context` `fork`) and an accepted card (`proposal_id`) pass. `spawn_task` (the older
     task-card tool) is refused the same way. Any other session, and any error of its own, is let through.
+  - `subagent_journal` (when a sub-agent starts and ends, async) writes one journal line each for a sub-agent of a
+    session in a stage's role registry, under `<role tag>/<agent id>`; other sessions get nothing written, and it
+    never delays or blocks a sub-agent.
   - `path_shadow` (session start) warns when a command of the same name as one of the plugin's tools comes first on
     `PATH`. It does nothing, and writes nothing, until a hub home exists (`hub start` creates it). Then it speaks every
     time in the same places as `questions`, and once per distinct set of paths elsewhere.

@@ -13,7 +13,7 @@ prompt = sys.stdin.read() if args[-1]=='-' else args[-1]  # `-` = read the promp
 with open('codex-argv.jsonl','a') as f:
  f.write(json.dumps(args[:-1])+'\n')
 with open('codex-env.jsonl','a') as f:
- f.write(json.dumps({k:os.environ.get(k) for k in ('AGENT_HUB_ENGINE','CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','HUB_BIN','AGENT_HUB_HOME')})+'\n')
+ f.write(json.dumps({k:os.environ.get(k) for k in ('AGENT_HUB_ENGINE','CODEX_THREAD_ID','CLAUDE_CODE_SESSION_ID','HUB_BIN','AGENT_HUB_HOME','AGENT_HUB_SLOT')})+'\n')
 with open('codex-prompts.log','a') as f:
  f.write(prompt+'\n')
 if os.environ.get('FAKE_CODEX')=='die':
@@ -25,6 +25,10 @@ def emit(x):
 emit({'type':'thread.started','thread_id':sid})
 emit({'type':'turn.started'})
 time.sleep(float(os.environ.get('FAKE_CODEX_HOLD','0.2')))
+if os.environ.get('FAKE_CODEX_SHELL'):  # a shell command of the run, in its cwd and environment; output to codex-shell.log
+ import subprocess
+ with open('codex-shell.log','a') as f:
+  f.write('exit=%d\n' % subprocess.run(['/bin/sh','-c',os.environ['FAKE_CODEX_SHELL']],stdout=f,stderr=f).returncode)
 if os.environ.get('FAKE_CODEX_READ_INBOX'):
  emit({'type':'item.completed','item':{'type':'command_execution','id':'read','command':'cat inbox.md','exit_code':0,'aggregated_output':'read'}})
 final=os.environ.get('FAKE_CODEX_FINAL','fixture answered')

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd agent that keeps hub-viz running for the screen saver; replace HUB_VIZ_BIN with the built binary's path. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.delamain.hub-viz</string>
+  <key>ProgramArguments</key><array><string>HUB_VIZ_BIN</string><string>-addr</string><string>127.0.0.1:8765</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/hub-viz.log</string>
+</dict></plist>

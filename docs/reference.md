@@ -134,7 +134,11 @@ agent stop builder
 `<repo>/.worktrees/<branch>` of the main repository, which `agent spawn` adds to `.git/info/exclude`. A branch that does
 not exist yet starts from origin's default branch (after a bounded `git fetch`; the local ref, with a note, when the
 fetch fails; the local main/master without an origin), not from the commit `--cwd` has checked out — `--base REF`
-chooses another start (`--base HEAD`: the old behaviour). Two agents writing
+chooses another start (`--base HEAD`: the old behaviour). An existing worktree of the branch is reused so a re-spawn
+continues the work: one under `<repo>/.worktrees/` as it is, one elsewhere (a Claude Code or Codex session's) only
+when `git status` there is clean, with a note. With uncommitted changes there, or when `git status` fails,
+`agent spawn` refuses before it creates or starts anything: commit there, or take another branch
+(`--worktree <new-branch> --base <branch>`). Two agents writing
 in one checkout overwrite each other, so give each agent that writes code its own. Nothing removes a worktree by itself;
 `agent worktrees` shows what is left and `agent worktrees --prune` removes the finished ones
 ([below](#agent-worktrees-the-ledger-of-a-repositorys-worktrees)).

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the
+  Sonnet analogue, joins the table of equivalents: Sonnet-class work moved to Codex for limits is now proposed as
+  "Codex Terra medium (or Sol medium)", and Terra's routine effort is medium like Sol's. `docs/codex.md` and the
+  Codex hub reference name the four families by task class (Luna ↔ Haiku, Terra ↔ Sonnet, Sol ↔ Opus,
+  Astra ↔ Fable). The plugin never denied a Codex model; only its guidance named Sol and Astra.
 - **`agent spawn --worktree` does not take over another session's dirty worktree.** An existing worktree of the
   branch under `<repo>/.worktrees/` is reused as before (a re-spawn continues the work); one elsewhere (Claude Code's
   `.claude/worktrees/…`, Codex's, any other path) is reused only when `git status --porcelain` is empty, with a

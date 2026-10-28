@@ -219,7 +219,7 @@ final class DelamainSaverView: ScreenSaverView {
     private var names: [(d: District, name: TextL, repo: TextL)] = []
     private var wastes: (TextL, TextL)!
     private var holoLayers: [CALayer] = []
-    private var hudBrand: TextL!, hudSub: TextL!, hudMode: TextL!, hudLegend: TextL!
+    private var hudBrand: TextL!, hudSub: TextL!, hudMode: TextL!, hudLegend: TextL!, hudRoster: TextL!
     private var tickerBg: CAGradientLayer!, tickerBar: CALayer!, tickerText: [TextL] = []
     private var status: TextL!
 
@@ -372,6 +372,7 @@ final class DelamainSaverView: ScreenSaverView {
         hudSub = text(hudGroup, scale: 2, color: Pal.dim.cg(), align: .left)
         hudMode = text(hudGroup, scale: 2, color: Pal.cyan.cg(), align: .right)
         hudLegend = text(hudGroup, scale: 2, color: Pal.dim.cg(), align: .right)
+        hudRoster = text(hudGroup, scale: 2, color: Pal.dim.cg(), align: .left)
         tickerBg = mk(CAGradientLayer(), hudGroup)
         tickerBg.colors = [RGB(3, 4, 9).cg(0.85), RGB(3, 4, 9).cg(0)]
         tickerBg.startPoint = CGPoint(x: 0, y: 0.5); tickerBg.endPoint = CGPoint(x: 1, y: 0.5)
@@ -743,7 +744,63 @@ final class DelamainSaverView: ScreenSaverView {
         hudLegend.bounds = CGRect(x: 0, y: 0, width: 420 * s, height: 18 * s)
         hudLegend.anchorPoint = CGPoint(x: 1, y: 0)
         hudLegend.position = CGPoint(x: right, y: CGFloat(66 * s + (replayEvent != nil ? 18 * s : 0)))
+        roster(s)
         CATransaction.commit()
+    }
+
+    /// The roster under the HUD, as the page's but not interactive: the owner, each hub tower (ctx, open questions,
+    /// dimmed when closed) and under it its cabs (a dot in the model's colour, the role, the model). Rows that do not fit
+    /// above the ticker fold into "+N".
+    private func roster(_ s: Double) {
+        let f = NSFont.monospacedSystemFont(ofSize: CGFloat(13 * s), weight: .regular)
+        let sf = NSFont.monospacedSystemFont(ofSize: CGFloat(11 * s), weight: .regular)
+        let cf = NSFont.monospacedSystemFont(ofSize: CGFloat(12 * s), weight: .regular)
+        var rows: [NSAttributedString] = []
+        func row(_ parts: [(String, NSFont, RGB, Double)]) {
+            let r = NSMutableAttributedString()
+            for (t, font, c, a) in parts { r.append(NSAttributedString(string: t, attributes: [.font: font, .foregroundColor: c.ns(a)])) }
+            rows.append(r)
+        }
+        row([("●  ", f, Pal.gold, 1), (Strings.current.owner, f, Pal.gold, 1)])
+        let hubs = towerOrder.compactMap { towers[$0] }.filter { $0.lot != nil }
+            .sorted { ($0.open ? 0 : 1, $0.stage) < ($1.open ? 0 : 1, $1.stage) }
+        for tw in hubs {
+            let a = tw.open ? 1.0 : 0.45
+            var parts: [(String, NSFont, RGB, Double)] = [("●  ", f, tw.color, a), (short(tw.stage, 24), f, RGB(0xffd6f6), a)]
+            if tw.ctx > 0 { parts.append(("  ctx \(tw.ctx >= 1000 ? "\(tw.ctx / 1000)k" : "\(tw.ctx)")", sf, Pal.dim, a)) }
+            if tw.questions > 0 { parts.append(("  ?\(tw.questions)", sf, Pal.gold, a)) }
+            row(parts)
+            for c in (stages[tw.stage]?.workers.values.map { $0 } ?? []).sorted(by: { $0.role < $1.role }) {
+                let a = c.leaving ? 0.4 : 1.0
+                row([("     ●  ", cf, modelColor(model: c.model, fallback: Pal.engine(c.engine)), a),
+                     (short(c.role, 20), cf, c.working ? Pal.ink : Pal.dim, a), ("  " + shortModel(c), sf, Pal.dim, a)])
+            }
+        }
+        let top = (22 + 22 + 5 + 30) * s, lineH = 13 * 1.5 * s
+        let room = max(2, Int((H - top - 22 * s - Double(tickerRows.count) * 13 * 1.35 * s - 40 * s) / lineH) - 1)
+        let out = NSMutableAttributedString(string: Strings.current.roster.uppercased() + "\n", attributes: [
+            .font: sf, .foregroundColor: Pal.dim.ns(), .kern: CGFloat(11 * s * 0.18)])
+        for r in rows.prefix(rows.count > room ? room - 1 : room) { out.append(r); out.append(NSAttributedString(string: "\n")) }
+        if rows.count > room { out.append(NSAttributedString(string: "+\(rows.count - room + 1)", attributes: [.font: sf, .foregroundColor: Pal.dim.ns()])) }
+        let para = NSMutableParagraphStyle(); para.lineHeightMultiple = 1.25
+        out.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: out.length))
+        hudRoster.string = out
+        hudRoster.isWrapped = true
+        hudRoster.bounds = CGRect(x: 0, y: 0, width: 300 * s, height: Double(min(rows.count, room) + 2) * lineH)
+        hudRoster.anchorPoint = .zero
+        hudRoster.position = CGPoint(x: 26 * s, y: top)
+    }
+
+    /// claude-opus-5-5 -> opus 5.5, gpt-6.1-sol -> sol 6.1, as the page's shortModel.
+    private func shortModel(_ c: Cab) -> String {
+        let m = c.model.lowercased().replacingOccurrences(of: "\\[.*?\\]", with: "", options: .regularExpression)
+        if m.isEmpty { return c.engine }
+        let fam = ["fable", "opus", "sonnet", "haiku", "astra", "luna", "sol"].first { k in
+            k == "sol" ? m.range(of: "(^|[^a-z])sol([^a-z]|$)", options: .regularExpression) != nil : m.contains(k) }
+        var ver = m.range(of: "\\d+(?:[.-]\\d+)?", options: .regularExpression).map { String(m[$0]) } ?? ""
+        ver = ver.replacingOccurrences(of: "-", with: ".")
+        if let fam { return fam + (!ver.isEmpty && ver.count < 6 ? " " + ver : "") }
+        return short(m.replacingOccurrences(of: "^(claude|gpt)-", with: "", options: .regularExpression), 14)
     }
 
     private func layoutTicker() {

@@ -84,7 +84,8 @@ pinned object, end a manual view). Hover a tower or a cab for its title.
 the screen saver host neither composites nor ticks faster than about 1 Hz). `saver/CityModel.swift` ports the page's
 city generator value for value, so both draw the same city; `saver/Feed.swift` reads `/state` and `/events`, so the
 server must be running. The static city is a bitmap at the screen's backing resolution for the camera's resting view;
-everything that moves is a layer. While it runs, the saver keeps the display awake.
+everything that moves is a layer. The roster is drawn as on the page, without pinning or hover: the saver is not
+interactive. While it runs, the saver keeps the display awake.
 
 Settings, all in the `dev.delamain.saver` defaults suite (`defaults write dev.delamain.saver <key> …`):
 

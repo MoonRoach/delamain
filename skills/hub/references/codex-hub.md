@@ -27,10 +27,11 @@ hook trust, full access, and native worker setup. Full access keeps the lock hoo
   Before the first detached Codex launch for a selected CLI/model in a stage, check that CLI's `--version` and
   `debug models` catalog (use `CODEX_BIN` when configured), including its configured default when omitting `--model`.
   Desktop model availability does not establish standalone CLI availability. Ordinary implementation uses an
-  available Sol-family model, subject to the owner's explicit model choice. Resolve an unavailable Sol version by
-  checking CLI compatibility or selecting an available Sol peer and reporting the fallback. Reserve Astra for a
-  task whose judgement needs justify it, stating the reason before launch; a startup/model error is a compatibility
-  issue rather than a reason to raise the task's model class. Keep the chosen engine through this recovery.
+  available Sol-family model, subject to the owner's explicit model choice; bounded work from a finished design may
+  run on Terra (the Sonnet analogue) and mechanical work on Luna (the Haiku analogue). Resolve an unavailable Sol
+  version by checking CLI compatibility or selecting an available Sol peer and reporting the fallback. Reserve Astra
+  for a task whose judgement needs justify it, stating the reason before launch; a startup/model error is a
+  compatibility issue rather than a reason to raise the task's model class. Keep the chosen engine through this recovery.
 
 ## Terminal follow-through
 

@@ -374,12 +374,12 @@ never justify refusal or count as verified room on the other engine.
 
 The advice follows one order, and a model or effort is never changed silently:
 
-1. **Remove waste.** An effort above the task class's default for routine work (Sol high → medium, Sonnet xhigh →
-   high). Keep the task class explicit when the work needs judgement.
+1. **Remove waste.** An effort above the task class's default for routine work (Sol or Terra high → medium,
+   Sonnet xhigh → high). Keep the task class explicit when the work needs judgement.
 2. **Compare remaining weekly percentages.** Below 20% remaining is the advisory threshold for being short.
    If the requested engine is short and the other has more fresh room, propose this launch there at an equivalent
-   class: Opus/Fable ↔ Astra high (an executor that decides as it goes: Sol high), Sonnet high ↔ Sol medium,
-   Haiku high ↔ Luna medium. Compare the percentages, even when the engine with more remaining has a worse pace forecast.
+   class: Opus/Fable ↔ Astra high (an executor that decides as it goes: Sol high), Sonnet high ↔ Terra medium
+   (or Sol medium), Haiku high ↔ Luna medium. Compare the percentages, even when the engine with more remaining has a worse pace forecast.
    If both are short, recommend the one with more room and warn that it may run out before reset.
 3. **Preserve the owner's engine lock.** For `AGENT_HUB_STAGE_ENGINES`, a ready `ask add` asks whether to allow the
    other engine for **this launch**, with the equivalent model/effort and both weekly figures. The default is to run

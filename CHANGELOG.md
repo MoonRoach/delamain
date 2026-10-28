@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the
+  Sonnet analogue, joins the table of equivalents: Sonnet-class work moved to Codex for limits is now proposed as
+  "Codex Terra medium (or Sol medium)", and Terra's routine effort is medium like Sol's. `docs/codex.md` and the
+  Codex hub reference name the four families by task class (Luna ↔ Haiku, Terra ↔ Sonnet, Sol ↔ Opus,
+  Astra ↔ Fable). The plugin never denied a Codex model; only its guidance named Sol and Astra.
+
 ## 1.0.23 — 2026-10-28
 
 - **`hub takeover` / `hub handoff --finish` no longer warn falsely on prefixed lesson ids (#142).** The check of § 7

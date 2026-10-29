@@ -56,6 +56,29 @@ explicit owner stop, or a genuine business/authority boundary recorded with its 
 never fabricate READY, finance or production permission. A status or clarification message during active work
 gets an answer and the same loop resumes unless the owner cancels or changes scope.
 
+## Closing completed native agents
+
+A native agent's completed answer ends its turn; it is not proof that its runtime and tool processes have been
+released. After accepting its result, close the agent through the host's supported lifecycle tools:
+
+1. Check the agent's current status and its descendants. Use the exact agent UUID from the native launch result or
+   current runtime inventory, never a display name. Close only an accepted, completed agent with no running
+   descendants and no planned follow-up. Leave the main user chat and other user-owned chats alone.
+2. Use `close_agent` when the host exposes it, following its current schema. `interrupt_agent` only interrupts work;
+   it does not replace closure.
+3. In Codex Desktop without `close_agent`, use native `set_thread_archived` with `archived: true` and the accepted
+   agent's exact UUID as `threadId`. Always supply `threadId`: omitting it targets the calling chat. Use `hostId` from
+   the native inventory when required by the tool's current schema. Archiving preserves the conversation history.
+4. Verify the resulting runtime state and resource release: the targeted runtime should report `notLoaded` (or the
+   host's equivalent closed state), and its attributable tool processes should be gone. An archive receipt or a
+   completed answer alone is insufficient; `notLoaded` on one server does not exclude another runtime. Report any
+   unavailable runtime/process evidence as a limitation rather than claiming full release.
+
+Recheck status before closure if acceptance or inspection took time. Do not archive active agents, agents needed
+for continuation, or unrelated chats. If no supported lifecycle tool is available, report that limitation; do not
+substitute a broad process kill, an app restart or an undocumented RPC. This is a coordinator procedure, not a
+Delamain hook that automatically enforces closure.
+
 ## Waiting on a Codex hub
 
 The Claude Code wait is in the core `SKILL.md`; this is the Codex half of *Waiting*.

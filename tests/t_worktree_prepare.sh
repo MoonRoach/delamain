@@ -124,7 +124,15 @@ tail -n 20 $P/env.log | grep -qx 'AGENT_HUB_SLOT=9'; check $? 1 "…and the call
 
 # ---- 6. concurrent spawns never share a slot
 CR=$P/conc; mkrepo $CR
-for n in 1 2 3 4 5; do spawn c$n $CR > $P/c$n.out 2>&1 & done; wait
+SPAWN_PIDS=()
+for n in 1 2 3 4 5; do
+  spawn c$n $CR > $P/c$n.out 2>&1 & SPAWN_PIDS[$n]=$!
+done
+for n in 1 2 3 4 5; do
+  wait "${SPAWN_PIDS[$n]}"; spawn_rc=$?
+  check "$spawn_rc" 0 "concurrent spawn c$n exited successfully"
+  if [ "$spawn_rc" -ne 0 ]; then sed -n '1,100p' "$P/c$n.out"; fi
+done
 for n in 1 2 3 4 5; do wait_dead c$n; done
 SLOTS=$(for n in 1 2 3 4 5; do meta c$n 'm["worktree"]["slot"]'; done | sort -n | tr '\n' ' ')
 check "$SLOTS" "1 2 3 4 5 " "five concurrent spawns got five distinct slots"

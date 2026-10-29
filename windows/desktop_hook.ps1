@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'kill_guard', 'handoff_size', 'context_budget', 'no_compaction')][string]$Hook,
+    [Parameter(Mandatory = $true)][ValidateSet('questions', 'delegation', 'path_shadow', 'board_locks', 'polling_guard', 'kill_guard', 'scan_guard', 'handoff_size', 'context_budget', 'no_compaction')][string]$Hook,
     [string[]]$HookArgs = @()
 )
 $ErrorActionPreference = 'Stop'

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Windows dispatch accepts every registered hook, including `scan_guard`.** Both adapter allowlists are checked
+  against the hook manifest; native PowerShell controls also verify unknown-name rejection and scan allow/deny behavior.
+
+- **The native Windows envelope `1.0.10-wsl.1` includes an interactive `agent-top` launcher.** Run the packaged
+  `windows/agent-top.ps1` explicitly with PowerShell to keep the terminal attached to WSL; opening the extensionless
+  Linux script in Windows is not a launch command.
+
+- **Codex hubs now have an explicit procedure for closing accepted native agents.** The hub reference distinguishes a
+  completed turn from runtime release: check status and descendants, use `close_agent` when exposed, or native
+  `set_thread_archived` for the exact agent UUID in Desktop without it, then verify runtime and tool-process release.
+  The procedure protects active agents, planned continuations and user chats; this is guidance, not automatic cleanup.
+
 ## 1.0.24 — 2026-10-28
 
 - **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the

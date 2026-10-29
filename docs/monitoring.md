@@ -50,7 +50,7 @@ Desktop Code tab:
   itself and also answers `/delamain:agent-top`. It never opens by itself. Views: **Agents** (`a`; ↑/↓ move
   the `❯` cursor, Enter or the row's digit `1`–`9` opens the agent card), the **agent card** (state, model, turns, a
   context bar against the model's window, cost, result; a live feed of the last 30 events; `b` goes back), **Journal**
-  (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks). Each agent is two lines with a
+  (`j`) and **Summary** (`s`: plan-limit bars including Codex, owner questions, locks, and idle Claude Desktop sessions that hold memory — which are safe to archive, see `agent desktop-idle`). Each agent is two lines with a
   coloured state badge (LIVE, QUIET, DONE, FAIL, DIED); a long list is a window around the cursor. Docked beside a
   fullscreen transcript the pane is framed and the card takes its state's colour; above the prompt and when narrow it
   drops the frames. It refreshes every 3 s while open; a role opens that agent's card; Esc closes it. Claude and Codex
@@ -61,8 +61,8 @@ Desktop Code tab:
 - **`/broadcast "text"` writes to every hub.** The same mod registers `/broadcast` (and `/delamain:broadcast`): it runs
   `bin/broadcast` with the flags you type before the text (`--urgent`, `--question`, `--this-home`, `--exclude S`; a flag
   after the text is part of the text) and answers
-  with its summary: one line per recipient, the skipped stages and the counts. A bare `/broadcast` lists who would get
-  it and sends nothing. From a session that is not a registered hub the line is signed `owner`.
+  with its summary: one line per recipient, the skipped stages, the hubs silent for over 12 hours (a line to them waits
+  until they wake) and the counts. A bare `/broadcast` lists who would get it and sends nothing. From a session that is not a registered hub the line is signed `owner`.
 - **Read-only otherwise.** No send, stop or message button. The pane writes nothing: it runs `bin/agent-top --json` and draws the
   result (the Summary's `close` runs `bin/hub close` for the stage's own name, in its home, as `AGENT_HUB_HOME`). Messaging and stopping stay in the console (`m` / `x`) and in `agent send` / `agent stop`. `agent-top` itself
   writes one file per home it reads, its read cache `<hub home>/.state/agent-top/cache.sqlite` (or under `$AGENT_HUB_STATE_DIR`): the
@@ -73,6 +73,12 @@ Desktop Code tab:
   `claude --bg` views, Claude Code older than 2.1.287. Use the console in a shell: `agent-top` (live), `agent-top --once`
   (text picture), `agent-top --json` (scripts). If `bin/agent-top` is missing the mod goes quiet instead of failing.
 
+
+### hub-viz: the live city
+
+[`viz/`](../viz/README.md) draws what agent-top shows as a live night city: a repository is a district, a stage hub a
+tower, a worker a flying cab, every journal line a beam between them. It is a small Go server over the hub home with a
+web page, and a native macOS screen saver; build it with `viz/build.sh`; nothing in the plugin starts it.
 
 ## Native subagent status and waiting
 

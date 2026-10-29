@@ -14,6 +14,79 @@
   `set_thread_archived` for the exact agent UUID in Desktop without it, then verify runtime and tool-process release.
   The procedure protects active agents, planned continuations and user chats; this is guidance, not automatic cleanup.
 
+## 1.0.24 — 2026-10-28
+
+- **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the
+  Sonnet analogue, joins the table of equivalents: Sonnet-class work moved to Codex for limits is now proposed as
+  "Codex Terra medium (or Sol medium)", and Terra's routine effort is medium like Sol's. `docs/codex.md` and the
+  Codex hub reference name the four families by task class (Luna ↔ Haiku, Terra ↔ Sonnet, Sol ↔ Opus,
+  Astra ↔ Fable). The plugin never denied a Codex model; only its guidance named Sol and Astra.
+- **`agent spawn --worktree` does not take over another session's dirty worktree.** An existing worktree of the
+  branch under `<repo>/.worktrees/` is reused as before (a re-spawn continues the work); one elsewhere (Claude Code's
+  `.claude/worktrees/…`, Codex's, any other path) is reused only when `git status --porcelain` is empty, with a
+  note, and is refused otherwise — also when `git status` fails — before anything is created or launched. The
+  refusal names the path and says to commit there or take another branch
+  (`--worktree <new-branch> --base <branch>`).
+
+## 1.0.23 — 2026-10-28
+
+- **`hub takeover` / `hub handoff --finish` no longer warn falsely on prefixed lesson ids (#142).** The check of § 7
+  accepted only `L-<digits>`, so a stage that numbers lessons `L-MC-005` got "names no lesson id" on every handoff. It now
+  also accepts `L-<LETTERS>-<digits>`.
+- **`agent-top --agent R --feed N` works without a terminal (#144).** The `status` skill suggested it, but a Bash tool has
+  no TTY and the command died with "interactive mode needs a terminal". Without a terminal, `--agent`, `--feed` or
+  `--lines` alone now print the `--once` picture (`--feed` sets the number of feed lines); a bare `agent-top` still needs a
+  terminal. The skill now says `--json --agent <role> --feed 10`, which is what returns the feed as data.
+- **Idle Claude Desktop sessions are visible and can be archived in one step (issue #153).** A Desktop Code session keeps its
+  `claude` CLI and its MCP servers alive until someone archives it; sixteen idle ones held 3.5 GB and the laptop reached
+  load 224. New `agent desktop-idle [--idle-for 12h] [--json | --ids]` lists the sessions idle that long with the memory of
+  their whole process tree and sorts them: *to archive* (no changed or untracked file, no commit on no remote, no open
+  pull/merge request — `gh` for GitHub, `glab` for other hosts) and *left alone* with the reason (dirty, unpushed, open
+  PR/MR, unknown, the calling session, a registered hub or worker, exempt, a directory another session uses). It reads the
+  CLI's pid records, Desktop's session records and `ps` and changes nothing; no command line is printed. agent-top's summary
+  has the same block and `--json` has `desktop_idle` (cached for 5 minutes: it runs git and the forge's CLI). `hub close`
+  names the stage's own idle Desktop sessions. Archiving stays Desktop's: from a Desktop-hosted session, after the owner's
+  yes, `mcp__ccd_session_mgmt__archive_session` per id (procedure: hub skill, *Idle Desktop sessions*); no command line or
+  file archives a Desktop session.
+  Two clean idle sessions in one linked worktree are both left alone (archiving one cleans it up under the other); a `gh` or
+  `glab` call that does not answer in 8 s makes the session `unknown`, and agent-top spends at most 15 s on all such calls, so
+  a hung forge cannot hold a one-shot `agent-top --json`. Files git ignores go with the worktree and are not checked.
+- **Sub-agents may do more, and every sub-agent of a registered session is in the journal (#156).** On Claude a quick, bounded
+  code change with nothing to push or wait on may run as a background sub-agent with `isolation: "worktree"` that
+  commits on its branch; the hub or executor pushes, opens the PR and runs `await` (new row 5 of the decision table in
+  [launch modes](docs/launch-modes.md), the `hub` skill, the executor brief footer and template). Anything that pushes,
+  waits, touches production or must be reached by other sessions stays `agent spawn`. New `SubagentStart` /
+  `SubagentStop` hooks (`hooks/subagent_journal.py`, async, fail-open) write `[<parent tag>/<agent id>] SUB start <type>
+  <model>: <description>` and `… SUB end done|error` to the stage journal of a session in the role registry, so
+  `hub why`, the history and agent-top see sub-agents like headless agents; status words and `@` in the description
+  are defused and `jwait` never wakes on these lines. Unregistered sessions get no line; Codex sub-agents are not
+  journaled. The `hub handoff` draft's last own lines leave them out. The sub-agent's change is reviewed like any other
+  (row 1).
+- **A hub's last write is told apart from the last message to it; `broadcast` names the silent hubs (issue #143).** `agent-top` now
+  gives every role `last_written_age_s` (its own journal line, signed with its tag; for a hub also the time of its session's
+  last turn, when that is fresher: the newest `assistant`/`user` record of the Claude transcript or the newest event of the
+  Codex rollout, read from the end of the file, `last_written_via`; never the file's mtime, which Claude Code moves when its
+  process exits) and `last_addressed_age_s` (the newest
+  line of another author with `@role`, `@tag` or `@<stage>-<tag>`: broadcasts, `[pace] @hub …`, a worker's `@hub DONE`).
+  The pane's Roles block reads `wrote 95h ago (transcript), addressed 3m ago`; `journal_age_s` keeps meaning the role's
+  own journal line. A hub dead for days showed no age at all (`—`) because the journals looked at reach back two days;
+  now its transcript says how long. `broadcast` prints, before the summary and in `--dry-run` too, which recipients have
+  not written for over `--silent-hours N` (default 12, 0 turns it off); a bare `/broadcast` shows it. The `status` skill
+  reads the two apart.
+  The same for the stage: `stage_info.last_activity_at` / `idle_s` / `idle` (the pane's idle marker, the status skill's
+  "candidates to close") no longer take the journal file's mtime, which every line moves, `[pace] @hub`, `[watchdog]`, a
+  broadcast or `[owner] @hub` included. A stage's own activity is its newest journal line written by one of its own (a
+  registered role's tag, its `-await`, `-<role>` and `/sub` forms, any `hub-N` of the stage; the journals are read back
+  until one has such a line) or the time of its hub's last turn, besides the agent logs, `roles.json` and `questions.md`
+  as before. A stage that was only told things for two days is now idle. Issue #143.
+- **hub-viz: a live city of what runs, as a web page and a macOS screen saver.** New `viz/`: a Go server (`hub-viz`,
+  stdlib only, read-only over the hub home) serves `/state`, `/history`, `/events` and a canvas page that draws what
+  agent-top shows as a night city: a repository is a district, a stage hub a tower, a worker a flying cab while its
+  process lives, every journal line a beam to its addressee. Live by default; `?quiet=N` replays the last day after N
+  quiet seconds. `DelamainLive.saver` draws the same city natively (Core Animation, no WebKit) from the same server, with
+  settings in the `dev.delamain.saver` defaults suite. The page and the saver speak English and Russian (`?lang=`,
+  `lang`). Built by `viz/build.sh`; nothing in the plugin starts it. See [viz/README.md](viz/README.md).
+
 ## 1.0.22 — 2026-10-26
 
 - **`await --wait` no longer reads as success when the wait failed.** `await --wait --ok PASSED -- gh pr checks N --watch

@@ -24,6 +24,8 @@ See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints
 
 ## Tools
 MCP servers needed? (none by default) <A browser check, docs lookup, a GitLab/DB server: name it, and launch with `--mcp inherit` or `--mcp FILE`.>
+Sub-agents (Claude): the footer allows read-only digests and quick bounded pieces in a worktree; <name any piece you
+expect to go to one, or "none">.
 
 ## Stop
 Report the delivered result against the Business DoD, with technical evidence separately.

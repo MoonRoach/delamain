@@ -43,6 +43,12 @@ check(P["codex"]["7d"].level == "unknown" and P["claude"]["7d"].level == "unknow
 a = lp.advise("codex", "gpt-6.1-sol", "high", "stage-a", P)
 check(a.lines == [] and a.refuse is None, "unknown data: no advice, no refusal")
 
+# The Codex lineup maps onto the Claude classes: Luna ~ Haiku, Terra and Sol ~ Sonnet/Opus work, Astra ~ Fable.
+check([lp.classify(m) for m in ("gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra")]
+      == ["mechanical", "bounded", "bounded", "judgement"], "Codex families classify by task class")
+check("Terra" in lp.equivalent("claude", "bounded"), "Sonnet-class work moves to Codex Terra")
+check(lp.class_default_effort("codex", lp.classify("gpt-6.1-terra")) == "medium", "Terra routine effort is medium")
+
 # Public advice seam: the matrix is symmetric across engines and independent of task class.
 import shlex
 

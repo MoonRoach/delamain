@@ -29,7 +29,8 @@ what you would tell the next hub about how to work, with the moment it rests on.
 - verdict: hub-4 2026-10-23 helped — evidence     (appended by later shifts; repeatable)
 ```
 
-Ids run on from the last one in the file. A verdict is `helped | hurt | no effect | confounded`; use `confounded` when
+Ids run on from the last one in the file. An id is `L-<digits>` (`L-007`) or carries the stage's prefix, as ask ids do
+(`L-MC-005`): `L-<LETTERS>-<digits>`, capitals only. The check of § 7 accepts both and takes either as an answer. A verdict is `helped | hurt | no effect | confounded`; use `confounded` when
 something else changed in the same shift and you cannot tell.
 
 ## What a verdict does

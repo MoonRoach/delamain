@@ -363,17 +363,17 @@ def classify(model: str) -> str:
 
 
 def class_default_effort(engine: str, cls: str) -> Optional[str]:
-    """The effort the owner's policy gives routine work of a class: Sol medium, Sonnet high; None: no rule."""
+    """The effort the owner's policy gives routine work of a class: Sol/Terra medium, Sonnet high; None: no rule."""
     if cls != "bounded":
         return None
     return "medium" if engine == "codex" else "high"
 
 
 def equivalent(engine: str, cls: str) -> str:
-    """The other engine's equivalent of a class (the owner's table: Opus ↔ Astra or Sol high, Sonnet ↔ Sol medium,
-    Haiku ↔ Luna)."""
+    """The other engine's equivalent of a class (the owner's table: Haiku ↔ Luna, Sonnet ↔ Terra or Sol medium,
+    Opus/Fable ↔ Astra or Sol high)."""
     if engine == "claude":     # moving Claude work to Codex
-        return {"mechanical": "Codex Luna medium", "bounded": "Codex Sol medium",
+        return {"mechanical": "Codex Luna medium", "bounded": "Codex Terra medium (or Sol medium)",
                 "judgement": "Codex Astra high (an executor that decides as it goes: Sol high)"}[cls]
     return {"mechanical": "Claude Haiku high", "bounded": "Claude Sonnet high",
             "judgement": "Claude Opus high"}[cls]

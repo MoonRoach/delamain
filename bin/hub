@@ -67,6 +67,10 @@ closed stage. A closed stage is left out of agent-top (`--all` shows it),
 the watchdog, the night queue and the owner-question summaries (`ask list --stage S` still reads it); its files stay.
 `hub takeover` (or `hub start`) on a closed stage reopens it and says so in its start line. A re-run after a failed step
 finishes the close; on a closed stage it prints when and why and exits 0. --dry-run lists the steps and writes nothing.
+The stage's other Claude Desktop sessions (its roles and the earlier hubs retired in its registry) that sit idle and still hold
+their `claude` and MCP processes are named after the hub's session: the clean ones (no changed file, no commit on no remote, no open
+pull request: `agent desktop-idle`) to archive with the Desktop tool `archive_session` once the owner agrees, the others with why they
+stay. Nothing is archived or stopped by the close.
 
 The shift number is derived: takeover = the registered hub's number (roles `hub`, tag hub-N) + 1, or the
 successor named in the latest handoff ("… → \"Hub <stage> #N\""); handoff = the registered hub's number.
@@ -399,7 +403,10 @@ def todo_report(todos: list, width: int = 110) -> str:
         f"\n  … and {len(todos) - 12} more" if len(todos) > 12 else "")
 
 
-LESSON_HEAD_RE = re.compile(r"^## (L-\d{1,6})\b\s*(?:[—–-]+\s*)?(.*)$")  # a longer id is not an entry: it would flood § 7
+# The one format of a lesson id for every parser below: L-007, or with a stage prefix as ask ids have it, L-MC-005. A longer
+# number is not an id: it would flood § 7.
+LESSON_ID_PAT = r"L-(?:[A-Z]+-)?\d{1,6}"
+LESSON_HEAD_RE = re.compile(rf"^## ({LESSON_ID_PAT})\b\s*(?:[—–-]+\s*)?(.*)$")
 LESSON_STATUS_RE = re.compile(r"^- status:\s*([A-Za-z-]+)")
 FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
@@ -501,7 +508,7 @@ def open_lessons_todos(text: str) -> list:
     return found
 
 
-LESSON_ID_RE = re.compile(r"\bL-\d{1,6}\b")
+LESSON_ID_RE = re.compile(rf"\b{LESSON_ID_PAT}\b")
 LESSON_NONE_RE = re.compile(r"\bnone:[ \t]*(.*)$", re.IGNORECASE)
 NONE_PLACEHOLDERS = {"", "<reason>", "reason", "n/a", "na", "tbd", "todo", "-", "—", "none", '""', "''", "``"}
 MD_PREFIX_RE = re.compile(r"^[\s>*+-]*(?:\d+[.)]\s*)?")
@@ -1678,7 +1685,7 @@ def cmd_handoff(a) -> int:
     try:
         for line in hc.journal_path(stage).read_text(encoding="utf-8").splitlines():
             p = hc.parse_journal_line(line)
-            if p and hc.tag_is(p[1], tag):
+            if p and hc.tag_is(p[1], tag) and not hc.sub_agent_line(p[1], p[2]):  # SUB start/end: history, not a statement
                 own_lines.append(line[:220])
     except FileNotFoundError:
         pass
@@ -2257,6 +2264,18 @@ def close_stage(a, say) -> str:
             say(f"ATTENTION: {running}")
             attention.append(running)
             notes.append(running)
+
+    # 2b. the stage's other Desktop sessions (an earlier hub shift is one) that sit idle holding their processes: named, with
+    # the clean ones to archive; never archived from here (archiving is a Desktop tool, and the owner's yes comes first)
+    try:
+        import desktop_idle
+        desk = desktop_idle.close_lines(stage, data)
+    except Exception:  # noqa: BLE001 — a note about memory must not stop a close
+        desk = []
+    for line in desk:
+        say(line)
+    if desk:
+        notes.append(desk[0])
 
     # 3. locks held by the stage's sessions, except a session another open stage still holds (see held_elsewhere)
     board = board_module()

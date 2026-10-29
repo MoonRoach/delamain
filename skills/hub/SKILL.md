@@ -98,7 +98,7 @@ with its `--since HH:MM`, handle what it shows, keep one waiter. Going quiet on 
 - To another stage's hub: `tell <stage> "…"` (`--question`; every hub: `broadcast "…"`); the answer reaches you only in your own journal. A direct
   cross-session message only when the journal cannot do, and only to the address from `tell <stage> --address` /
   `roles --stage <stage> get hub`, never a session chosen by its display name. Codex: `references/codex-hub.md`.
-- `roles list | get | set | retire | broadcast` — the role registry. Detached workers of either engine: `agent send`.
+- `roles list | get | set | retire | broadcast` — the role registry.
 - `ask search <words…>` — what the owner already decided; `ask add … --default … --due …` — a question with the action
   you take if nobody answers; `ask decided` — your own decision on a matter the owner normally decides; `ask close`,
   `done`, `digest`, `list`. Standing permissions (`ask allow`, `ask revoke`): `references/owner-and-planning.md`.
@@ -143,20 +143,20 @@ Full recipe: `references/owner-and-planning.md`.
 
 Decide from what is visible before the start — what the work does and who must reach it; the first "yes" decides
 (table: `<plugin-root>/docs/launch-modes.md`). Duration is a hint, never the criterion; the owner is not asked which
-launch to use. When no row applies (a small change, nothing to wait on, nobody else to reach it) the hub may write it
-itself: one line with the reason, and `ask decided`.
+launch to use. A change smaller than its brief (a typo, a doc line) the hub may make itself: a line why, `ask decided`.
 
 1. **A review** → `hub reviewer --for <class> --author <role>`, then start what it prints (`references/launch-and-executors.md`, *Reviews*).
 2. **The owner should talk to it** → an interactive session in their chosen host.
-3. **It commits or pushes, waits on CI, a deploy or another party, touches production, or must be reachable by someone
-   other than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
-4. **Read-only, the answer is a short digest, nothing external to wait on** → a sub-agent: **foreground** when the hub
+3. **It pushes, waits on CI, a deploy or another party, touches production, or must be reachable by someone other
+   than this hub** → `agent spawn`. Always so when the hub is near its handoff threshold.
+4. **Claude: a quick bounded code change, nothing to push or wait on** → a background sub-agent with
+   `isolation: "worktree"` commits on its branch; you push, order its review (row 1), `await`.
+5. **Read-only, the answer is a short digest, nothing external to wait on** → a sub-agent: **foreground** when the hub
    has nothing else to do until the answer, otherwise **background**.
 
-- **Host session cards and forks are not a launch mode.** The host may offer to start a session or fork (Claude Desktop's
-  `start_session` cards, `hand_off_to_session`). A registered hub does not use them for work that commits, pushes or
-  waits: autopilot cannot click a card and agent-top cannot see it, so the work goes through `agent spawn`, and an
-  owner decision through `ask add`. A hook refuses these calls in a hub; the owner's own request for a session passes.
+- **Host session cards and forks are not a launch mode** (Claude Desktop's `start_session` cards,
+  `hand_off_to_session`): autopilot cannot click a card and agent-top cannot see it. Work goes through `agent spawn`,
+  an owner decision through `ask add`; a hook refuses them in a hub, the owner's own request for a session passes.
 
 Every sub-agent brief ends with a call budget: "if not done after N tool calls, stop and return a partial result and
 what is left" (N = 40 for a probe or a read, up to 80 for a wide read-only investigation); ask for a result of ≤ 20
@@ -167,13 +167,14 @@ lines, details in a file. `hub handoff` refuses while a sub-agent of your sessio
 
 - Before each launch, use [limit-pace advice](../../docs/reference.md#limit-pace) for its engine, model and effort;
   keep engine locks (ask about this launch only; default: run locked engine), and keep ready work moving.
-- Work that commits, pushes or waits is a headless agent:
+- Work that pushes or waits is a headless agent:
   `agent spawn --engine claude|codex --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`;
   the role says what the work is (`mainmerge-fix`, never `wp23`). It survives the hub's handoff and any hub can talk to it. Its tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` is
   filtered out of your own `jwait`). An abnormal end leaves `EXIT <role>: …` in the journal, a normal one without a
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
   An agent's question arrives as `@hub QUESTION …`; answer with `agent send`.
+- Executors may use sub-agents too: digests, bounded worktree changes.
 - Why is code here: `hub why <sha|file:line>` — its agent run, brief, report, journal.
 - Every agent that writes code gets `--worktree [BRANCH]` (two agents in one checkout overwrite each other's files);
   at handoff `agent worktrees --prune --dry-run`, then `--prune` (finished only); stop background processes the project started.

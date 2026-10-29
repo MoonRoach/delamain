@@ -173,12 +173,16 @@ agent stop builder
 
 For Codex, leaving out `--model` uses `AGENT_HUB_CODEX_DEFAULT_MODEL` if configured, otherwise the CLI's configured
 model. Pass an available model id when you need a pin; `AGENT_HUB_CODEX_MODEL_MAP` provides explicit aliases.
+All four Codex families may be launched, chosen by task class as on Claude: Luna ↔ Haiku for mechanical work with a
+checkable answer, Terra ↔ Sonnet for bounded work from a finished design, Sol ↔ Opus as the implementation
+workhorse, Astra ↔ Fable for short judgement-dense work.
 The plugin does not silently translate Claude model aliases into GPT ids. `CODEX_BIN` chooses the executable.
 Choose an effort supported by the selected model with `--effort`.
 
 Before a stage's first detached launch for a CLI/model, check the selected CLI with `codex --version` and
 `codex debug models` (substitute `CODEX_BIN` when configured). The desktop app and standalone CLI can have different
-model availability. Ordinary implementation uses an available Sol-family model, or the owner's explicit choice.
+model availability. Ordinary implementation uses an available Sol-family model (bounded work may use Terra),
+or the owner's explicit choice.
 An unavailable Sol version calls for a CLI compatibility check or an available Sol peer, with the fallback reported;
 Astra needs a task-based judgement reason. A model startup error alone does not justify that model class change.
 

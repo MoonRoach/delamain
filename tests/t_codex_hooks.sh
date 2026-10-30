@@ -520,6 +520,73 @@ class CodexHooks(unittest.TestCase):
         for line, offset in after:
             self.assertEqual(raw[offset:offset + len(line)], line)
 
+    def test_russian_transfer_prohibitions_require_handoff_scope(self):
+        for text in ('Не передавай.', 'Не передавать', 'Не передавайте!',
+                     'Пока не передавай.', 'Сейчас не передавать.',
+                     '- Не передавай.', 'Пожалуйста, не передавай.',
+                     'Не передавай контекст следующему агенту.',
+                     'Не передавай работу новому координатору.', 'Не передавай эту смену.',
+                     'Контекст не передавай.', 'Работу не передавайте новому координатору.',
+                     'Не передавай пока контекст.', 'Контекст пока не передавай.',
+                     'Не передавай следующему агенту контекст.',
+                     'Не передавай пока следующему агенту текущую задачу.',
+                     'Контекст следующему агенту пока не передавай.'):
+            with self.subTest(text=text):
+                self.assertIs(context_budget.transfer_directive(text), True)
+        for text in ('Не передавай идентификаторы другого провайдера.',
+                     'Параметры Codex ему не передавай.',
+                     'Не передавать параметры Codex.',
+                     'Не передавай контекстные параметры.',
+                     'Не передавай идентификаторы другого провайдера в контекст.',
+                     'Не передавай параметры. Контекст сохрани.',
+                     'Не передавай параметры; контекст пока сохрани.'):
+            with self.subTest(text=text):
+                self.assertIsNone(context_budget.transfer_directive(text))
+        self.assertIs(context_budget.transfer_directive('Возобнови передачу.'), False)
+
+    def test_agents_parameter_rules_preserve_handoff_and_durable_owner_stop(self):
+        stage, transcript = self.fresh_budget()
+        rules = ('# AGENTS.md instructions\n'
+                 '- Не передавай идентификаторы другого провайдера.\n'
+                 '- В Claude Code используй доступный механизм Agent; параметры Codex ему не передавай.')
+        self.append_human(transcript, rules, response=True)
+        self.assertEqual(self.stop(transcript)['decision'], 'block')
+        self.assertNotIn('transfer_stop', self.directive_state(stage))
+        # The same rules are neutral live input, never an implicit resumption.
+        self.hook('context_budget.py', event='UserPromptSubmit', prompt='Не передавай контекст.',
+                  transcript_path=str(transcript))
+        self.assertTrue(self.directive_state(stage)['transfer_stop'])
+        self.hook('context_budget.py', event='UserPromptSubmit', prompt=rules,
+                  transcript_path=str(transcript))
+        self.assertEqual(self.stop(transcript), {})
+        self.assertTrue(self.directive_state(stage)['transfer_stop'])
+        # Unknown history must not erase an established owner prohibition either.
+        with transcript.open('a') as handle:
+            handle.write('{"type":"response_item","payload":{"role":"user"\n')
+        self.assertEqual(self.stop(transcript), {})
+        self.assertTrue(self.directive_state(stage)['transfer_stop'])
+        self.assertTrue(self.directive_state(stage)['directive_cursor']['unknown'])
+        self.hook('context_budget.py', event='UserPromptSubmit', prompt='Возобнови передачу.',
+                  transcript_path=str(transcript))
+        self.assertFalse(self.directive_state(stage)['transfer_stop'])
+        # A current explicit decision supersedes older unobserved history; it does not reset
+        # the separate bounded Stop-continuation budget exercised by the existing controls.
+        self.assertFalse(self.directive_state(stage)['directive_cursor']['unknown'])
+
+    def test_russian_handoff_modifier_stops_latch(self):
+        stage, transcript = self.fresh_budget()
+        for prompt in ('Не передавай пока контекст.', 'Контекст пока не передавай.',
+                       'Не передавай следующему агенту контекст.', 'Не передавай задачу.',
+                       'Пока не передавай.', 'Сейчас не передавать.'):
+            with self.subTest(prompt=prompt):
+                self.hook('context_budget.py', event='UserPromptSubmit', prompt=prompt,
+                          transcript_path=str(transcript))
+                self.assertEqual(self.stop(transcript), {})
+                self.assertTrue(self.directive_state(stage)['transfer_stop'])
+                self.hook('context_budget.py', event='UserPromptSubmit', prompt='Возобнови передачу.',
+                          transcript_path=str(transcript))
+                self.assertFalse(self.directive_state(stage)['transfer_stop'])
+
     def test_stop_english_all_activity_stop_and_unknown_directive_history(self):
         stage, transcript = self.fresh_budget()
         self.append_human(transcript, 'Stop all activity.')

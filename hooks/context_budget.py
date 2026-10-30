@@ -92,6 +92,12 @@ READY_MARKER = "[delamain handoff-continuation-ready]"
 PHASES = {"none": 0, "checkpoint": 1, "prepared": 2, "dispatching": 3,
           "submitted": 4, "bound": 5, "taking-over": 6, "taken-over": 7}
 # These patterns record negative directives and explicit resumption only. They never establish a grant.
+# Allow bounded timing/recipient modifiers around an explicit handoff object, never arbitrary objects
+# such as identifiers or parameters. Horizontal whitespace keeps the scope within one clause.
+RUSSIAN_TRANSFER_GAP = (
+    r"(?:(?:пока|сейчас|больше|ещ[её]|никому|этот|эту|текущий|текущую)[ \t]+|"
+    r"(?:(?:следующему|новому|другому)[ \t]+)?(?:агенту|координатору|хабу)[ \t]+){0,3}")
+RUSSIAN_TRANSFER_OBJECT = r"(?:контекст|работу|смену|задачу|handoff)"
 TRANSFER_STOP = re.compile(
     r"\b(?:do not|don't|never)\s+(?:continue\s+)?(?:the\s+)?(?:handoff|hand\s*over|transfer)\b|"
     r"\b(?:stop|pause|cancel|suspend)\s+(?:(?:the|this|any|all|automatic|stage|context)\s+)*(?:handoff|hand\s*over|transfer)\b|"
@@ -100,7 +106,12 @@ TRANSFER_STOP = re.compile(
     r"\b(?:stop|pause|suspend)\s+(?:all (?:work|activity)|everything)\b|"
     r"(?:^|[.;!\n])\s*(?:please\s+)?stop\s+(?:working|the\s+current\s+task)(?=\s*(?:[.;!\n]|$))|"
     r"(?:^|[.;!\n])\s*(?:please\s+)?stop(?:\s+(?:now|here))?(?=\s*(?:[.;!\n]|$))|"
-    r"не\s+(?:передавай(?:те)?|передавать)\b|(?:останови(?:те)?|отмени(?:те)?)\s+передачу|"
+    # A bare Russian transfer verb also describes passing identifiers or tool parameters.
+    # Only a standalone prohibition or an explicit handoff object stops context transfer.
+    r"(?:^|[.;!\n])\s*(?:[-*]\s*)?(?:пожалуйста[, ]+)?(?:(?:пока|сейчас)[ \t]+)?не\s+(?:передавай(?:те)?|передавать)(?=\s*(?:[.!?;,]|$))|"
+    rf"\bне[ \t]+(?:передавай(?:те)?|передавать)[ \t]+{RUSSIAN_TRANSFER_GAP}{RUSSIAN_TRANSFER_OBJECT}\b|"
+    rf"\b{RUSSIAN_TRANSFER_OBJECT}[ \t]+{RUSSIAN_TRANSFER_GAP}не[ \t]+(?:передавай(?:те)?|передавать)\b|"
+    r"(?:останови(?:те)?|отмени(?:те)?)\s+передачу|"
     r"передача (?:запрещена|отменена)|разрешение(?: на передачу)? отозвано|"
     r"не продолжай(?:те)?(?=\s*(?:[.!?;]|$|ничего|никакую (?:работу|деятельность)|всю (?:работу|деятельность)))|"
     r"ничего(?: больше)? не делай(?:те)?|"

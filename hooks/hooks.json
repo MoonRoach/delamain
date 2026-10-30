@@ -1,5 +1,5 @@
 {
-  "description": "Delamain: lock-board enforcement, a guard against killing processes by pattern, a guard against walking the home directory, owner-question summary, a warning when an old command shadows the plugin's tools, handoff size cap, and the agent-discipline hooks (context budget, polling guard, delegation dial and subagent rules), and a guard that keeps a registered hub from Desktop session cards.",
+  "description": "Delamain: lock-board enforcement, a guard against killing processes by pattern, a guard against walking the home directory, owner-question summary, a warning when an old command shadows the plugin's tools, handoff size cap, and the agent-discipline hooks (context budget, polling guard, delegation dial and subagent rules), a guard that keeps a registered hub from Desktop session cards, and a journal line at the start and the end of each sub-agent of a registered session.",
   "modules": ["./agent-top.tsx"],
   "hooks": {
     "SessionStart": [
@@ -128,6 +128,30 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/context_budget.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent_journal.py\" start",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent_journal.py\" stop",
+            "async": true,
             "timeout": 10
           }
         ]

@@ -27,6 +27,8 @@ Exclusions (always win):
   --exclude-tag T drops lines written with tag T and its sub-tags T/… (repeatable). The caller's
                   own tag ($HUB_TAG or the registry) is excluded by default, in both forms: T and
                   <own stage>-T, as jlog signs in another stage's journal; --include-own keeps it.
+                  A sub-agent's start and end lines (`[<tag>/<agent id>] SUB start …`, `… SUB end …`, written by
+                  the plugin's SubagentStart/SubagentStop hooks) are never delivered: they are for the record.
 State: what each caller has already seen per source lives in <root>/.jwait-state/<caller>.json,
 keyed by a hash of the line and its occurrence number, so a rewritten or replayed file does not
 re-deliver old lines, and lines that arrived while you were busy are delivered on the next run.
@@ -263,6 +265,8 @@ class Filter:
         tag = parsed[1] if parsed else ""
         if tag and any(hc.tag_is(tag, x) for x in self.exclude):
             return None
+        if parsed and hc.sub_agent_line(tag, parsed[2]):
+            return None  # a sub-agent's start or end line is for the record (hooks/subagent_journal.py)
         if not self.patterns and not self.tags:
             return "wake"
         if any(p.search(text) for p in self.patterns):

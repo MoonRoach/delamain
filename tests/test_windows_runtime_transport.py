@@ -247,6 +247,43 @@ class LinuxRelayTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="delamain proxy unicode ")
         self.addCleanup(self.scratch.cleanup)
+        self.observed_controls = []
+        real_popen = subprocess.Popen
+        def observe_supervisor(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            if '--supervise' in args[0]:
+                token = proxy.owner_token(child.pid)
+                deadline = time.monotonic() + 3
+                while child.poll() is None and time.monotonic() < deadline:
+                    sockets = set()
+                    for fd in Path('/proc', str(child.pid), 'fd').glob('*'):
+                        try: sockets.add(os.readlink(fd))
+                        except FileNotFoundError: pass
+                    for line in Path('/proc/net/unix').read_text().splitlines()[1:]:
+                        fields = line.split()
+                        if len(fields) == 8 and ('socket:[' + fields[6] + ']') in sockets:
+                            path = Path(fields[7])
+                            if path.name == 'control' and path.parent.name.startswith('delamain-relay-'):
+                                self.assertEqual(proxy.owner_token(child.pid), token)
+                                self.assertTrue(path.exists(), 'observer must see a real owned socket')
+                                self.observed_controls.append((child, token, path, fields[6]))
+                                return child
+                    time.sleep(.005)
+                if child.poll() is None:
+                    self.fail('could not observe the exact supervisor control socket')
+            return child
+        observer = patch.object(proxy.subprocess, 'Popen', side_effect=observe_supervisor)
+        observer.start()
+        self.addCleanup(observer.stop)
+        def verify_owned_controls():
+            for child, token, path, inode in self.observed_controls:
+                deadline = time.monotonic() + 20
+                while path.parent.exists() and time.monotonic() < deadline:
+                    time.sleep(.025)
+                self.assertFalse(path.exists(), f'owned socket survived: {path}, inode={inode}')
+                self.assertFalse(path.parent.exists(), f'owned private directory survived: {path.parent}')
+                self.assertNotEqual(proxy.owner_token(child.pid), token)
+        self.addCleanup(verify_owned_controls)
         self.helper = Path(self.scratch.name) / "fake helper.py"
         self.helper.write_text(FAKE_RELAY, encoding="utf-8")
         # Exercise the full private FD handoff on Linux. Native controls use
@@ -254,6 +291,14 @@ class LinuxRelayTests(unittest.TestCase):
         owned = patch.object(proxy, "owned_wsl_command", return_value=[sys.executable])
         owned.start()
         self.addCleanup(owned.stop)
+        # Scope fixture temporary files; actual supervisor sockets intentionally
+        # live in short /tmp paths and are verified through exact inode ownership.
+        temporary_env = patch.dict(os.environ, {'TMPDIR': self.scratch.name})
+        temporary_env.start()
+        self.addCleanup(temporary_env.stop)
+        temporary_cache = patch.object(tempfile, 'tempdir', self.scratch.name)
+        temporary_cache.start()
+        self.addCleanup(temporary_cache.stop)
 
     def start(self, env=None):
         env = {} if env is None else env
@@ -341,11 +386,15 @@ print(json.dumps({"pid":os.getpid(),"argv":sys.argv[1:],"prompt":prompt,"proxy":
                                 process.communicate(timeout=5)
                     self.assertEqual(process.returncode, 0, error.decode(errors="replace"))
                     data = json.loads(output)
-                    self.assertEqual(data["pid"], process.pid)
+                    if enabled == '0':
+                        self.assertEqual(data['pid'], process.pid)
+                    else:
+                        self.assertNotEqual(data['pid'], process.pid)
                     self.assertEqual(data["argv"], args)
                     self.assertEqual(data["prompt"].encode(), prompt)
                     prepared = [json.loads(line) for line in log.read_text().splitlines()]
-                    self.assertEqual(prepared, [{"helper":"wslpath","bytes":0}, {"helper":"powershell.exe","bytes":0}])
+                    expected = [{'helper':'wslpath','bytes':0}, {'helper':'powershell.exe','bytes':0}]
+                    self.assertEqual(prepared, expected)
                     self.assertEqual(bool(data["proxy"]), enabled == "1")
                     if data["proxy"]:
                         port = int(data["proxy"].rsplit(":",1)[1])
@@ -559,7 +608,7 @@ except (EOFError,BrokenPipeError):pass
                 self.assertIsNone(proxy.owner_token(pid),"faulty helper survived relay cleanup")
                 with self.assertRaises(OSError): socket.create_connection(("127.0.0.1",port),timeout=1)
 
-    def test_exec_preserves_worker_pid_and_relay_dies_after_sigkill(self):
+    def test_monitored_worker_and_relay_die_after_wrapper_sigkill(self):
         record = Path(self.scratch.name) / "worker.json"
         wrapper = Path(self.scratch.name) / "wrapper.py"
         worker = Path(self.scratch.name) / "worker.py"
@@ -571,7 +620,7 @@ except (EOFError,BrokenPipeError):pass
             while not record.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
             data = json.loads(record.read_text())
-            self.assertEqual(data["pid"], owner.pid)
+            self.assertNotEqual(data["pid"], owner.pid)
             port = int(data["proxy"].rsplit(":", 1)[1])
             with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
                 client.sendall(b"alive")
@@ -592,6 +641,7 @@ except (EOFError,BrokenPipeError):pass
             deadline = time.monotonic() + 5
             while proxy.owner_token(helper_pid) is not None and time.monotonic() < deadline: time.sleep(.05)
             self.assertIsNone(proxy.owner_token(helper_pid), "SIGKILL left the owned helper alive")
+            self.assertIsNone(proxy.owner_token(data['pid']), 'wrapper SIGKILL left the CLI alive')
             print(f"fixture SIGKILL: original worker PID {owner.pid}, helper PID {helper_pid}; listener closed and helper gone")
         finally:
             if owner.poll() is None:
@@ -613,22 +663,74 @@ except (EOFError,BrokenPipeError):pass
     def test_exec_failure_cleans_relay_and_owner_token_handles_exit(self):
         self.assertIsNotNone(proxy.owner_token(os.getpid()))
         self.assertIsNone(proxy.owner_token(999999999))
-        env = {}
-        with patch.object(proxy, "powershell_command", return_value=[sys.executable, str(self.helper)]), \
-             patch.object(proxy, "discover_proxy", return_value=("127.0.0.1", 1234)):
-            with self.assertRaises(OSError):
-                proxy.exec_worker("/no/such/executable", [], env)
+        directory = Path(self.scratch.name)
+        record = directory / "exec-failure.json"
+        wrapper = directory / "exec-failure.py"
+        wrapper.write_text("""import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import worker_proxy as p
+p.owned_wsl_command=lambda d:[sys.executable]
+p.powershell_command=lambda:[sys.executable,sys.argv[2]]
+p.discover_proxy=lambda c:('127.0.0.1',1234)
+import os,time
+real_popen=p.subprocess.Popen
+controls=[]
+def observe(*args,**kwargs):
+    child=real_popen(*args,**kwargs)
+    if '--supervise' in args[0]:
+        token=p.owner_token(child.pid)
+        deadline=time.monotonic()+3
+        while child.poll() is None and time.monotonic()<deadline:
+            sockets=set()
+            for fd in Path('/proc',str(child.pid),'fd').glob('*'):
+                try: sockets.add(os.readlink(fd))
+                except FileNotFoundError: pass
+            for line in Path('/proc/net/unix').read_text().splitlines()[1:]:
+                fields=line.split()
+                if len(fields)==8 and ('socket:['+fields[6]+']') in sockets:
+                    path=Path(fields[7])
+                    if path.name=='control' and path.parent.name.startswith('delamain-relay-'):
+                        assert p.owner_token(child.pid)==token and path.exists()
+                        controls.append(str(path))
+                        return child
+            time.sleep(.005)
+        raise AssertionError('missing-exec fixture did not observe owned socket')
+    return child
+p.subprocess.Popen=observe
+env={}
+try:
+    p.exec_worker('/no/such/executable',[],env)
+except OSError:
+    env['observed_controls']=controls
+    Path(sys.argv[3]).write_text(json.dumps(env))
+    sys.exit(19)
+raise AssertionError('missing executable unexpectedly ran')
+""")
+        run = subprocess.run([sys.executable, str(wrapper), str(ROOT / "windows"),
+                              str(self.helper), str(record)], capture_output=True, timeout=20)
+        self.assertEqual(run.returncode, 19, run.stderr.decode(errors="replace"))
+        env = json.loads(record.read_text())
         port = int(env["HTTP_PROXY"].rsplit(":", 1)[1])
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=1)
+        self.assertEqual(len(env['observed_controls']), 1)
+        for owned_control in env['observed_controls']:
+            self.assertFalse(Path(owned_control).exists())
+            self.assertFalse(Path(owned_control).parent.exists())
 
     def test_owned_client_failed_launch_closes_readiness_and_private_handoff(self):
-        before = set(Path("/tmp").glob("delamain-relay-*"))
+        directory = Path(self.scratch.name)
+        foreign = directory / 'delamain-relay-foreign-control'
+        foreign.mkdir()
+        sentinel = foreign / 'client.stdout'
+        sentinel.write_text('foreign fixture data')
         with patch.object(proxy, "owned_wsl_command", return_value=["/no/such/owned-wsl-client"]), \
              patch.object(proxy, "powershell_command", return_value=[sys.executable, str(self.helper)]), \
              patch.object(proxy, "discover_proxy", return_value=("127.0.0.1",1234)):
             with self.assertRaises(RuntimeError): proxy.prepare_proxy({})
-        self.assertEqual(set(Path("/tmp").glob("delamain-relay-*")), before)
+        self.assertTrue(self.observed_controls, 'failed launch must observe its actual private control path')
+        self.assertEqual(sentinel.read_text(), 'foreign fixture data')
         self.assertFalse(self.helper.with_suffix('.pids').exists())
 
     def test_slow_owned_client_without_handoff_is_reaped_before_startup_failure_returns(self):

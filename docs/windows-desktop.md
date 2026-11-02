@@ -156,9 +156,17 @@ and `no_proxy` retain their exact caller values; Windows proxy bypass lists are
 not translated into the client's bypass syntax. Explicit proxy values, including
 empty values, retain precedence.
 
-Linux Codex retains its original PID and process group through `exec`. Each relay
-watches that PID's Linux start token, so normal exit, `agent stop`, SIGKILL and PID
-reuse close the listener and owned helpers. Detached workers replace an inherited
+Without an owned proxy, Linux Codex retains its original PID and process group through `exec`.
+With an owned proxy, a Linux wrapper retains the worker identity and starts Codex as its child,
+preserving stdio and process group. It monitors both CLI and relay completion; a real relay
+failure stops the owned CLI with bounded cleanup instead of leaving it reconnecting indefinitely.
+CLI exit codes and handled signals are preserved. Parent-death protection covers wrapper loss.
+
+After descriptor handoff, relay health follows the authenticated peer's PID/start token and
+private control channel. The Linux interop launch shim may exit while that peer remains usable;
+its exit alone does not close the transport. Peer cleanup is awaited independently of the shim.
+Normal exit, `agent stop`, SIGKILL and PID reuse retain exact-owner cleanup guards.
+Detached workers replace an inherited
 managed relay with their own route. There is no persistent relay daemon, cron job
 or credential cache. The route bounds concurrent connections (32), directional
 buffers (64 KiB), Windows TCP connect time (10 seconds), and idle connections

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Windows worker relay health no longer follows the interop launch shim after handoff.**
+  The shim can exit with code 1 while the authenticated relay peer still works. Treating that
+  exit as transport failure closed the listener under a live worker. Health now follows the
+  exact peer and private control channel; cleanup waits for the peer independently of the shim.
+  An owned CLI monitor turns real relay loss into a bounded, explicit worker failure, preserving
+  CLI exit codes, signals and exact-process cleanup. Caller return and coordinator handoff do
+  not themselves stop a healthy relay. Regression controls use isolated fake workers and
+  actual HTTP/CONNECT traffic, including concurrent caller return, resume and fault cleanup.
+
 - **Russian parameter rules no longer disable context handoff.** The context-budget hook treated
   `Не передавай идентификаторы другого провайдера` and `параметры Codex ему не передавай` in user-provided
   `AGENTS.md` instructions as a handoff prohibition. It now requires a standalone prohibition or an explicit

@@ -2,13 +2,14 @@
 """Per-worker WSL loopback relay to the existing Windows system HTTP proxy.
 
 No Windows listener, global proxy setting, auth access or TLS termination. The
-worker is still exec'ed at its original PID. Its relay watches /proc start time
-so normal exit, SIGKILL and PID reuse all remove owned helpers and the listener.
+worker launcher monitors its CLI and owned relay together. The relay watches
+/proc start time so normal exit, SIGKILL and PID reuse remove owned helpers.
 """
 from __future__ import annotations
 
 import json
 import array
+import ctypes
 import os
 from pathlib import Path
 import selectors
@@ -30,7 +31,7 @@ CONNECT_TIMEOUT = 15
 CLIENT_EXIT_TIMEOUT = 5
 CLIENT_SIGNAL_TIMEOUT = 2
 # Outlast every bounded supervisor escalation plus scheduling/FD cleanup.
-RELAY_CLEANUP_TIMEOUT = CLIENT_EXIT_TIMEOUT + 3 * CLIENT_SIGNAL_TIMEOUT + 2
+RELAY_CLEANUP_TIMEOUT = CLIENT_EXIT_TIMEOUT + 5 * CLIENT_SIGNAL_TIMEOUT + 2
 WINDOW = 65536
 CHUNK = 32768
 IDLE_TIMEOUT = 300
@@ -194,6 +195,15 @@ def stop_owned(pid: int, token: str, signum: int) -> None:
         os.close(descriptor)
 
 
+def wait_owned(pid: int, token: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while owner_token(pid) == token:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 def supervise_main(args: list[str]) -> None:
     fd, ready_fd, owner = map(int, args[:3])
     owner_start, host, port = args[3:6]
@@ -229,8 +239,9 @@ def supervise_main(args: list[str]) -> None:
                 stderr=subprocess.DEVNULL)
             deadline = time.monotonic() + CONNECT_TIMEOUT
             while not stopped and owner_token(owner) == owner_start and time.monotonic() < deadline:
-                if client.poll() is not None:
-                    raise RuntimeError("Owned WSL relay client exited before handoff.")
+                # WSL's Linux interop shim can exit while its native client is
+                # still delivering the peer. Reap it; keep the handoff deadline.
+                client.poll()
                 try:
                     peer, _ = server.accept()
                     break
@@ -250,8 +261,9 @@ def supervise_main(args: list[str]) -> None:
                     poll.register(peer, selectors.EVENT_READ)
                     if poll.select(0.25) and not peer.recv(1):
                         break
-                if client.poll() is not None:
-                    break
+                # The authenticated peer/control channel owns relay health.
+                # A reaped interop shim is not the native client's lifetime.
+                client.poll()
         finally:
             listener.close()
             if ready_fd >= 0:
@@ -260,31 +272,30 @@ def supervise_main(args: list[str]) -> None:
                 # Private Linux EOF, independent of the originating WSL stdio.
                 peer.close()
             server.close()
+            # The interop shim may already be reaped while its authenticated
+            # peer still runs. Its wait() is never a peer-cleanup acknowledgement.
+            if child and not wait_owned(*child, CLIENT_EXIT_TIMEOUT):
+                stop_owned(*child, signal.SIGTERM)
+                if not wait_owned(*child, CLIENT_SIGNAL_TIMEOUT):
+                    stop_owned(*child, signal.SIGKILL)
+                    if not wait_owned(*child, CLIENT_SIGNAL_TIMEOUT):
+                        raise RuntimeError("Owned relay peer did not exit within the cleanup deadline.")
             if client:
                 if child is None:
                     # No handoff means no EOF peer or validated child PID.
                     # Cancel the exact unreaped Popen client immediately.
                     client.terminate()
                 try:
-                    client.wait(timeout=CLIENT_EXIT_TIMEOUT if child else CLIENT_SIGNAL_TIMEOUT)
+                    client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
                 except subprocess.TimeoutExpired:
-                    if child:
-                        stop_owned(*child, signal.SIGTERM)
-                    else:
-                        client.kill()
+                    client.terminate()
                     try:
                         client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
                     except subprocess.TimeoutExpired:
-                        if child:
-                            stop_owned(*child, signal.SIGKILL)
-                        client.terminate()
-                        try:
-                            client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
-                        except subprocess.TimeoutExpired:
-                            client.kill()
-                            client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
-            if client and client.returncode and not stopped and owner_token(owner) == owner_start:
-                raise RuntimeError("Owned WSL relay client failed.")
+                        client.kill()
+                        client.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
+        if child and not stopped and owner_token(owner) == owner_start:
+            raise RuntimeError("Owned relay peer ended unexpectedly while its worker was alive.")
 
 
 def owned_relay_main(args: list[str]) -> None:
@@ -554,18 +565,81 @@ def relay_main(args: list[str], control: socket.socket | None = None) -> None:
 
 
 def exec_worker(executable: str, args: list[str], env: dict[str, str], distro: str | None = None) -> None:
-    relay = prepare_proxy(env, distro)
+    # These launchers are single-threaded. Only the owned-proxy path keeps a
+    # monitor: unrelated explicit-proxy/no-proxy launches retain exec semantics.
+    requested = []
+    previous = {}
+    def request(signum, _frame):
+        if not requested:
+            requested.append(signum)
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        previous[signum] = signal.signal(signum, request)
+    relay = child = None
+    child_token = None
+    result = None
+    transport_failed = False
+    parent = os.getpid()
+    def bind_parent():
+        # Linux clears this setting across fork. A fresh CLI must die even if
+        # its monitor is SIGKILLed between Popen and installation of the watch.
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, int(signal.SIGKILL), 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "Cannot bind worker lifetime.")
+        if os.getppid() != parent:
+            os.kill(os.getpid(), signal.SIGKILL)
     try:
-        os.execvpe(executable, [executable, *args], env)
+        relay = prepare_proxy(env, distro)
+        if relay is None:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
+            if requested:
+                signal.signal(requested[0], signal.SIG_DFL)
+                os.kill(parent, requested[0])
+            os.execvpe(executable, [executable, *args], env)
+        if not requested:
+            child = subprocess.Popen([executable, *args], env=env, preexec_fn=bind_parent)
+            child_token = owner_token(child.pid)
+        while child is not None:
+            result = child.poll()
+            if result is not None:
+                break
+            if requested:
+                break
+            if relay.poll() is not None:
+                transport_failed = True
+                break
+            time.sleep(0.1)
     finally:
-        # Exec success never returns. Failure must clean the listener immediately.
+        if child:
+            result = child.poll()
+        if child and result is None:
+            if child_token:
+                stop_owned(child.pid, child_token, requested[0] if requested else signal.SIGTERM)
+            try:
+                result = child.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                if child_token:
+                    stop_owned(child.pid, child_token, signal.SIGKILL)
+                result = child.wait(timeout=CLIENT_SIGNAL_TIMEOUT)
         if relay:
-            relay.terminate()
+            if relay.poll() is None:
+                relay.terminate()
             try:
                 relay.wait(timeout=RELAY_CLEANUP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 relay.kill()
                 relay.wait()
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+    if transport_failed:
+        raise RuntimeError("Owned worker relay exited unexpectedly; worker stopped instead of reconnecting to a closed listener.")
+    if requested and result is None:
+        result = -requested[0]
+    if result is not None and result < 0:
+        signum = -result
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(parent, signum)
+    raise SystemExit(result if result is not None else 1)
 
 
 if __name__ == "__main__":

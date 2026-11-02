@@ -390,13 +390,17 @@ class NativeNoCompactionTests(unittest.TestCase):
 
 class CodexSelectionTests(unittest.TestCase):
     def select(self, args):
+        class ExecSelected(Exception):
+            pass
         config = {"LinuxHome": "/desktop-home", "LinuxCodex": "/linux/codex", "WindowsCodex": "C:\\codex.exe", "WindowsCodexHome": "C:\\native-home"}
         with patch.object(codex.Path, "read_text", return_value=json.dumps(config)), patch.object(codex.sys, "argv", ["adapter", *args]), \
              patch.dict(codex.os.environ, {"CODEX_INTERNAL_ORIGINATOR_OVERRIDE": "Codex Desktop", "CODEX_APP_TOOLS_PIPE_PATH": "native-pipe",
                                           "WSLENV": "CUSTOM:CODEX_HOME/p:CODEX_APP_TOOLS_PIPE_PATH/p"}, clear=True), \
              patch("worker_proxy.prepare_proxy", return_value=None), \
-             patch.object(codex.subprocess, "check_output", return_value="/mnt/c/codex.exe\n"), patch.object(codex.os, "execvpe") as execute:
-            codex.main()
+             patch.object(codex.subprocess, "check_output", return_value="/mnt/c/codex.exe\n"), patch.object(codex.os, "execvpe", side_effect=ExecSelected) as execute:
+            # A real exec transfers control and cannot return into the owned-proxy path.
+            with self.assertRaises(ExecSelected):
+                codex.main()
             return execute.call_args.args
 
     def test_workers_use_linux_home_and_strip_native_markers(self):

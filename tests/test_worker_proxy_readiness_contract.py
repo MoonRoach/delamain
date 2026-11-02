@@ -62,6 +62,8 @@ class MonitorContracts(unittest.TestCase):
         cls.libc.prctl(36, cls.previous_subreaper.value, 0, 0, 0)
 
     def setUp(self):
+        if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+            self.skipTest('Linux pidfd signalling required for fixture ownership safety')
         self.temp = tempfile.TemporaryDirectory(prefix='relay-monitor-')
         self.base = Path(self.temp.name)
         (self.base / 'cli.py').write_text(CLI)
@@ -89,17 +91,25 @@ class MonitorContracts(unittest.TestCase):
         self.identities[name] = (pid, self.token(pid))
         return pid
 
+    def signal_owned(self, pid, token, signum):
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        try:
+            if token and self.token(pid) == token:
+                signal.pidfd_send_signal(fd, signum)
+        except ProcessLookupError:
+            pass
+        finally:
+            os.close(fd)
     def cleanup(self):
         if self.wrapper and self.wrapper.poll() is None:
             self.wrapper.kill()
             self.wrapper.wait(timeout=12)
         # Guard even fixture teardown against PID reuse; never signal by PID alone.
         for pid, token in self.identities.values():
-            if token and self.token(pid) == token:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            self.signal_owned(pid, token, signal.SIGKILL)
             try:
                 os.waitpid(pid, 0)
             except ChildProcessError:
@@ -138,7 +148,7 @@ class MonitorContracts(unittest.TestCase):
     def relay_loss(self, status):
         self.start('ignore')
         if status < 0:
-            os.kill(self.identities['relay'][0], -status)
+            self.signal_owned(*self.identities['relay'], -status)
         else:
             (self.base / 'relay.exit').write_text(str(status))
         self.assertNotEqual(self.wrapper.wait(timeout=20), 0)

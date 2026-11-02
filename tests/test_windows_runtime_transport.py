@@ -267,6 +267,8 @@ class LinuxRelayTests(unittest.TestCase):
                                 self.assertEqual(proxy.owner_token(child.pid), token)
                                 self.assertTrue(path.exists(), 'observer must see a real owned socket')
                                 self.observed_controls.append((child, token, path, fields[6]))
+                                if getattr(self, 'startup_failure_ack', None) is not None:
+                                    self.startup_failure_ack.touch()
                                 return child
                     time.sleep(.005)
                 if child.poll() is None:
@@ -725,10 +727,24 @@ raise AssertionError('missing executable unexpectedly ran')
         foreign.mkdir()
         sentinel = foreign / 'client.stdout'
         sentinel.write_text('foreign fixture data')
-        with patch.object(proxy, "owned_wsl_command", return_value=["/no/such/owned-wsl-client"]), \
+        # Keep the unconnected launch shim alive until the owner has positively
+        # observed its real private socket. Then fail exec before any handoff.
+        self.startup_failure_ack = directory / 'failed-launch-observer.ack'
+        launcher = directory / 'failing launch shim.py'
+        launcher.write_text('''import os,sys,time
+from pathlib import Path
+ack=Path(sys.argv[1])
+deadline=time.monotonic()+10
+while not ack.exists():
+    if time.monotonic()>deadline: raise RuntimeError('observer did not acknowledge startup')
+    time.sleep(.005)
+os.execv('/no/such/owned-wsl-client',['/no/such/owned-wsl-client'])
+''')
+        with patch.object(proxy, "owned_wsl_command", return_value=[sys.executable, str(launcher), str(self.startup_failure_ack)]), \
              patch.object(proxy, "powershell_command", return_value=[sys.executable, str(self.helper)]), \
              patch.object(proxy, "discover_proxy", return_value=("127.0.0.1",1234)):
             with self.assertRaises(RuntimeError): proxy.prepare_proxy({})
+        self.assertTrue(self.startup_failure_ack.exists(), 'launch failure must follow observer acknowledgement')
         self.assertTrue(self.observed_controls, 'failed launch must observe its actual private control path')
         self.assertEqual(sentinel.read_text(), 'foreign fixture data')
         self.assertFalse(self.helper.with_suffix('.pids').exists())
